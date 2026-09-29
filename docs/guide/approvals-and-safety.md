@@ -271,27 +271,47 @@ only in trusted workspaces. They apply to normal chat, continued runs, and deleg
   },
   {
     "event": "PostToolUse",
-    "command": "node",
-    "args": ["/absolute/path/to/format-change.mjs"],
-    "tools": ["file_write", "file_edit"]
+    "command": "npx",
+    "args": ["prettier", "--check", "src"],
+    "tools": ["file_*"]
   }
 ]
 ```
 
-Use an absolute script path appropriate for your machine (escape backslashes in Windows
-JSON paths). The command is an executable, with literal arguments; no shell expands them.
-For PowerShell scripts, use `pwsh` with `-NoProfile -File` and the script path in `args`.
-Scripts run with the workspace as their working directory and inherit the host environment.
+If a hook seems to do nothing, run **Blacksite: Check Lifecycle Hooks** from the command
+palette. It lists every entry, where each command was found (or that it was not), and any
+mistake in the setting, without running a script. Every hook that runs is also logged in the
+**Blacksite Hooks** output channel with its event, tool, exit status and duration, but never
+the data it was given, so a hook that works leaves a trace too.
 
-| Event | When it runs | Failure behavior |
+### Starting the program
+
+`command` is an executable name or path, with literal arguments: no shell expands them.
+Names are looked up on your `PATH`, and use a script's interpreter, not the script:
+`node`, `python`, or `pwsh` with `-NoProfile -File` and the script path in `args`. Use an
+absolute script path, and escape backslashes in Windows JSON paths.
+
+On Windows, `npm`, `npx`, `prettier`, `eslint` and other `.cmd` and `.bat` programs work
+by name. They are found through `PATH` and `PATHEXT` and run through `cmd.exe`, with each
+argument quoted. Arguments for a `.cmd` or `.bat` program cannot contain a double quote, a
+percent sign or a line break; use `node` or `pwsh` to run the script yourself instead.
+A bare name is never taken from the workspace folder. Scripts run with the workspace as their
+working directory and inherit the host environment, plus `BLACKSITE_HOOK_EVENT`,
+`BLACKSITE_SESSION_ID`, `BLACKSITE_WORKSPACE` and, for tool events, `BLACKSITE_TOOL_NAME`.
+
+### Events
+
+| Event | When it runs | What a failure does |
 | --- | --- | --- |
 | `UserPromptSubmit` | Before a user submission enters the model conversation. Internal continuations and delegated task instructions do not count as user submissions. | Blocks the submission. |
 | `PreToolUse` | After tool validation, before dispatch, including parallel delegation. | Blocks the tool, even with Allow All. The model receives the reason. |
-| `PostToolUse` | After dispatch returns, including failed results, before diagnostics and edit after-snapshots. Calls rejected by validation or pre-hooks do not dispatch and do not trigger this event. | Warns in the transcript; does not undo the tool. |
-| `Stop` | Once per run when it finishes, fails, or is cancelled. | Warns in the transcript while it is open. Does not restart the agent. |
+| `PostToolUse` | After dispatch returns, including failed results, before diagnostics and edit after-snapshots. Calls rejected by validation or pre-hooks do not dispatch and do not trigger this event. | Warns in the transcript; does not undo the tool. Exit status 2 also tells the model (below). |
+| `Stop` | Once per run when it finishes, fails, or is cancelled. | Warns in the transcript while it is open. Exit status 2 sends the agent back to work (below). |
+| `Notification` | When the agent stops to wait for you: an approval card or a question card. It does not wait for the script. | Warns; never blocks. Use it to play a sound or show a desktop notice. |
 
-Hooks execute in configuration order for each event. `tools` matches exact tool names;
-omit it to match every tool. Separate delegated lanes may run hooks concurrently.
+Hooks execute in configuration order for each event. `tools` matches tool names exactly, or
+with `*` wildcards (`file_*` matches every `file_` tool); omit it to match every tool. It
+applies to the tool events only. Separate delegated lanes may run hooks concurrently.
 Each script receives one JSON object on **stdin**, followed by a newline:
 
 ```json
@@ -307,15 +327,31 @@ Each script receives one JSON object on **stdin**, followed by a newline:
 ```
 
 `UserPromptSubmit` adds `prompt`; `PostToolUse` adds `result` and `ok`; `Stop` adds
-`stopReason`. Tool input is the model's original input, without injected service credentials.
+`stopReason` and, when the run is already continuing because of an earlier Stop hook,
+`stopHookActive: true`; `Notification` adds `notificationType` (`approval` or `question`) and
+`message`. Tool input is the model's original input, without injected service credentials.
 Hook data may contain source code, prompt text, and tool output: configure scripts you trust.
 
-Exit **0** to continue. Any other exit status, launch error, or timeout fails the hook.
-For blocking events, subsequent hooks do not run. Write a reason to stderr; up to 16 KiB
-of combined output is retained for failure feedback. Successful output is ignored and
-cannot grant approval or change a tool's arguments. Hooks default to a 10-second timeout,
-configurable from 100 ms to 60 seconds, with up to 32 entries. Cancellation terminates
-active hook processes; Stop scripts still run under their own timeout.
+### Exit codes and output
+
+Exit **0** to continue. On `UserPromptSubmit` and `PreToolUse`, any other exit status, a launch
+error, or a timeout blocks; the first blocking hook ends the event and later hooks do not run.
+Write the reason to stderr; up to 16 KiB of combined output is retained as feedback. Hooks
+default to a 10-second timeout, configurable from 100 ms to 60 seconds, with up to 32
+entries. Cancellation terminates active hook processes; Stop scripts still run under their
+own timeout.
+
+The other events cannot block, so exit status 2 is how a script talks to the agent:
+
+| Event | Exit status 2, or `{"decision":"block","reason":"..."}` on stdout with exit 0 | Any other failure |
+| --- | --- | --- |
+| `PostToolUse` | The text is added to that tool's result as `hook_feedback`, so the model reads what your linter or formatter found next to the result it belongs to. It is also shown as a warning. | A warning for you only. |
+| `Stop` | The agent continues, told "A Stop hook asked you to keep working" and your text. Only a run that finished on its own can be continued, at most twice per run; `stopHookActive` is true on the later checks. | A warning for you only. |
+
+A script that exits 0 may also print one JSON object: `additionalContext` adds text for the
+model, to the submitted prompt on `UserPromptSubmit` or to the tool result on
+`PostToolUse`. Any other output on success is ignored. Output can stop a step or add text; it
+cannot grant approval or change a tool's arguments.
 
 For example, `check-path.mjs` can reject edits to a protected directory:
 
@@ -335,6 +371,15 @@ renames, or shell commands must also check those tools and their arguments. A fo
 should check `ok` before editing. Post-tool changes to files already tracked by the edit
 journal are included in the after-snapshot. Changes to other files, or changes made by
 prompt/pre/stop hooks, are not automatically journaled.
+
+### Mistakes in the setting
+
+Every entry is checked before any script runs. A `PreToolUse` or `UserPromptSubmit` step
+is blocked while an entry is broken, because a broken entry may have been meant as a safety
+check; the message names the entry and the field, and points to the setting. An entry for
+an event that cannot block, such as `PostToolUse` or `Stop`, does not stop anything: the
+others still run, and the mistake is reported as a warning when the run ends. Keys from other
+tools are not read; `matcher` becomes `tools` and `timeout` becomes `timeoutMs`.
 
 Hooks are user-authorized programs with your user rights, including during plan mode.
 They do not provide an OS sandbox or replace existing tool approvals.

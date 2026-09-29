@@ -58,6 +58,7 @@ import { RunFocusCoordinator } from "./runs/run-focus-coordinator.js";
 import { WindowsDesktopCaptureService } from "./sequences/windows-desktop-capture.js";
 import { DiagramViewer, MermaidCodeLensProvider } from "./diagrams/diagram-viewer.js";
 import { extendMarkdownItWithMermaid } from "./diagrams/markdown-preview-mermaid.js";
+import { describeHooks, setHookRunLog } from "./hook-settings.js";
 import { PluginRegistry } from "./plugins/plugin-registry.js";
 import { installPluginFromFolder, managePlugins, pluginEntryActionHandler } from "./plugins/plugin-commands.js";
 
@@ -359,6 +360,19 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
       })
     : undefined;
   if (runTheater) context.subscriptions.push(runTheater);
+  /* Hooks fail quietly when a program cannot start, so this reports what the setting resolves to
+     without running any of it. */
+  const hooksChannel = vscode.window.createOutputChannel("Blacksite Hooks");
+  setHookRunLog(hooksChannel);
+  context.subscriptions.push(hooksChannel, { dispose: () => setHookRunLog(undefined) }, vscode.commands.registerCommand("blacksite.hooks.check", () => {
+    const { lines, healthy } = describeHooks(workspaceRoot);
+    hooksChannel.appendLine("");
+    hooksChannel.appendLine("Check: Blacksite lifecycle hooks (user setting blacksite.hooks.commands)");
+    for (const line of lines) hooksChannel.appendLine(line);
+    hooksChannel.show(true);
+    void (healthy ? vscode.window.showInformationMessage("Lifecycle hooks look ready. Details are in the Blacksite Hooks output.")
+      : vscode.window.showWarningMessage("Some lifecycle hooks cannot run. Details are in the Blacksite Hooks output."));
+  }));
   context.subscriptions.push(vscode.commands.registerCommand("blacksite.runs.authorizeExternalApplication", async () => {
     if (!desktopCapture.available()) {
       void vscode.window.showInformationMessage("External application capture is currently available on Windows only.");

@@ -3,6 +3,68 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.28.0
+
+ChatGPT sign-in shows the model's reasoning and follows your settings, and lifecycle hooks now
+start on Windows and can tell the agent what they found.
+
+### Fixed
+
+- **Thinking appears under ChatGPT sign-in.** ChatGPT sends no reasoning unless it is asked
+  to, and Blacksite never asked, so the thinking stream stayed empty. It now requests
+  summaries and shows them as the model works, one paragraph per step. Choose `concise`,
+  `detailed` or `none` in `blacksite.chatgpt.reasoningSummary`.
+- **The reasoning depth you pick now applies.** The effort control was shown for ChatGPT models
+  but never sent, so every model ran at its own default (GPT-6-Astra at low). Depth is now
+  sent, limited to what the model accepts according to ChatGPT's own catalog, and the control
+  shows the model's default until you choose one.
+- **GPT-6 and GPT-5.6 models stop repeating tool calls.** After a tool ran, these models were
+  handed the result without their own reasoning and in a form they did not write, and they
+  often called the same tool again instead of answering. The reasoning now travels with each
+  result, in the form the model used. If ChatGPT refuses it, the request is retried once
+  without it.
+- **Compaction and the usage meter use the real context window.** Blacksite assumed the API's
+  window for the same model, 1.05M for GPT-5.6 and 400K for GPT-5.5, but ChatGPT gives 258,400
+  usable tokens. Long conversations could grow far past the real limit before compacting.
+- **Temporary ChatGPT failures are retried.** An overloaded server or a dropped connection used
+  to end the run, unlike every other provider. Usage-limit and context-window errors still
+  stop it.
+- **Helper calls run shallow.** Compaction summaries no longer run at the model's default depth
+  (x-high on GPT-5.5).
+- **Lifecycle hooks start on Windows.** `npm`, `npx`, `prettier`, `eslint` and every other
+  `.cmd` or `.bat` program failed to launch, and because a failed `PreToolUse` hook blocks,
+  such a hook stopped every tool call. They are now found on `PATH` and started safely.
+- **A mistake in the hooks setting says where it is.** The message names the entry and field
+  and points to the setting, and an entry for an event that cannot block (`PostToolUse`,
+  `Stop`) no longer blocks every prompt and tool call. Keys used by other tools, such as
+  `matcher`, get a hint.
+
+### Added
+
+- **Speed control for ChatGPT models.** Models that offer a faster tier show **Auto**,
+  **Standard** and **Fast** in Settings. Fast runs the model faster at the higher usage rate
+  ChatGPT lists for it.
+- **Extended context.** `blacksite.chatgpt.extendedContext` asks for the largest window a model
+  allows, 872K tokens on GPT-6 and GPT-5.6, instead of 272K. It uses more of your allowance on
+  long conversations, so it is off by default.
+- **Notices from ChatGPT.** A model swap by ChatGPT, a warning, and a retry in progress appear
+  in the transcript. Models scheduled for retirement show the date in the picker.
+- **Hooks can talk to the agent.** A `PostToolUse` hook that exits 2 (or prints
+  `{"decision":"block","reason":"..."}`) adds its message to that tool's result, so the model
+  reads what your linter found. A `Stop` hook that does the same sends the agent back to work,
+  up to twice a run. A hook may also print `{"additionalContext":"..."}` to add text to a
+  submitted prompt or a tool result.
+- **`Notification` hook event.** Runs when the agent waits for an approval or an answer, for a
+  sound or desktop notice. It never holds up the card.
+- **`*` wildcards in a hook's `tools`** (`file_*`), and `BLACKSITE_HOOK_EVENT`,
+  `BLACKSITE_SESSION_ID`, `BLACKSITE_WORKSPACE` and `BLACKSITE_TOOL_NAME` in the script's
+  environment.
+- **Blacksite: Check Lifecycle Hooks.** Reports where each configured command was found, or
+  that it was not, and any mistake in the setting, without running anything.
+- **A hook run log.** Every hook that runs is listed in the Blacksite Hooks output channel with
+  its event, tool, exit status and duration, never the data it was given, so a hook that works
+  no longer looks the same as one that never ran.
+
 ## 1.27.0
 
 Models see the images you give them again, and the agent stops chasing files it has already

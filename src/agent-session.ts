@@ -662,6 +662,17 @@ export function resolveAnthropicBetaExtras(
   return { betas, bodyExtras, taskBudgetTokens };
 }
 
+/** How many times in one run a Stop hook may send the agent back to work. A hook that never
+ *  says "done" would otherwise keep a run going until the iteration limit. */
+const MAX_STOP_HOOK_RESUMES = 2;
+
+/** Text a PostToolUse hook wants the model to see, carried on the tool result itself. Only a
+ *  plain object result can carry it; the model reads it next to the result it belongs to. */
+function withHookFeedback(result: unknown, context: readonly string[] | undefined): unknown {
+  if (!context?.length || !result || typeof result !== "object" || Array.isArray(result)) return result;
+  return { ...(result as object), hook_feedback: context.join("\n\n") };
+}
+
 /* The usual reason for a reply with no visible text is that the model considers the work done.
    The prompt therefore gives that case an explicit exit — write the final answer — instead of
    only saying "do not stop yet", which pushed a finished model into work nobody asked for. */
@@ -2719,6 +2730,11 @@ export class AgentSession {
           messages: [...normalizeForProvider(this.messages), ...(subscriptionContext ? [{ role: "user" as const, content: subscriptionContext }] : [])],
           tools: this._toolPlan().wire,
           signal: this._signal,
+          reasoningEffort: this.opts.reasoningEffort,
+          // Codex names the tiers "priority" (Fast) and "default" (Standard); anything else
+          // leaves the account's own default in charge.
+          serviceTier: this.opts.serviceTier === "fast" || this.opts.serviceTier === "priority" ? "priority"
+            : this.opts.serviceTier === "default" ? "default" : undefined,
         })
         : this.provider === "anthropic"
         ? this._streamTurnAnthropic()
@@ -3933,14 +3949,38 @@ export class AgentSession {
           yield { type: "turn_complete", stopReason: "error", iterations: 0 };
           return;
         }
+        // Context a hook added travels with the prompt; the words the user typed stay as typed.
+        if (outcome.context?.length) userContent = `${userContent}\n\n[Context from a UserPromptSubmit hook]\n${outcome.context.join("\n\n")}`;
       }
-      for await (const event of this._sendCore(userContent, sendOpts)) {
-        if (event.type === "turn_complete") {
-          const outcome = await this._runHook({ event: "Stop", stopReason: event.stopReason });
-          stopReason = "";
-          for (const message of outcome.warnings ?? []) yield { type: "execution_diagnostic", level: "warn", message };
+      let content = userContent;
+      let options = sendOpts;
+      for (let resumes = 0; ; resumes++) {
+        let resume: string | undefined;
+        for await (const event of this._sendCore(content, options)) {
+          if (event.type === "turn_complete") {
+            const outcome = await this._runHook({ event: "Stop", stopReason: event.stopReason, ...(resumes ? { stopHookActive: true } : {}) });
+            stopReason = "";
+            for (const message of outcome.warnings ?? []) yield { type: "execution_diagnostic", level: "warn", message };
+            // Only a run that finished on its own can be asked to keep going: an error, a cancel or a
+            // cut-off is not "done", and resuming it would fight whatever stopped it. The turn's end
+            // is held back so the consumer sees one continuous run.
+            if (outcome.resume && event.stopReason === "end_turn" && resumes < MAX_STOP_HOOK_RESUMES && !this._signal?.aborted) {
+              resume = outcome.resume;
+              continue;
+            }
+          } else if (event.type === "approval_pending") {
+            // Fire and forget: a notification script must never hold up the approval card.
+            void this._runHook({ event: "Notification", notificationType: "approval", toolCallId: event.toolCallId, message: event.description });
+          } else if (event.type === "question_card_pending") {
+            void this._runHook({ event: "Notification", notificationType: "question", toolCallId: event.toolCallId, message: "The agent is waiting for your answer." });
+          }
+          yield event;
         }
-        yield event;
+        if (!resume) break;
+        yield { type: "execution_diagnostic", level: "info", message: `A Stop hook asked the agent to keep going (${resumes + 1}/${MAX_STOP_HOOK_RESUMES}): ${resume.length > 300 ? `${resume.slice(0, 300)}…` : resume}` };
+        stopReason = "cancelled";
+        content = `[Internal continuation]\nA Stop hook asked you to keep working before you finish:\n${resume}`;
+        options = { preserveRequestMode: true };
       }
     } catch (error) {
       if (stopReason) stopReason = "error";
@@ -4645,6 +4685,7 @@ export class AgentSession {
               const hookOutcome = await self._runHook({ event: "PostToolUse", toolCallId: tc.id,
                 toolName: tc.name, toolInput: tc.input, result: finalResult, ok });
               for (const message of hookOutcome.warnings ?? []) yield { type: "execution_diagnostic", level: "warn", message };
+              finalResult = withHookFeedback(finalResult, hookOutcome.context) as typeof finalResult;
               const summary = ok ? summarizeResult(finalResult) : String((finalResult as Record<string, unknown> | undefined)?.["error"] ?? "Failed");
 
               toolResults[idx] = {
@@ -5286,6 +5327,7 @@ export class AgentSession {
             const hookOutcome = await this._runHook({ event: "PostToolUse", toolCallId: tc.id,
               toolName: tc.name, toolInput: tc.input, result, ok: isOk(result) });
             for (const message of hookOutcome.warnings ?? []) yield { type: "execution_diagnostic", level: "warn", message };
+            result = withHookFeedback(result, hookOutcome.context);
 
             // Augment successful tool results with semantically similar past calls.
             // The lookup is time-bounded (1.8 s) and fully non-blocking if the index

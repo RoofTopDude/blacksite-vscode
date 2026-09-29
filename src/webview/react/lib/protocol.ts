@@ -248,6 +248,11 @@ export interface ModelInfo {
    *  and which are actually sent — see SAMPLING_PARAMETERS. Undefined means the provider
    *  publishes no such list, in which case the provider-level defaults apply. */
   supportedParameters?: string[];
+  /** ChatGPT sign-in only: the depths the Codex catalog lists for this model, shallowest first,
+   *  the depth it runs at unprompted, and the speed tiers it offers above Standard. */
+  reasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
+  serviceTiers?: Array<{ id: string; name: string; description: string }>;
   source?: string;
   [k: string]: any;
 }

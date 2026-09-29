@@ -85,10 +85,43 @@ itself. This keeps restored conversations and compression consistent, but differ
 persistent Codex session and can add overhead on long tool-heavy runs.
 
 Chat, delegated agents using OpenAI, and OpenAI compression use the selected authentication
-mode. Codex controls sampling, output limits, and processing tier in subscription mode.
-Subscription calls do not fall back to API billing, and Blacksite does not assign API dollar
+mode. Subscription calls do not fall back to API billing, and Blacksite does not assign API dollar
 prices to them. API keys remain separately stored; embeddings and audio transcription still
 require API credentials. Return to **API key** authentication to use the standard OpenAI API.
+
+#### What works under ChatGPT sign-in
+
+- **Reasoning you can read.** ChatGPT sends no reasoning unless it is asked to, so Blacksite
+  asks for summaries and shows them in the thinking stream as the model works. Set
+  `blacksite.chatgpt.reasoningSummary` to `concise`, `detailed` or `none`. The default is `auto`.
+- **Reasoning depth.** The Reasoning Effort control in **Settings > Model** and the chat's
+  quick settings list the depths the selected model accepts, from ChatGPT's own catalog, and
+  show the model's default until you choose one. GPT-5.5 runs at x-high by default and GPT-6-Astra
+  at low. Depths above Max (Ultra, which hands work to ChatGPT's own sub-agents) are not offered;
+  use Blacksite's delegation instead.
+- **Speed.** Models that offer a faster tier show a **Speed** control: **Auto** leaves the
+  account default, **Standard** asks for normal speed, and **Fast** runs the model faster at
+  the higher usage rate ChatGPT lists for it.
+- **Continuity across tool calls.** The model's own reasoning is passed back with each tool
+  result, so it carries on from where it was rather than starting over. On GPT-6 and GPT-5.6
+  models this is what stops a model from repeating a tool call it has already made. If ChatGPT
+  refuses the carried reasoning, for example after switching models, the request is retried
+  once without it.
+- **Context window.** Compaction and the usage meter use the window ChatGPT actually gives
+  the model: 258,400 usable tokens by default, not the larger figure the API offers for the
+  same model. Turn on `blacksite.chatgpt.extendedContext` for the 828,400 that GPT-6 and
+  GPT-5.6 models accept. Long conversations then use more of your allowance.
+- **Retries and notices.** Temporary ChatGPT failures (an overloaded server, a dropped
+  connection) are retried like any other provider's. Usage-limit and context-window errors are
+  not retried. A model swap by ChatGPT, or a warning from it, appears in the transcript. Models
+  scheduled for retirement show the date in the picker.
+
+#### What is not connected, on purpose
+
+ChatGPT sign-in gives Blacksite the model, not Codex's own agent. Codex's shell, file editing, web search, apps, plugins, memories and multi-agent
+tools stay off so that every action goes through Blacksite's tools and approvals. Sampling,
+output limits, prompt caching and verbosity follow the model and cannot be changed. Codex's
+own conversation storage, review mode and voice features are not used.
 
 ### Using an API key
 

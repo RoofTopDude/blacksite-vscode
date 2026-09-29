@@ -10,7 +10,7 @@ import { Field, Note, Row, Section, Segmented } from "./common";
 import {
   EFFORT_LABELS, OPENROUTER_EFFORTS, currentProviderSettings, effectiveOpenRouterEffort,
   effectiveReasoningEffort, fmtK, isOpenRouterReasoningModel, isReasoningModel,
-  selectedModelInfo, supportedReasoningEfforts,
+  selectedModelInfo, subscriptionReasoningEffort, supportedReasoningEfforts,
 } from "./helpers";
 import type { ReasoningEffort } from "@/lib/protocol";
 import {
@@ -150,9 +150,40 @@ export function GenerationPanel() {
   // showing it for gpt-4o etc. would offer a toggle with no effect.
   const responsesApiEligible = provider === "openai" && isReasoningModel(ps.model);
 
-  if (provider === "openai" && ps.authMode === "chatgpt") return <Section>
-    <Note>ChatGPT subscription requests use Codex model defaults for generation, output limits and processing tier. API sampling, caching and Responses API settings apply when you select API key authentication.</Note>
-  </Section>;
+  if (provider === "openai" && ps.authMode === "chatgpt") {
+    // Depth and speed come from the Codex catalog; sampling, output limits and caching stay with
+    // the model, because the subscription route does not accept them.
+    const fast = modelInfo?.serviceTiers?.find((tier) => tier.id === "priority");
+    const tierOptions = [{ id: "auto", label: "Auto" }, { id: "default", label: "Standard" }, ...(fast ? [{ id: "fast", label: fast.name }] : [])] as Array<{ id: ServiceTier; label: string }>;
+    const chosenTier: ServiceTier = ps.serviceTier === "priority" ? "fast" : ps.serviceTier === "flex" ? "auto" : ps.serviceTier ?? "auto";
+    return <Section>
+      {reasoning && (
+        <Field
+          label="Reasoning Effort"
+          hint={modelInfo?.defaultReasoningEffort
+            ? `How long the model reasons before it answers. Left alone, ${modelInfo.name ?? modelInfo.id} runs at ${EFFORT_LABELS[modelInfo.defaultReasoningEffort as ReasoningEffort]?.full ?? modelInfo.defaultReasoningEffort}. Deeper reasoning is slower and uses more of your ChatGPT allowance.`
+            : "How long the model reasons before it answers. Deeper reasoning is slower and uses more of your ChatGPT allowance."}
+        >
+          <Segmented
+            options={supportedReasoningEfforts(ps.model, modelInfo).map((id) => ({ id, label: EFFORT_LABELS[id].full }))}
+            value={subscriptionReasoningEffort(settings, modelInfo)}
+            onChange={(id) => actions.setReasoningEffort(provider, id)}
+          />
+        </Field>
+      )}
+      {fast && (
+        <Field
+          label="Speed"
+          hint={chosenTier === "fast"
+            ? `${fast.name} mode: ${fast.description}.`
+            : chosenTier === "default" ? "Standard speed and standard use of your ChatGPT allowance." : "Uses your account's default speed, which is Standard unless you changed it in Codex."}
+        >
+          <Segmented options={tierOptions} value={chosenTier} onChange={(id) => actions.setServiceTier(provider, id)} />
+        </Field>
+      )}
+      <Note>Sampling, output limits and prompt caching follow the ChatGPT model and are not adjustable here. They apply when you select API key authentication. Reasoning summaries and the larger context window are set in <code>blacksite.chatgpt.*</code> settings.</Note>
+    </Section>;
+  }
 
   return (
     <Section>

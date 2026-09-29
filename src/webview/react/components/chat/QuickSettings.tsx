@@ -18,6 +18,7 @@ import {
   isReasoningModel,
   modelShortLabel,
   selectedModelInfo,
+  subscriptionReasoningEffort,
   supportedReasoningEfforts,
 } from "@/components/settings/helpers";
 import { resolveThinkingMode } from "../../../../thinking-modes.js";
@@ -264,14 +265,14 @@ export function QuickSettings({ children }: { children?: React.ReactNode }) {
           className="flex items-center gap-px rounded-full border border-border bg-white/[0.02] px-0.5 py-0.5"
           title="Reasoning effort"
         >
-          {supportedReasoningEfforts(ps.model).map((e) => (
+          {supportedReasoningEfforts(ps.model, subscription ? modelInfo : null).map((e) => (
             <button
               key={e}
               type="button"
               onClick={() => actions.setReasoningEffort(provider, e)}
               className={cn(
                 "rounded-full px-2 py-0.5 text-2xs font-medium transition-colors",
-                effectiveReasoningEffort(ps.model, ps.reasoningEffort) === e
+                (subscription ? subscriptionReasoningEffort(settings, modelInfo) : effectiveReasoningEffort(ps.model, ps.reasoningEffort)) === e
                   ? "bg-primary/20 text-primary"
                   : "text-muted-foreground hover:text-foreground",
               )}

@@ -33,6 +33,14 @@ export interface ModelInfo {
    *  offers and which are put on the wire — see sampling-parameters.ts. Undefined when the
    *  provider publishes no such list. */
   supportedParameters?: string[];
+  /** Reasoning depths this model accepts, shallowest first, as its provider catalog reports them.
+   *  Only ChatGPT sign-in fills it: there the catalog, not a model-name pattern, is the authority
+   *  (Codex models start at "low" and never offer "none"). */
+  reasoningEfforts?: string[];
+  /** The depth the model runs at when the request names none. */
+  defaultReasoningEffort?: string;
+  /** Processing tiers offered above Standard, e.g. `{ id: "priority", name: "Fast" }`. */
+  serviceTiers?: Array<{ id: string; name: string; description: string }>;
   source: "api" | "fallback";
 }
 

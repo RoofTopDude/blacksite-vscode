@@ -59,7 +59,11 @@ export function isReasoningModel(modelId: string | undefined): boolean {
  * ladder so new depth levels appear in the picker the day a model ships; the host clamps
  * at request time, so an over-permissive UI choice can never 400.
  */
-export function supportedReasoningEfforts(modelId: string | undefined): ReasoningEffort[] {
+export function supportedReasoningEfforts(modelId: string | undefined, info?: ModelInfo | null): ReasoningEffort[] {
+  // Under ChatGPT sign-in the catalog is the authority: Codex models start at "low" and never
+  // offer "none", which the name-based table below would otherwise list.
+  const listed = (info?.reasoningEfforts ?? []).filter((effort): effort is ReasoningEffort => effort in EFFORT_LABELS);
+  if (listed.length) return listed;
   const id = (modelId ?? "").toLowerCase();
   const gpt = /^gpt-(\d+)(?:\.(\d+))?/.exec(id);
   if (!gpt) return ["low", "medium", "high"]; // o-series and unknown reasoning models
@@ -86,10 +90,20 @@ export const EFFORT_LABELS: Record<ReasoningEffort, { full: string; chip: string
   max:     { full: "Max",     chip: "Max" },
 };
 
-/** Default rung when the persisted effort isn't supported by the selected model. */
-export function effectiveReasoningEffort(modelId: string | undefined, effort: ReasoningEffort | undefined): ReasoningEffort {
-  const supported = supportedReasoningEfforts(modelId);
-  return effort && supported.includes(effort) ? effort : "medium";
+/** Default rung when the persisted effort isn't supported by the selected model. With a catalog
+ *  entry, the model's own default stands in for a depth nobody has chosen. */
+export function effectiveReasoningEffort(modelId: string | undefined, effort: ReasoningEffort | undefined, info?: ModelInfo | null): ReasoningEffort {
+  const supported = supportedReasoningEfforts(modelId, info);
+  if (effort && supported.includes(effort)) return effort;
+  const fallback = info?.defaultReasoningEffort as ReasoningEffort | undefined;
+  return fallback && supported.includes(fallback) ? fallback : "medium";
+}
+
+/** The depth to show under ChatGPT sign-in. Only a depth the user chose is stored as theirs; the
+ *  merged settings always carry the API-key default, which must not stand in for it here. */
+export function subscriptionReasoningEffort(settings: ExtendedSettings, info: ModelInfo | null): ReasoningEffort {
+  const chosen = settings.providerSettings?.openai?.reasoningEffort;
+  return effectiveReasoningEffort(info?.id, chosen, info);
 }
 
 /** OpenRouter's unified-reasoning vocabulary, plus an explicit off rung ("none" → nothing sent). */

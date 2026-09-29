@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.27.0",
+  "version": "1.28.0",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -184,6 +184,11 @@
       {
         "command": "blacksite.runs.authorizeExternalApplication",
         "title": "Approve External Application for Read-Only Capture",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.hooks.check",
+        "title": "Check Lifecycle Hooks",
         "category": "Blacksite"
       },
       {
@@ -511,6 +516,28 @@
           "default": "",
           "scope": "machine",
           "description": "Optional absolute path to the Codex executable used for ChatGPT subscription sign-in. Otherwise Blacksite uses the installed Codex VS Code extension or codex on PATH. Reload the window after changing."
+        },
+        "blacksite.chatgpt.reasoningSummary": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "concise",
+            "detailed",
+            "none"
+          ],
+          "enumDescriptions": [
+            "Let the model decide how much of its reasoning to summarize",
+            "Short summaries",
+            "Fuller summaries",
+            "Do not request summaries"
+          ],
+          "markdownDescription": "How much of the model's reasoning is summarized in the chat when you sign in with ChatGPT. Without a request, ChatGPT sends no reasoning at all, so the thinking stream stays empty. Takes effect on the next request."
+        },
+        "blacksite.chatgpt.extendedContext": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Use the largest context window a ChatGPT model allows: 872K tokens on GPT-6 and GPT-5.6 models, instead of the 272K default. Long conversations then send more tokens with every request, which uses more of your ChatGPT usage allowance. Models without a larger window are unchanged. Applies to the current conversation from its next message."
         },
         "blacksite.provider": {
           "type": "string",
@@ -991,7 +1018,7 @@
           "scope": "application",
           "default": [],
           "maxItems": 32,
-          "markdownDescription": "User-configured lifecycle scripts, run in trusted workspaces. Commands receive JSON on stdin, without shell interpolation. Nonzero exits or timeouts block UserPromptSubmit/PreToolUse; PostToolUse/Stop failures appear as warnings. Scripts run with your user rights. Workspace settings cannot configure hooks.",
+          "markdownDescription": "User-configured lifecycle scripts, run in trusted workspaces. Commands receive JSON on stdin, without shell interpolation. Nonzero exits or timeouts block UserPromptSubmit/PreToolUse; a PostToolUse or Stop script that exits 2 (or prints `{\"decision\":\"block\",\"reason\":\"...\"}`) tells the agent what to fix, and other failures appear as warnings. Scripts run with your user rights. Workspace settings cannot configure hooks. Run **Blacksite: Check Lifecycle Hooks** to see whether each command can be found.",
           "items": {
             "type": "object",
             "required": [
@@ -1006,13 +1033,14 @@
                   "UserPromptSubmit",
                   "PreToolUse",
                   "PostToolUse",
-                  "Stop"
+                  "Stop",
+                  "Notification"
                 ]
               },
               "command": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Executable path or name. Use node, python, or pwsh explicitly for scripts."
+                "description": "Executable path or name, found on PATH. On Windows npm, npx and other .cmd programs work. Use node, python, or pwsh explicitly for scripts."
               },
               "args": {
                 "type": "array",
@@ -1027,7 +1055,7 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "description": "Exact tool names to match. Omit to match every tool."
+                "description": "Tool names to match, exact or with * wildcards (file_*). Omit to match every tool."
               },
               "timeoutMs": {
                 "type": "integer",

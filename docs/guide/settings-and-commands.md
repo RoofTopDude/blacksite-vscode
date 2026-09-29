@@ -19,7 +19,8 @@ deliberately want different behavior.
 
 Lifecycle scripts are configured through the user-only `blacksite.hooks.commands` setting
 (default: no hooks). See [Lifecycle hooks](approvals-and-safety.html#lifecycle-hooks) for
-the events, JSON protocol, blocking behavior, and examples.
+the events, JSON protocol, blocking behavior, and examples. If a hook seems to do nothing,
+run **Blacksite: Check Lifecycle Hooks** first.
 
 ## Finding your way around
 
@@ -45,6 +46,8 @@ are under **Details**, and status chips are under **Current configuration**.
 | --- | --- | --- |
 | `blacksite.provider` | `anthropic` | The active provider (`anthropic`, `openrouter`, `openai`, `bedrock`), mirrored from the sidebar Settings. A user-level value seeds a new install |
 | `blacksite.chatgpt.codexPath` | (empty) | Absolute path to the Codex executable for ChatGPT subscription sign-in. Blank uses the Codex VS Code extension or `codex` on PATH. Reload the window after changing |
+| `blacksite.chatgpt.reasoningSummary` | `auto` | How much of the model's reasoning ChatGPT summarizes in the chat: `auto`, `concise`, `detailed` or `none`. ChatGPT sends no reasoning unless asked. Applies to the next request |
+| `blacksite.chatgpt.extendedContext` | `false` | Ask ChatGPT for the model's largest context window (872K tokens on GPT-6 and GPT-5.6 models) instead of the 272K default. Long conversations then send more tokens with each request, which uses more of your allowance |
 | `blacksite.bedrockApi` | `converse` | Bedrock API path, mirrored from the sidebar Settings. `converse` for live model listing and dated inference profiles; `mantle` for the Anthropic-native Messages endpoint required by the newest Claude models |
 | `blacksite.model` | `""` | The active model, mirrored from the sidebar for reference. Change it in the sidebar or with `/model` |
 | `blacksite.workspaceRoot` | `""` | Workspace root for the local runtime. Empty uses the first workspace folder |
@@ -250,6 +253,7 @@ All available from the command palette under the **Blacksite** category.
 | **Stop Response** | Stop the agent between tool calls |
 | **Compact Conversation History** | Summarize older history to reclaim context |
 | **Set API Key** | Store a provider key in `SecretStorage` |
+| **Check Lifecycle Hooks** | Report whether each configured hook can be found and started, and any mistake in the setting, without running anything |
 | **Show Execution Logs** | Open the execution log for this workspace |
 | **Move Chat to the Right Side Bar** | Move the Chat view to VS Code's secondary side bar |
 

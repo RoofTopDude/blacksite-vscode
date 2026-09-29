@@ -489,7 +489,16 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const home = path.join(this._context.globalStorageUri.fsPath, "chatgpt");
     const service = new ChatGptService(new CodexAppServer(executable, home), home,
       (state) => this._post({ type: "chatgpt_state", state }),
-      async (url) => vscode.env.openExternal(vscode.Uri.parse(url)));
+      async (url) => vscode.env.openExternal(vscode.Uri.parse(url)),
+      // Read on every request, so a change to either setting applies to the next turn.
+      () => {
+        const config = vscode.workspace.getConfiguration("blacksite.chatgpt");
+        const summary = config.get<string>("reasoningSummary", "auto");
+        return {
+          reasoningSummary: summary === "concise" || summary === "detailed" || summary === "none" ? summary : "auto",
+          extendedContext: config.get<boolean>("extendedContext", false),
+        };
+      });
     this._chatgpt = service;
     this._context.subscriptions.push(service);
     return service;
@@ -648,6 +657,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("blacksite.bedrock")) void this._sendSettingsToWebview();
       if (event.affectsConfiguration("blacksite.permissions.approvalMode")) this._postApprovalMode();
+      if (event.affectsConfiguration("blacksite.chatgpt.extendedContext")) {
+        // The context window sizes compaction and the usage meter, and both are fixed when a
+        // session is built, so the catalog and the session are rebuilt around the new value.
+        this._modelCache.delete("openai");
+        this._modelFetchInFlight.delete("openai");
+        if (!this._runner.busy) this._session = null;
+        void this._sendSettingsToWebview();
+      }
     }));
     this._context.subscriptions.push({ dispose: () => this._memoryIndex?.dispose() });
     this._context.subscriptions.push(this._questionComparison);
@@ -1210,7 +1227,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       maxOutputTokens,
       maxTokensUnlimited: pSettings.maxTokensUnlimited,
       thinking: pSettings.thinking,
-      reasoningEffort: pSettings.reasoningEffort,
+      reasoningEffort: this._reasoningEffortFor(settings.provider, settings, pSettings),
       serviceTier: pSettings.serviceTier,
       maxIterations: settings.maxIterations,
       disabledTools: settings.disabledTools,
@@ -2334,7 +2351,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         maxTokensUnlimited: subPSettings.maxTokensUnlimited,
         // OpenRouter maps the thinking budget through its unified `reasoning` param.
         thinking: (subProvider === "anthropic" || subProvider === "bedrock" || subProvider === "openrouter") ? subPSettings.thinking : undefined,
-        reasoningEffort: subPSettings.reasoningEffort,
+        reasoningEffort: this._reasoningEffortFor(subProvider, settings, subPSettings),
         serviceTier: subPSettings.serviceTier,
         httpReferer: settings.openrouterConfig?.httpReferer,
         xTitle: settings.openrouterConfig?.xTitle,
@@ -4578,7 +4595,18 @@ ${this._pendingRewindNote}`;
 
   private _cachedContextLength(provider: ProviderName, modelId: string): number | undefined {
     const cached = this._lookupModelInfo(modelId, this._modelCache.get(provider));
+    // The API's window is not the subscription's: gpt-5.6 is 1.05M on the API and 272K under
+    // ChatGPT sign-in, so the static table would postpone compaction past the real limit. Until
+    // the subscription catalog has loaded, the answer is "not known yet", not the API figure.
+    if (this._usesChatGpt(provider)) return cached?.contextLength;
     return cached?.contextLength ?? getContextLength(provider, modelId);
+  }
+
+  /** Reasoning depth for a session. Under ChatGPT sign-in only a depth the user picked is sent,
+   *  because the persisted default ("medium") is an API-key default that would otherwise override
+   *  a Codex model's own — GPT-5.5 runs at x-high unless told otherwise. */
+  private _reasoningEffortFor(provider: ProviderName, settings: ExtendedSettings, pSettings: ProviderSettings): OpenAIReasoningEffort | undefined {
+    return this._usesChatGpt(provider, settings) ? settings.providerSettings[provider]?.reasoningEffort : pSettings.reasoningEffort;
   }
 
   /** Request parameters the active model accepts, from the live catalog. Undefined when the
