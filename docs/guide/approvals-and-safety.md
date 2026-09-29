@@ -68,6 +68,11 @@ Approval is always granted by the extension. The model cannot mark its own call 
 the approval flag is set by the host after you answer, and one supplied in a tool call is
 discarded.
 
+In chat Auto mode, reviewable calls from one assistant tool batch are grouped by tool. Distinct
+groups are reviewed concurrently, with one decision recorded for each call. A batch decision
+applies only to that call; the runtime still checks its actual approval tier before it runs.
+Routine workspace edits that Auto mode can settle by fixed rules do not need a model review.
+
 Choosing to always allow a command persists its **binary** to `blacksite.permissions.autoApprove`,
 so it stops asking in this project. Note that this is per binary, not per command line: allowing
 `git` allows every `git` invocation, not just the one you approved.

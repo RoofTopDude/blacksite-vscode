@@ -3,6 +3,16 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.29.0
+
+### Added
+
+- **Chat Auto mode reviews tool batches sooner.** Command and MCP calls proposed in one assistant turn are grouped by tool and reviewed concurrently. Each call keeps its own decision, and the runtime still checks it before execution.
+
+### Fixed
+
+- **Commands reaching outside the workspace get a full review.** If the runtime discovers an external path after batch review, Auto mode uses the ordinary per-call review with that path shown instead of applying a provisional batch approval.
+
 ## 1.28.0
 
 ChatGPT sign-in shows the model's reasoning and follows your settings, and lifecycle hooks now

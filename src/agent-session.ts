@@ -997,6 +997,14 @@ export interface ApprovalReviewRequest {
 
 export type ApprovalReviewVerdict = { action: "allow" | "escalate"; reason: string };
 
+export interface ApprovalBatchCandidate {
+  toolCallId: string;
+  toolName: string;
+  input: Record<string, unknown>;
+  /** Resolved destination for an MCP call, without credentials. */
+  description?: string;
+}
+
 export interface SubagentSpawnRequest {
   parentSessionId: string;
   parentToolCallId: string;
@@ -1313,6 +1321,9 @@ export interface AgentSessionOptions {
    *  prompted: "allow" runs the call once, "escalate" asks the user with the reason, null (ask
    *  mode) leaves the ordinary path in charge. Never consulted for a covered "Allow all" grant. */
   approvalReviewer?: (request: ApprovalReviewRequest) => Promise<ApprovalReviewVerdict | null>;
+  /** Provisional, per-call decisions for one model tool batch. The runtime gate still checks each call. */
+  approvalReviewerBatch?: (calls: ApprovalBatchCandidate[]) => Promise<Record<string, ApprovalReviewVerdict>>;
+  approvalReviewerBatchEnabled?: () => boolean;
   signal?: AbortSignal;
   maxIterations?: number;
   temperature?: number;
@@ -3491,13 +3502,22 @@ export class AgentSession {
     description: string,
     unrecognizedCommand: boolean | undefined,
     input: Record<string, unknown>,
+    batchReviews?: Readonly<Record<string, ApprovalReviewVerdict>>,
   ): AsyncGenerator<AgentEvent, { granted: boolean; decision: ApprovalDecision; deniedByPolicy: boolean }> {
     const tier = scope.tier;
     let decision: ApprovalDecision;
     let deniedByPolicy = false;
+    // Batch review has the proposed input, but only the runtime knows whether a command
+    // reaches outside the workspace. Let the per-call reviewer see that added context.
+    // Unknown executables and unexpected tiers also need their full runtime description.
+    const provisional = scope.category === "command" && ["read", "write", "network"].includes(tier)
+      && !unrecognizedCommand && !description.includes("reaches outside the workspace")
+      && (this.opts.approvalReviewerBatchEnabled?.() ?? true)
+      && batchReviews && Object.hasOwn(batchReviews, tc.id)
+      ? batchReviews[tc.id] : undefined;
     const review = this._approvalGrants.has(scope) || !this.opts.approvalReviewer
       ? null
-      : await this.opts.approvalReviewer({
+      : provisional ?? await this.opts.approvalReviewer({
         toolCallId: tc.id,
         toolName: tc.name,
         category: scope.category,
@@ -4582,6 +4602,55 @@ export class AgentSession {
       turnResult.toolCalls.forEach((tc, idx) => tcToIndex.set(tc.id, idx));
 
       const toolResults: ToolResultBlock[] = new Array(turnResult.toolCalls.length);
+      if (this._signal?.aborted) {
+        yield { type: "execution_diagnostic", level: "warn", message: "Cancelled before batch review." };
+        throw new Error("Cancelled.");
+      }
+      // Review the model's submitted batch before sequential execution reaches its first gate.
+      // Only these runtime types can reach the command reviewer. Never pre-dispatch a tool
+      // just to discover whether it needs approval.
+      const batchDescriptions = new Map<string, string>();
+      let batchReviews: Record<string, ApprovalReviewVerdict> | undefined;
+      if (this.opts.approvalReviewerBatch && turnResult.toolCalls.length > 1
+        && (this.opts.approvalReviewerBatchEnabled?.() ?? true)) {
+        const batchCandidates: ApprovalBatchCandidate[] = [];
+        const mcpResolutions = new Map<string, Promise<McpServerResolution | undefined>>();
+        for (const tc of turnResult.toolCalls) {
+          const { runtimeType, payload } = resolveToolDispatch(tc.name, tc.input);
+          if (!["system.shell", "system.process.start", "test.run", "mcp.call_tool", "mcp.list_tools"].includes(runtimeType)) continue;
+          const input = JSON.stringify(payload);
+          // Large inputs are left to the ordinary per-call review; truncating an approval
+          // proposal could hide the part that changes its meaning.
+          if (!input || input.length > 4_000) continue;
+          const candidate: ApprovalBatchCandidate = { toolCallId: tc.id, toolName: tc.name, input: payload };
+          if (runtimeType.startsWith("mcp.")) {
+            const serverId = String(payload["serverId"] ?? "").trim();
+            let resolutionPromise = mcpResolutions.get(serverId);
+            if (!resolutionPromise) {
+              resolutionPromise = Promise.resolve().then(() => this.opts.mcpServerProvider?.(serverId)).catch(() => undefined);
+              mcpResolutions.set(serverId, resolutionPromise);
+            }
+            const resolution = await resolutionPromise;
+            if (!resolution?.ok) continue;
+            const url = resolution.server.url;
+            const destination = /^https?:\/\//i.test(url)
+              ? (() => { try { return new URL(url).origin; } catch { return url; } })()
+              : url;
+            const action = runtimeType === "mcp.list_tools"
+              ? "list its tools"
+              : `call the tool '${String(payload["toolName"] ?? "")}'`;
+            candidate.description = /^https?:\/\//i.test(url)
+              ? `Connect to the configured MCP server at ${destination} and ${action}`
+              : `Launch the configured local MCP process \`${destination}\` and ${action}`;
+            batchDescriptions.set(tc.id, candidate.description);
+          }
+          batchCandidates.push(candidate);
+        }
+        if (batchCandidates.length > 1) {
+          try { batchReviews = await this.opts.approvalReviewerBatch(batchCandidates); }
+          catch { /* A failed batch falls back to the ordinary per-call reviewer at each gate. */ }
+        }
+      }
       // Populated when reference_zoom_image runs with a vision-capable model — appended
       // as sibling content in the same tool-result turn (never a separate message).
       const pendingImages: ImageBlock[] = [];
@@ -5298,6 +5367,8 @@ export class AgentSession {
                     description,
                     unrecognizedCommand,
                     payload,
+                    runtimeType.startsWith("mcp.") && batchDescriptions.get(tc.id) !== description
+                      ? undefined : batchReviews,
                   );
                   if (!granted) {
                     result = deniedByPolicy

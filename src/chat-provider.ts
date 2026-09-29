@@ -12,6 +12,7 @@ import type {
   AgentEvent,
   ApprovalReviewRequest,
   ApprovalReviewVerdict,
+  ApprovalBatchCandidate,
   BaseAgentEvent,
   ThinkingConfig,
   OpenAIReasoningEffort,
@@ -50,7 +51,7 @@ import {
   triageAutoApproval,
   type ApprovalMode,
 } from "./auto-approval-policy.js";
-import { reviewChatApproval } from "./continuation/approval-review.js";
+import { reviewChatApproval, reviewChatApprovalGroups } from "./continuation/approval-review.js";
 import { describeRewind, RewindRegistry, rewindNote, untrackedEffect, type RewindScope } from "./rewind.js";
 import { EditDiffJournal } from "./edit-diff-journal.js";
 import { SecretStore } from "./secret-store.js";
@@ -900,6 +901,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     };
   }
 
+  private _approvalReviewerBatch(): (calls: ApprovalBatchCandidate[]) => Promise<Record<string, ApprovalReviewVerdict>> {
+    return async (calls) => {
+      if (this._approvalMode() !== "auto") return {};
+      return reviewChatApprovalGroups(() => this.createContinuationModel(), this.userPromptsThisSession(), calls);
+    };
+  }
+
   /**
    * Price a delegated lane's usage with the same catalog and fallback tables as the chat
    * transcript. LoopDispatcher accumulates these per-turn estimates into the active execution.
@@ -1280,6 +1288,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       diagnosticsProvider: this._diagnostics,
       lspProvider: this._autoLspService,
       approvalReviewer: this._approvalReviewer(),
+      approvalReviewerBatch: this._approvalReviewerBatch(),
+      approvalReviewerBatchEnabled: () => this._approvalMode() === "auto",
       mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
       staleDiagnosticFiles: () => staleDiagnosticFiles(this._workspaceRoot),
       workspaceRoots: workspaceFolderPaths,
@@ -2397,6 +2407,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         lspProvider: laneLspProvider,
         // A loop lane is reviewed by its own policy; a chat lane follows the chat's approval mode.
         approvalReviewer: laneApprovalPolicy ? undefined : this._approvalReviewer(),
+        approvalReviewerBatch: laneApprovalPolicy ? undefined : this._approvalReviewerBatch(),
+        approvalReviewerBatchEnabled: () => this._approvalMode() === "auto",
         mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
         staleDiagnosticFiles: () => staleDiagnosticFiles(this._workspaceRoot),
         workspaceRoots: workspaceFolderPaths,
