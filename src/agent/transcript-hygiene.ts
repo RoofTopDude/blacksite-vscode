@@ -209,6 +209,9 @@ export function sanitizePendingGateForPersistence(gate: PendingGateState | undef
   return changed ? { ...gate, questions } : gate;
 }
 
+/** The text block {@link stripImagesForPersistence} leaves where an image block was. */
+export const PERSISTED_IMAGE_STUB = "[image omitted from persisted transcript]";
+
 export function stripImagesForPersistence(messages: AgentMessage[]): AgentMessage[] {
   const browserIds = new Set<string>();
   for (const message of messages) {
@@ -221,13 +224,53 @@ export function stripImagesForPersistence(messages: AgentMessage[]): AgentMessag
     return {
       ...msg,
       content: msg.content.map((b): ContentBlock => {
-        if (b.type === "image") return { type: "text", text: "[image omitted from persisted transcript]" };
+        if (b.type === "image") return { type: "text", text: PERSISTED_IMAGE_STUB };
         if (b.type === "tool_use" && browserTool(b.name)) return { ...b, input: redactBrowserPayload(b.input) as Record<string, unknown> };
         if (b.type === "tool_result" && browserIds.has(b.tool_use_id)) return { ...b, content: "[Browser/research result omitted from persisted transcript. Inspect current state and request fresh approval before entry.]" };
         return b;
       }),
     };
   });
+}
+
+function isImageStub(block: ContentBlock): boolean {
+  return block.type === "text" && block.text === PERSISTED_IMAGE_STUB;
+}
+
+/**
+ * Put back the images {@link stripImagesForPersistence} removed, taking them from the live
+ * transcript the persisted copy was made from.
+ *
+ * Most settings changes rebuild the session, and the rebuilt one restores from the session store.
+ * The store keeps no pixels, so every screenshot and attachment already in the conversation turned
+ * into a stub the moment the user changed, say, the reasoning effort — and the model could no
+ * longer see what it had been shown a minute earlier.
+ *
+ * Deliberately narrow: a message is touched only when its persisted form is exactly what stripping
+ * `live` produces at the same position, and within it only the stubs change. Everything else keeps
+ * its persisted form, including browser results the store redacts. Stripping maps blocks one to
+ * one, which is what makes the positional swap safe. Returns `stored` itself when nothing changes.
+ */
+export function restorePersistedImages(stored: AgentMessage[], live: AgentMessage[]): AgentMessage[] {
+  if (stored.length === 0 || live.length === 0) return stored;
+  const strippedLive = stripImagesForPersistence(live);
+  let changed = false;
+  const out = stored.map((msg, index) => {
+    const liveMsg = live[index];
+    if (typeof msg.content === "string" || !liveMsg || typeof liveMsg.content === "string") return msg;
+    if (!msg.content.some(isImageStub)) return msg;
+    if (JSON.stringify(msg) !== JSON.stringify(strippedLive[index])) return msg;
+    const liveBlocks = liveMsg.content;
+    changed = true;
+    return {
+      ...msg,
+      content: msg.content.map((block, blockIndex) => {
+        const liveBlock = liveBlocks[blockIndex];
+        return isImageStub(block) && liveBlock?.type === "image" ? liveBlock : block;
+      }),
+    };
+  });
+  return changed ? out : stored;
 }
 
 export function ensureLeadingUserMessage(messages: AgentMessage[]): AgentMessage[] {

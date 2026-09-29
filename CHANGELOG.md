@@ -3,6 +3,43 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.27.0
+
+Models see the images you give them again, and the agent stops chasing files it has already
+deleted.
+
+### Fixed
+
+- **Images reach vision models reliably.** After a window reload, a model missing from
+  Blacksite's built-in list was treated as unable to see images, and every attachment,
+  screenshot, image opened with `file_read` and rendered preview was quietly kept from it. That
+  covered dated Claude snapshots, regional Bedrock profiles (`eu.`, `global.`), `gpt-4.1` and the
+  bare `gpt-5.6`, many OpenRouter models, and every model under ChatGPT sign-in. Vision support
+  now comes from the live model catalog, which loads in the background when a conversation
+  starts, or from the model family, and it is re-checked as the conversation goes on.
+- **Changing a setting no longer erases images from the conversation.** Most settings changes
+  rebuild the session, and the rebuilt session now keeps the screenshots and attachments already
+  in the conversation instead of replacing them with a placeholder. Images still do not survive a
+  window reload.
+- **More vision models recognised.** Nova Pro, Lite and Premier, Llama 4, Llama 3.2 Vision and
+  Pixtral on Bedrock now receive images. `o1-mini` and `o3-mini`, which reject them, no longer do.
+- **No more closing reminders about deleted scratch files.** A temporary script the agent writes
+  and then deletes, with `file_delete` or from the shell, no longer triggers requests to test it
+  or to add a Codebase Map note for it. Deleting a file that existed before still asks for a
+  check, with the file marked as deleted so the agent tests what depended on it. A file reported
+  by both its absolute and relative path is now listed once.
+- **Stale diagnostics for deleted files are ignored.** Errors VS Code still holds for a file that
+  no longer exists are left out of the agent's workspace state and `code_diagnostics`. Asking
+  `code_diagnostics` about a deleted file now says the file is gone instead of failing the check.
+
+### Added
+
+- **A warning when images don't reach the model.** If the active model is not vision-capable,
+  the chat now says so, and says whether the Image fallback model described the images instead.
+- **`workspace_refresh` tool.** The agent can re-sync its pending checks, the Codebase Map and
+  diagnostics with what is on disk when they look out of date. It changes no files and does not
+  count as a check. The completion reminders point to it.
+
 ## 1.26.0
 
 ### Added

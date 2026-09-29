@@ -396,6 +396,22 @@ export class GraphIndexer implements vscode.Disposable {
     void this.rebuild();
   }
 
+  /**
+   * Apply the watcher's pending changes now rather than after the debounce, for a caller about to
+   * read the index that needs it to reflect what just happened on disk (the agent's
+   * workspace_refresh). Returns how many changed paths were waiting. A change large enough to hand
+   * off to a full rebuild is scheduled, not awaited.
+   */
+  async flushPending(): Promise<number> {
+    if (this._debounce) {
+      clearTimeout(this._debounce);
+      this._debounce = undefined;
+    }
+    const pending = this._dirty.size;
+    await this._applyDirty();
+    return pending;
+  }
+
   /** Full scan + layout. Safe to call while a rebuild runs (queues one more). */
   async rebuild(): Promise<void> {
     if (this._rebuilding) {

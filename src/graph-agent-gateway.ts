@@ -76,6 +76,10 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     return this._annotations.dispatch(op, payload, ctx);
   }
 
+  async syncIndex(): Promise<{ appliedChanges: number }> {
+    return { appliedChanges: await this._indexer.flushPending() };
+  }
+
   /** Compact prose form injected into the live workspace context on every model turn. */
   async workspaceOverview(): Promise<string> {
     // Automatic context must never wait for a corpus-wide relationship rebuild.

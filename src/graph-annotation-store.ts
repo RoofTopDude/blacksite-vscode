@@ -95,6 +95,9 @@ export interface GraphAnnotationProvider {
    * on, for the file it is most likely to be asked about.
    */
   localOverview?(paths: readonly string[]): Promise<string>;
+  /** Bring the map index up to date with the disk now instead of after the watcher's debounce.
+   *  Resolves with how many changed paths were waiting. */
+  syncIndex?(): Promise<{ appliedChanges: number }>;
 }
 
 function defaultDocument(): GraphAnnotationDocument {

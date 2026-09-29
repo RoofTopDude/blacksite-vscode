@@ -159,7 +159,9 @@ describe("restoring files from the edit journal", () => {
     const plan = await journal.planRestore(point);
     expect(plan.unrestorable.map((u) => u.path)).toEqual(expect.arrayContaining(["f0.ts", "f1.ts"]));
     expect(plan.unrestorable[0]!.reason).toMatch(/dropped from the edit history/);
-  });
+    // ~250 files written and journaled: under a full parallel coverage run on Windows the disk
+    // contention alone pushes it past the 5s default, though it takes under a second on its own.
+  }, 20_000);
 });
 
 describe("rewind points and effects", () => {

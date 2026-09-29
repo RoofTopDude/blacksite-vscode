@@ -6,6 +6,7 @@ import type { UiPreferenceEntry } from "./memory-store.js";
 import { summarizeBaseContextForPrompt, summarizeWorkspaceRulesForPrompt } from "./base-context-store.js";
 import { summarizePlanningStateForPrompt } from "./planning-store.js";
 import { summarizeTicketsForPrompt } from "./ticket-store.js";
+import { isStaleDiagnosticUri, workspaceRootPaths } from "./post-edit-diagnostics.js";
 
 const CONTEXT_FILE = ".blacksite/context.md";
 const MEMORY_FILE = ".blacksite/memory.md";
@@ -331,8 +332,11 @@ export async function gatherWorkspaceSnapshot(
     : undefined;
   const activeLine = activeEditor ? activeEditor.selection.active.line + 1 : undefined;
 
+  // A file deleted while its document is still loaded (the harness opens every file it writes, to
+  // read its diagnostics) is neither open work nor a source of real diagnostics.
+  const roots = workspaceRootPaths(workspaceRoot);
   const openFiles = vscode.workspace.textDocuments
-    .filter((d) => !d.isUntitled && d.uri.scheme === "file")
+    .filter((d) => !d.isUntitled && d.uri.scheme === "file" && !isStaleDiagnosticUri(d.uri, roots))
     .map((d) => path.relative(workspaceRoot, d.uri.fsPath).replace(/\\/g, "/"))
     .filter((p) => !p.startsWith(".."))
     .slice(0, 20);
@@ -342,6 +346,7 @@ export async function gatherWorkspaceSnapshot(
   let warnCount = 0;
   const topErrors: string[] = [];
   for (const [uri, diags] of allDiagnostics) {
+    if (diags.length > 0 && isStaleDiagnosticUri(uri, roots)) continue;
     const relPath = path.relative(workspaceRoot, uri.fsPath).replace(/\\/g, "/");
     for (const d of diags) {
       if (d.severity === vscode.DiagnosticSeverity.Error) {

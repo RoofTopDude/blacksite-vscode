@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { autoEscalatedProfile, renderedImportProjection } from "../../src/graph/graph-indexer.js";
+import { autoEscalatedProfile, GraphIndexer, renderedImportProjection } from "../../src/graph/graph-indexer.js";
 import { PROFILE_CAPS } from "../../src/graph/config.js";
 
 /**
@@ -38,5 +38,25 @@ describe("renderedImportProjection", () => {
       ["apps/web/api.ts", ["services/orders/routes.ts"]],
     ]);
     expect(indexed.get("apps/web/api.ts")).toEqual(["services/orders/routes.ts", "services/users/routes.ts"]);
+  });
+});
+
+/* workspace_refresh reads the map right after files changed on disk; the watcher only applies
+   changes after a 2s debounce, so the map could still list a file the agent had just deleted. */
+describe("GraphIndexer.flushPending", () => {
+  it("applies waiting watcher changes now and cancels the debounce", async () => {
+    const applied: string[][] = [];
+    const indexer = Object.assign(Object.create(GraphIndexer.prototype), {
+      _dirty: new Set(["scratch.mjs", "src/a.ts"]),
+      _debounce: setTimeout(() => { throw new Error("debounce should have been cancelled"); }, 50),
+      async _applyDirty(this: { _dirty: Set<string> }) {
+        applied.push([...this._dirty]);
+        this._dirty.clear();
+      },
+    }) as GraphIndexer;
+
+    await expect(indexer.flushPending()).resolves.toBe(2);
+    expect(applied).toEqual([["scratch.mjs", "src/a.ts"]]);
+    await new Promise((resolve) => setTimeout(resolve, 80));
   });
 });

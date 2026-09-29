@@ -32,12 +32,12 @@ export const TOOL_SEARCH_NAME = "tool_search";
  * Loaded on every request. Chosen by how often a turn needs them *without warning*: reading,
  * searching and editing files, running commands and tests, and the tools the harness itself
  * demands — verification (code_diagnostics, test_run), the Codebase Map note the completion
- * checklist asks for, paging a truncated result, loading a skill the roster points at, delegating,
+ * checklist asks for, the workspace_refresh its reminders point to, paging a truncated result, loading a skill the roster points at, delegating,
  * and asking the user. Anything else costs one tool_search round the first time it is used.
  */
 export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "file_read", "file_search", "file_list", "file_glob", "file_edit", "file_edit_batch", "file_write",
-  "shell_run", "git_op", "test_run", "code_diagnostics",
+  "shell_run", "git_op", "test_run", "code_diagnostics", "workspace_refresh",
   "tool_output_page", "tool_output_search", "skill_read", "map_note_add", "subagent_spawn",
   "question_card", TOOL_SEARCH_NAME,
 ]);

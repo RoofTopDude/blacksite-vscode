@@ -342,6 +342,14 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
     ["path"],
   ),
   tool(
+    "workspace_refresh",
+    "session.workspace_refresh",
+    "Re-sync the harness's view of the workspace with the disk. Use when a completion reminder or a diagnostic names a file you already deleted (a temporary script, say), or after shell commands created, moved, or removed files. "
+      + "Drops verification and map-note reminders for files that no longer exist, applies pending Codebase Map index updates, reports diagnostics VS Code still holds for deleted files (those are stale), and re-reads diagnostics for the files still awaiting verification. "
+      + "Changes no files, and is not itself a verification check: the result lists what is still outstanding.",
+    {},
+  ),
+  tool(
     "file_glob",
     "system.glob",
     "Glob files under a directory. Supports **, *, ?, and character ranges. Results are sorted most-recently-modified first, so the files a task is actually about surface at the top. Excludes node_modules, .git, dist, and similar directories by default; the result's `skipped` field reports when excluded or depth-limited directories were pruned, so an empty result is never silently non-exhaustive. " + OUTSIDE_WORKSPACE_READS,

@@ -1,4 +1,5 @@
 import type {
+  ImageBlock,
   ProviderTurnResult,
   ProviderTurnSession,
   ProviderTurnSink,
@@ -30,15 +31,20 @@ export class ScriptedProviderSession implements ProviderTurnSession {
   private turnIndex = 0;
   readonly userTexts: string[] = [];
   readonly toolResults: ToolResultBlock[][] = [];
+  /** Image blocks the session put in each user turn, in order, so a spec can see what the model
+   *  would have been shown. */
+  readonly images: ImageBlock[] = [];
 
   constructor(private readonly turnFactory: ScriptedTurnFactory) {}
 
-  appendUserText(text: string): void {
+  appendUserText(text: string, images?: ImageBlock[]): void {
     this.userTexts.push(text);
+    if (images) this.images.push(...images);
   }
 
-  appendToolResults(results: ToolResultBlock[]): void {
+  appendToolResults(results: ToolResultBlock[], images?: ImageBlock[]): void {
     this.toolResults.push(results);
+    if (images) this.images.push(...images);
   }
 
   async runTurn(sink: ProviderTurnSink): Promise<ProviderTurnResult> {

@@ -32,12 +32,17 @@ File and shell operations. The load-bearing ones.
 | `file_move`, `file_copy`, `file_delete`, `file_mkdir` | Filesystem operations |
 | `shell_run` | Run a terminal command |
 | `process_start`, `process_status`, `process_read_output`, `process_send_input`, `process_stop` | Long-running processes: dev servers, watchers, REPLs |
+| `workspace_refresh` | Re-sync the agent's pending checks, the Codebase Map and diagnostics with what is on disk |
 
 Edits are diffed and approved before touching disk. Shell commands are classified and gated — see
 [Approvals & Safety](approvals-and-safety.html).
 
 The process family is what lets the agent start your dev server, read its output as it runs, send it
 input, and stop it — rather than blocking forever on a command that never exits.
+
+`workspace_refresh` is for when the agent's own bookkeeping falls behind the disk: a reminder to
+test a scratch script it already deleted, or errors still shown for a file that is gone. It changes
+no files, and it does not count as a check.
 
 ---
 

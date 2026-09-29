@@ -13,6 +13,8 @@ export interface RunOptions {
   preserveRequestMode?: boolean;
   /** What the user actually typed, when this run answers a user message. See AgentSession.send. */
   userText?: string;
+  /** Image attachments left out because the model is not vision-capable. See AgentSession.send. */
+  withheldImages?: number;
 }
 
 export class BackgroundRunner {
@@ -83,6 +85,7 @@ export class BackgroundRunner {
             requestMode: options.requestMode,
             preserveRequestMode: options.preserveRequestMode,
             userText: options.userText,
+            withheldImages: options.withheldImages,
           })) {
             onEvent(event);
 

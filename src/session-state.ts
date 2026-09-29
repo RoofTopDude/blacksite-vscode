@@ -106,6 +106,9 @@ export interface PersistedSessionState {
   /** Files changed after the last explicit diagnostic/test/evidence check. */
   verification?: VerificationGateState;
   verificationEnforcementCount?: number;
+  /** Workspace-relative paths this session created with file_write. A created file that is later
+   *  deleted nets out to no change, so its completion reminders are dropped. */
+  createdFiles?: string[];
   /** Host-priced spend survives webview reloads and model switches. */
   spentUsd?: number;
   spendPartial?: boolean;

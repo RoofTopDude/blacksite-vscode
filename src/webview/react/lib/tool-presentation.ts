@@ -357,6 +357,15 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
       return { label: shortPath(result?.path, 48) || "JSON edited", preview: joinParts([result?.operations != null ? countLabel(result.operations, "operation") : "Applied", diagSuffix(result)]), state: "ok", ...none };
     case "report_problems":
       return { label: result?.count ? countLabel(result.count, "problem") : "Problems cleared", preview: result?.files ? countLabel(result.files, "file") : "", state: "ok", ...none };
+    case "workspace_refresh": {
+      const dropped = Array.isArray(result?.droppedReminders) ? result.droppedReminders.length : 0;
+      const outstanding = Array.isArray(result?.outstanding) ? result.outstanding.length : 0;
+      return {
+        label: dropped ? `${countLabel(dropped, "stale reminder")} dropped` : "In sync with disk",
+        preview: outstanding ? `${countLabel(outstanding, "item")} outstanding` : "Nothing outstanding",
+        state: "ok", ...none,
+      };
+    }
     case "code_symbols":
       return { label: result?.scope === "workspace" ? countLabel((result?.symbols || []).length, "symbol") : (shortPath(result?.path, 48) || "Symbols"), preview: result?.scope === "workspace" ? shortText(result?.query || "", 40) : (result?.notice ? shortText(result.notice, 70) : countLabel((result?.symbols || []).length, "top-level symbol")), state: "ok", ...none };
     case "code_navigate": {
@@ -831,6 +840,7 @@ export function toolIntentPhrase(toolName: string, input: any): { verb: string; 
     case "ticket_promote": return { verb: "Promoting ticket", target: readStr(data.ticketId) };
     case "ticket_sweep": return { verb: "Sweeping", target: shortText(data.area || "workspace", 32) };
     case "report_problems": return { verb: "Reporting", target: Array.isArray(data.problems) ? countLabel(data.problems.length, "problem") : "" };
+    case "workspace_refresh": return { verb: "Refreshing", target: "workspace" };
     case "test_run": return { verb: "Testing", target: shortText(data.filter, 32) };
     case "test_detect": return { verb: "Detecting", target: "test framework" };
     case "subagent_spawn": return { verb: "Delegating", target: shortText(data.label || data.task, 40) };

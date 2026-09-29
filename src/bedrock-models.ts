@@ -6,7 +6,7 @@
 
 import type { BedrockCredentials } from "./bedrock-types.js";
 import { signBedrockRequest } from "./bedrock-client.js";
-import { getContextLength, getMaxOutputTokens, type ModelInfo } from "./model-fetcher.js";
+import { getContextLength, getMaxOutputTokens, modelFamilySupportsVision, type ModelInfo } from "./model-fetcher.js";
 import { supportsThinking } from "./thinking-modes.js";
 
 const BEDROCK_CONTROL_TIMEOUT_MS = 30_000;
@@ -334,7 +334,8 @@ export function bedrockModelsToModelInfo(models: BedrockAvailableModel[]): Model
       // request layer would refuse to enable it for (the old local regex missed Sonnet 5 / Fable,
       // whose ids carry no "-4" — they'd have shown up as non-thinking models).
       supportsThinking: supportsThinking(contextModelId),
-      supportsVision: contextModelId.toLowerCase().includes("claude"),
+      // Converse takes images for every vision family, not only Claude (Nova, Llama 4, Pixtral).
+      supportsVision: modelFamilySupportsVision(contextModelId) ?? false,
       supportsTools: true,
       source: "api" as const,
     };

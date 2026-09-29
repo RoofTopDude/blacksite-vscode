@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { isInsideToolchainRoot } from "@blacksite/local-runtime";
 import { editRouting, type EditRouting, type WorkspaceEditApplier } from "./workspace-edit-applier.js";
-import { captureDiagnosticBaseline, collectDiagnosticSnapshot, collectForUris } from "./post-edit-diagnostics.js";
+import { captureDiagnosticBaseline, collectDiagnosticSnapshot, collectForUris, isStaleDiagnosticUri, workspaceRootPaths } from "./post-edit-diagnostics.js";
 import { formatActiveSignature } from "./lsp-signature-format.js";
 import { missingExtensionFor } from "./graph/language-support.js";
 import { noProviderNotice } from "./lsp-provider-hint.js";
@@ -573,6 +573,16 @@ export class LspService implements LspProvider {
     if (p) {
       const identity = this._identity.resolve(p, stringValue(payload["rootId"]));
       if (!identity.ok) return identity;
+      /* Checked before opening: a document still held in memory opens fine after its file is
+         deleted, and would hand back the stale diagnostics of a file that no longer exists. */
+      if (isStaleDiagnosticUri(identity.value.uri, workspaceRootPaths(this._workspaceRoot))) {
+        return {
+          ok: false,
+          code: "file_missing",
+          error: `${p} no longer exists on disk, so there is nothing to check; any diagnostics VS Code still shows for it are stale. `
+            + "If you deleted it on purpose (a temporary script, say), check the files that remain instead, or call workspace_refresh to re-sync pending checks with the disk.",
+        };
+      }
       try { await vscode.workspace.openTextDocument(identity.value.uri); }
       catch { return { ok: false, error: `Could not open ${p}.` }; }
       uris = [identity.value.uri];

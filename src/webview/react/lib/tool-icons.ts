@@ -52,7 +52,7 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "reference_context_write": return "file-write";
     case "reference_search": case "reference_query_spreadsheet": case "reference_vector_search": return "search";
     case "transcript_read": return "search";
-    case "code_diagnostics": case "report_problems": return "diagnostics";
+    case "code_diagnostics": case "report_problems": case "workspace_refresh": return "diagnostics";
     case "test_detect": case "test_run": return "test";
     case "memory_append": case "memory_read": case "memory_search": return "memory";
     case "skill_read": case "skill_list": case "skill_write": return "skill";

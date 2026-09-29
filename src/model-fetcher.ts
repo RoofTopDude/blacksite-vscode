@@ -254,6 +254,68 @@ function detectsThinking(modelId: string): boolean {
   return false;
 }
 
+// ── Vision detection ──────────────────────────────────────────────────────────
+
+/** Families that take text only, checked before the vision families below so that, for
+ *  example, o3-mini is not caught by the o-series rule. */
+const TEXT_ONLY_FAMILIES = [
+  /^o1-(?:mini|preview)\b/,
+  /^o3-mini\b/,
+  /^gpt-3\.5/,
+  /^gpt-4(?:-32k)?(?:-\d{4})?$/, // the original GPT-4; gpt-4-turbo and later are matched below
+  /\bgpt-oss\b/,
+  /\bnova-micro\b/,
+  /\bclaude-(?:instant|2)\b/,
+];
+
+const VISION_FAMILIES = [
+  /\bclaude\b/, // every Claude from the 3 family on
+  /^(?:chatgpt-)?gpt-4o\b/, /^gpt-4\.1\b/, /^gpt-4\.5\b/, /^gpt-4-turbo\b/, /^gpt-5/,
+  /^o[134]\b/,
+  /\bgemini\b/,
+  /\bgrok-4\b/,
+  /\bllama-?4\b/, /\bllama-?3[.-]2-(?:11|90)b\b/, // OpenRouter `llama-3.2-90b`, Bedrock `llama3-2-90b`
+  /\bnova-(?:\d+-)?(?:pro|lite|premier)\b/,
+  /\bpixtral\b/, /\bmistral-medium-3\b/, /\bmistral-small-3\.[1-9]\b/,
+  /(?:^|[-_.])vl(?:\d|[-_.]|$)/, // Qwen-VL, DeepSeek-VL, Kimi-VL and the like
+  /\bvision\b/, /\bllava\b/,
+];
+
+/**
+ * Whether a model family accepts image input, judged from its id alone. Undefined for a family
+ * this build does not know, so a caller can tell "known to be text-only" from "never heard of it".
+ *
+ * This is what answers when no live catalog row does. The previous answer was the static model
+ * table matched on the exact id, so a dated snapshot, a regional Bedrock profile (`eu.`, `global.`),
+ * or any model newer or older than the table came back text-only — and every image a session
+ * produced (attachments, screenshots, rendered previews) was withheld from a model that could have
+ * seen it. Keep the families conservative: a false positive puts an image on the wire to a model
+ * that rejects the whole request.
+ */
+export function modelFamilySupportsVision(modelId: string): boolean | undefined {
+  const id = normalizeModelIdForFallbackLookup(modelId);
+  if (!id) return undefined;
+  if (TEXT_ONLY_FAMILIES.some((pattern) => pattern.test(id))) return false;
+  if (VISION_FAMILIES.some((pattern) => pattern.test(id))) return true;
+  return undefined;
+}
+
+/**
+ * Vision support from what this build ships with: a row in the provider's static table (matched on
+ * the normalized id, so `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` finds its `us.` sibling),
+ * then the model family. Only an exact normalized match counts for the table — the prefix matching
+ * {@link modelIdFallbackMatches} allows would let `o3` answer for `o3-mini`.
+ */
+export function getVisionSupport(provider: ProviderName, modelId: string): boolean | undefined {
+  const target = normalizeModelIdForFallbackLookup(modelId);
+  const tables = provider === "bedrock" ? [FALLBACK_MODELS.bedrock, BEDROCK_MANTLE_MODELS] : [FALLBACK_MODELS[provider] ?? []];
+  for (const table of tables) {
+    const row = table.find((model) => normalizeModelIdForFallbackLookup(model.id) === target);
+    if (typeof row?.supportsVision === "boolean") return row.supportsVision;
+  }
+  return modelFamilySupportsVision(modelId);
+}
+
 // ── Anthropic ─────────────────────────────────────────────────────────────────
 
 /** The subset of the Models API's `capabilities` tree this build reads. Untyped/nested by
@@ -342,7 +404,7 @@ export function mapOpenRouterModelEntry(m: RawOpenRouterModelEntry): ModelInfo {
     cacheReadPricePerM: perM(m.pricing?.input_cache_read),
     cacheWritePricePerM: perM(m.pricing?.input_cache_write),
     supportsThinking: detectsThinking(m.id) || (params?.includes("reasoning") ?? false),
-    supportsVision: modalities ? modalities.includes("image") : true,
+    supportsVision: modalities ? modalities.includes("image") : modelFamilySupportsVision(m.id) ?? true,
     supportsAudio: modalities?.includes("audio") ?? false,
     supportsTools: params ? params.includes("tools") : true,
     // Carried through verbatim: this is the only authority on which sampling controls the
@@ -447,7 +509,9 @@ async function fetchOpenAI(apiKey: string): Promise<ModelInfo[]> {
         cacheReadPricePerM:  meta?.cacheRead,
         cacheWritePricePerM: meta?.cacheWrite,
         supportsThinking: detectsThinking(m.id),
-        supportsVision:   m.id.includes("4o") || m.id.startsWith("o") || m.id.startsWith("gpt-5") || m.id.includes("vision"),
+        // The listing carries no modalities. The old substring rule missed gpt-4.1 and passed
+        // o1-mini and o3-mini, which reject images.
+        supportsVision:   modelFamilySupportsVision(m.id) ?? false,
         supportsAudio:    m.id.includes("audio") || m.id.startsWith("gpt-4o") || m.id.startsWith("gpt-5"),
         supportsTools:    true,
         source: "api" as const,

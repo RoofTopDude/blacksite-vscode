@@ -3,7 +3,7 @@ import type { AgentMessage, ProviderTurnStreamEvent, ToolUseBlock } from "./agen
 import { toResponsesInputItems } from "./agent/wire/openai.js";
 import { CodexAppServer, type CodexMessage } from "./codex-app-server.js";
 import type { ChatGptLimit, ChatGptState } from "./chatgpt-types.js";
-import type { ModelInfo } from "./model-fetcher.js";
+import { modelFamilySupportsVision, type ModelInfo } from "./model-fetcher.js";
 
 export interface SubscriptionRequest {
   model: string;
@@ -146,7 +146,7 @@ export class ChatGptService {
     do {
       const page: { data: Array<{ id: string; model: string; displayName: string; isDefault: boolean; inputModalities?: string[] }>; nextCursor: string | null } = await this.rpc.request("model/list", { cursor, limit: 100 });
       for (const model of page.data) {
-        const info: ModelInfo = { id: model.model, name: model.displayName, source: "api", supportsTools: true, supportsVision: model.inputModalities?.includes("image") };
+        const info: ModelInfo = { id: model.model, name: model.displayName, source: "api", supportsTools: true, supportsVision: model.inputModalities ? model.inputModalities.includes("image") : modelFamilySupportsVision(model.model) };
         if (model.isDefault) models.unshift(info); else models.push(info);
       }
       cursor = page.nextCursor;

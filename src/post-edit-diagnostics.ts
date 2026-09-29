@@ -1,3 +1,5 @@
+import * as fs from "fs";
+import * as path from "path";
 import * as vscode from "vscode";
 import { WorkspaceIdentity } from "./lsp/workspace-identity.js";
 
@@ -56,6 +58,8 @@ export interface DiagnosticSnapshot {
     activatedFiles?: number;
     diagnosticUris: number;
     capped?: boolean;
+    /** Files left out because they no longer exist on disk (see isStaleDiagnosticUri). */
+    deletedFilesSkipped?: number;
   };
   delta?: {
     introduced: NormalizedDiagnostic[];
@@ -138,7 +142,11 @@ export async function collectDiagnosticSnapshot(
     : { observed: false, timedOut: false, cancelled: false, waitedMs: 0 };
 
   const rawEntries = uris ? entriesForUris(uris) : vscode.languages.getDiagnostics();
-  const workspaceEntries = rawEntries.filter(([uri]) => identity.contains(uri));
+  const inWorkspace = rawEntries.filter(([uri]) => identity.contains(uri));
+  const roots = workspaceRootPaths(workspaceRoot);
+  const workspaceEntries = inWorkspace.filter(([uri]) => !isStaleDiagnosticUri(uri, roots));
+  const deletedFilesSkipped = inWorkspace.filter(([, diagnostics]) => diagnostics.length > 0).length
+    - workspaceEntries.filter(([, diagnostics]) => diagnostics.length > 0).length;
   const allProblems = await normalizeEntries(workspaceEntries, identity);
   const allCounts = countSeverities(allProblems);
   const threshold = SEVERITY_THRESHOLD[opts.severity?.toLowerCase() ?? ""];
@@ -182,9 +190,53 @@ export async function collectDiagnosticSnapshot(
       activatedFiles: uris ? activatedFiles : undefined,
       diagnosticUris: workspaceEntries.filter(([, diagnostics]) => diagnostics.length > 0).length,
       capped: opts.coverageCapped || undefined,
+      deletedFilesSkipped: deletedFilesSkipped || undefined,
     },
     delta,
   };
+}
+
+/** The workspace folders on disk, plus the root the caller works in. */
+export function workspaceRootPaths(workspaceRoot: string): string[] {
+  return [...new Set([workspaceRoot, ...(vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath)])];
+}
+
+/**
+ * True for diagnostics VS Code still holds for a file that is gone from disk.
+ *
+ * Language servers retire them on their own schedule. A document the harness opened (every
+ * mutation collects diagnostics for the file it wrote) stays in memory after the file is deleted,
+ * and its server keeps publishing against that buffer, so a temporary script the agent wrote and
+ * removed went on reporting errors in the workspace state and in code_diagnostics — and the agent
+ * spent its closing turns trying to fix or verify a file that no longer existed.
+ *
+ * Absence is only judged inside a workspace folder that is itself on disk, and an unsaved open
+ * buffer is kept: its diagnostics describe text the user can still save.
+ */
+export function isStaleDiagnosticUri(uri: vscode.Uri, roots: readonly string[]): boolean {
+  if (uri.scheme !== "file") return false;
+  const file = uri.fsPath;
+  if (fs.existsSync(file)) return false;
+  const key = pathKey(file);
+  if ((vscode.workspace.textDocuments ?? []).some((doc) => doc.isDirty && doc.uri.scheme === "file" && pathKey(doc.uri.fsPath) === key)) return false;
+  return roots.some((root) => {
+    const relative = path.relative(root, file);
+    return !!relative && !relative.startsWith("..") && !path.isAbsolute(relative) && fs.existsSync(root);
+  });
+}
+
+/** A file path in one comparable form: resolved separators, and case-folded where the file system is. */
+function pathKey(value: string): string {
+  const resolved = path.resolve(value);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+/** Workspace-relative paths VS Code holds diagnostics for that no longer exist on disk. */
+export function staleDiagnosticFiles(workspaceRoot: string): string[] {
+  const roots = workspaceRootPaths(workspaceRoot);
+  return vscode.languages.getDiagnostics()
+    .filter(([uri, diagnostics]) => diagnostics.length > 0 && isStaleDiagnosticUri(uri, roots))
+    .map(([uri]) => path.relative(workspaceRoot, uri.fsPath).replace(/\\/g, "/"));
 }
 
 export async function waitForDiagnosticQuiescence(

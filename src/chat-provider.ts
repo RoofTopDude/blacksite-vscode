@@ -41,7 +41,7 @@ import type { SequenceToolProvider } from "./sequences/sequence-service.js";
 import type { LoopToolProvider } from "./loops/loop-tool-provider.js";
 import { createLoopEditProvider, createLoopLspProvider, stopLaneOnApprovalDenial } from "./loops/loop-approval-routing.js";
 import { DiffEditService, type EditProvider } from "./diff-edit-service.js";
-import { collectForUris } from "./post-edit-diagnostics.js";
+import { collectForUris, staleDiagnosticFiles } from "./post-edit-diagnostics.js";
 import { LspService, type LspProvider } from "./lsp-service.js";
 import { WorkspaceEditApplier, type EditApprovalRequest } from "./workspace-edit-applier.js";
 import {
@@ -74,7 +74,8 @@ import { McpRegistry } from "./mcp-registry.js";
 import { confirmProjectAutoApprove, normalizeCommandBinary, readCommandPolicy } from "./command-policy.js";
 import { clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
-import { fetchModels, getFallbackModels, getContextLength, getMaxOutputTokens, getModelPricing, estimateUsageCostUsd, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
+import { fetchModels, getFallbackModels, getContextLength, getMaxOutputTokens, getModelPricing, getVisionSupport, estimateUsageCostUsd, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
+import { restorePersistedImages } from "./agent/transcript-hygiene.js";
 import { bedrockSupportsCacheTtl1h, isOpenAIReasoningModel } from "./model-limits.js";
 import { findSubagentProfile, mergeBuiltinSubagentProfiles } from "./builtin-subagent-profiles.js";
 import { SkillStore, buildSkillRoster } from "./skills/skill-store.js";
@@ -96,7 +97,7 @@ import { EmbeddingService, sparseEmbed } from "./embedding-service.js";
 import { AgentMemoryIndex } from "./agent-memory-index.js";
 import { ExecutionLogger } from "./execution-logger.js";
 import type { LogStats } from "./execution-logger.js";
-import type { PersistedSessionState, SessionRestoreState, SessionRuntimeState } from "./session-state.js";
+import type { PersistedSessionState, SessionMessage, SessionRestoreState, SessionRuntimeState } from "./session-state.js";
 import { pickRestoreState } from "./session-restore.js";
 import type { DataAssistant } from "./data-provider.js";
 import { AssistantQueryPlanner } from "./data/assistant-query-planner.js";
@@ -401,6 +402,11 @@ function normalizeModelIdForLookup(modelId: string): string {
   return colonIndex > slashIndex ? trimmed.slice(0, colonIndex) : trimmed;
 }
 
+/** The open workspace folders on disk, for AgentSession's multi-root path checks. */
+function workspaceFolderPaths(): string[] {
+  return (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath);
+}
+
 function modelIdsMatch(left: string, right: string): boolean {
   const a = normalizeModelIdForLookup(left);
   const b = normalizeModelIdForLookup(right);
@@ -540,6 +546,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _editDiffs: EditDiffJournal;
   // Cache of fetched model lists keyed by provider
   private _modelCache = new Map<ProviderName, ModelInfo[]>();
+  /** The transcript last written to the session store, images intact. The store keeps none, and
+   *  most settings changes rebuild the session from it; this is where a rebuild in the same window
+   *  gets the pictures back (see restorePersistedImages). Shares the live session's message
+   *  objects, so it costs nothing while that session is alive. */
+  private _liveTranscript: { sessionId: string; messages: SessionMessage[]; fullHistory: SessionMessage[] } | null = null;
   private _modelFetchInFlight = new Map<ProviderName, Promise<ModelInfo[]>>();
   // Pending question cards: resolver + source questions keep all answer paths (drawer or editor
   // comparison panel) validated against the choices the agent originally presented.
@@ -1171,7 +1182,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       this._resolveContextLength(settings.provider, pSettings.model, apiKey),
       this._resolveMaxOutputTokens(settings.provider, pSettings.model, apiKey),
     ]);
-    const supportsVision = this._resolveSupportsVision(settings.provider, pSettings.model);
+    // A cold window has no live catalog until a model picker opens; fetch it now so capabilities
+    // stop leaning on the static tables. The session reads vision support live, so this corrects
+    // it whenever it lands.
+    this._warmModelCatalog(settings.provider, apiKey);
     const compressionProvider = this._buildCompressionProvider(apiKey, settings, pSettings);
     const transcriptProvider  = this._buildTranscriptProvider();
     const transcriptDocumentProvider = this._buildTranscriptDocumentProvider();
@@ -1250,6 +1264,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       lspProvider: this._autoLspService,
       approvalReviewer: this._approvalReviewer(),
       mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
+      staleDiagnosticFiles: () => staleDiagnosticFiles(this._workspaceRoot),
+      workspaceRoots: workspaceFolderPaths,
       editDiffJournal: this._editDiffs,
       questionCardProvider: (toolCallId, questions) => this._createQuestionCardPromise(toolCallId, questions),
       approvalProvider: (toolCallId, toolName, description, tier) => this._createApprovalPromise(toolCallId, toolName, description, tier),
@@ -1268,7 +1284,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       referenceProvider: this._buildReferenceToolProvider(),
       skillProvider: this._buildSkillToolProvider(),
       agentMemoryIndex: this._memoryIndex ?? undefined,
-      supportsVision,
+      supportsVision: () => this._resolveSupportsVision(settings.provider, pSettings.model),
       visionFallbackProvider: this._buildVisionFallbackProvider(),
     });
 
@@ -1276,13 +1292,28 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return session;
   }
 
-  /** Resolves whether the given model can see images, from the cached model list (fetched) or the static fallback table. */
+  /**
+   * Whether the model can see images: a live catalog row when one says, otherwise the static tables
+   * matched on the normalized id, otherwise the model family (see getVisionSupport).
+   *
+   * Sessions call this on every use rather than capturing it once. It used to be resolved at
+   * session creation from the exact-id static table whenever no picker had loaded the catalog yet —
+   * true after most window reloads — so any model missing from that table (a dated snapshot, a
+   * regional Bedrock profile, every ChatGPT-subscription model) was treated as blind for the life
+   * of the session and every image it produced was withheld.
+   */
   private _resolveSupportsVision(provider: ProviderName, modelId: string): boolean {
     const cached = this._lookupModelInfo(modelId, this._modelCache.get(provider));
-    if (cached) return Boolean(cached.supportsVision);
-    const settings = this._readSettings();
-    const fallback = this._lookupModelInfo(modelId, this._defaultModelsForProvider(provider, settings));
-    return Boolean(fallback?.supportsVision);
+    if (typeof cached?.supportsVision === "boolean") return cached.supportsVision;
+    return getVisionSupport(provider, modelId) ?? false;
+  }
+
+  /** Load the provider's live catalog in the background when nothing has this window. Bedrock is
+   *  left out: its live listing needs two signed AWS calls, and the Converse catalog's only
+   *  offline stand-in is the static table the lookups already consult. */
+  private _warmModelCatalog(provider: ProviderName, apiKey: string): void {
+    if (provider === "bedrock" || this._modelCache.has(provider)) return;
+    void this._fetchModelCatalog(provider, apiKey).catch(() => undefined);
   }
 
   /** Keep the webview's attachment cards useful without exposing reference-store paths or
@@ -1614,12 +1645,15 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     state?: PersistedSessionState,
     sessionId?: string,
   ): void {
-    const fullHistory = state?.fullHistory ?? (sessionId ? this._sessionStore.loadFullHistory(sessionId) : undefined);
+    const storedFullHistory = state?.fullHistory ?? (sessionId ? this._sessionStore.loadFullHistory(sessionId) : undefined);
+    const live = sessionId && this._liveTranscript?.sessionId === sessionId ? this._liveTranscript : null;
     session.restoreState({
       sessionId,
-      messages,
+      messages: live ? restorePersistedImages(messages as AgentMessage[], live.messages as AgentMessage[]) : messages,
       ...(state ?? {}),
-      fullHistory,
+      fullHistory: live && storedFullHistory
+        ? restorePersistedImages(storedFullHistory as AgentMessage[], live.fullHistory as AgentMessage[])
+        : storedFullHistory,
     });
     if (sessionId) {
       this._sessionSpend.set(sessionId, {
@@ -1707,13 +1741,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       updatedAt: Date.now(),
       model: pSettings.model,
       workspaceRoot: this._workspaceRoot,
-      // Same stripping the checkpoint path applies: multi-MB base64 image blocks are dead
-      // weight in persisted transcripts (compression drops them before any restored model
-      // turn would see them) and bloat every save.
+      // Same stripping the checkpoint path applies: multi-MB base64 image blocks would bloat
+      // every save. A rebuild in this window restores them from _liveTranscript; after a reload
+      // they are gone.
       messages: stripImagesForPersistence(session.history),
       state,
     });
     this._sessionStore.saveFullHistory(session.sessionId, stripImagesForPersistence(session.fullHistory));
+    this._liveTranscript = { sessionId: session.sessionId, messages: session.history, fullHistory: session.fullHistory };
   }
 
   private _runtimeCostBudget(
@@ -2346,6 +2381,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         // A loop lane is reviewed by its own policy; a chat lane follows the chat's approval mode.
         approvalReviewer: laneApprovalPolicy ? undefined : this._approvalReviewer(),
         mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
+        staleDiagnosticFiles: () => staleDiagnosticFiles(this._workspaceRoot),
+        workspaceRoots: workspaceFolderPaths,
         // A delegated lane edits the same workspace, so its rows get the same reviewable diffs.
         editDiffJournal: this._editDiffs,
         questionCardProvider: laneApprovalPolicy
@@ -2381,7 +2418,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         graphProvider: this._graphAnnotations,
         referenceProvider,
         transcriptDocumentProvider,
-        supportsVision: this._resolveSupportsVision(subProvider, resolvedSubModel),
+        supportsVision: () => this._resolveSupportsVision(subProvider, resolvedSubModel),
         visionFallbackProvider: this._buildVisionFallbackProvider(),
         checkpointingEnabled: false,
       });
@@ -2643,6 +2680,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         this._sessionStore.archiveActive();
         this._session = null;
         this._restoredSessionState = null;
+        this._liveTranscript = null;
         this._sessionStore.clearActive();
         this._pendingAttachments.clear();
         // The rows those diffs belonged to are gone from the transcript, so holding their
@@ -3563,11 +3601,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     // (the thing that actually attaches or drops the blocks), not re-resolved from settings —
     // a fresh resolve could disagree with a session built earlier and leave the text note
     // promising an image the model never receives.
-    const { images, imageNotes } = await this._buildAttachmentImageBlocks(attached, session.supportsVision);
+    // Read once: the session resolves it live, and a catalog landing between two reads would leave
+    // the inlined images and the fallback notes disagreeing.
+    const supportsVision = session.supportsVision;
+    const { images, imageNotes, withheld } = await this._buildAttachmentImageBlocks(attached, supportsVision);
     if (imageNotes.length) {
       fullContent = `${fullContent}\n\n${imageNotes.join("\n")}`;
     }
-    const visionFallbackNotes = session.supportsVision ? [] : await this._buildAttachmentVisionFallbackNotes(attached);
+    const visionFallbackNotes = supportsVision ? [] : await this._buildAttachmentVisionFallbackNotes(attached);
     if (visionFallbackNotes.length) {
       fullContent = `${fullContent}\n\n${visionFallbackNotes.join("\n")}`;
     }
@@ -3612,6 +3653,7 @@ ${this._pendingRewindNote}`;
       // The words the user typed, apart from the mentions, context and attachment notes folded in
       // above — the reviewers that judge intent read these (see AgentSession.send).
       userText: content.trim() || (attachmentNames.length ? `(sent attachments: ${attachmentNames.join(", ")})` : ""),
+      withheldImages: withheld || undefined,
     });
   }
 
@@ -3630,13 +3672,14 @@ ${this._pendingRewindNote}`;
   private async _buildAttachmentImageBlocks(
     attached: PendingAttachmentRecord[],
     supportsVision: boolean,
-  ): Promise<{ images: ImageBlock[]; imageNotes: string[] }> {
+  ): Promise<{ images: ImageBlock[]; imageNotes: string[]; withheld: number }> {
     const imageRecords = attached.filter((a) => (a.mime ?? "").startsWith("image/") && a.path);
-    if (imageRecords.length === 0) return { images: [], imageNotes: [] };
+    if (imageRecords.length === 0) return { images: [], imageNotes: [], withheld: 0 };
 
     if (!supportsVision) {
       return {
         images: [],
+        withheld: imageRecords.length,
         imageNotes: [
           `[${imageRecords.length} image attachment(s): ${imageRecords.map((a) => a.name).join(", ")} — the active model has no vision support, so they are not inlined. Use reference_zoom_image to inspect them via the configured vision fallback.]`,
         ],
@@ -3670,7 +3713,7 @@ ${this._pendingRewindNote}`;
     if (imageRecords.length > ChatProvider._VISION_MAX_IMAGES) {
       imageNotes.push(`[${imageRecords.length - ChatProvider._VISION_MAX_IMAGES} more image attachment(s) not inlined — inspect them with reference_zoom_image.]`);
     }
-    return { images, imageNotes };
+    return { images, imageNotes, withheld: 0 };
   }
 
   /** Describe attached images before a text-only model begins its turn. This makes a configured
@@ -4061,7 +4104,7 @@ ${this._pendingRewindNote}`;
     content: string,
     meta?: { inputChars: number; promptPreview: string; mentionCount: number; contextLabel?: string },
     images?: ImageBlock[],
-    request?: { requestMode?: RequestMode; preserveRequestMode?: boolean; userText?: string },
+    request?: { requestMode?: RequestMode; preserveRequestMode?: boolean; userText?: string; withheldImages?: number },
   ): Promise<void> {
     if (!this._session) return;
 
@@ -4109,7 +4152,7 @@ ${this._pendingRewindNote}`;
           else if (event.type === "error") summary.errored = true;
           this._handleAgentEvent(event, turnId);
         },
-        { images, requestMode: request?.requestMode, preserveRequestMode: request?.preserveRequestMode, userText: request?.userText },
+        { images, requestMode: request?.requestMode, preserveRequestMode: request?.preserveRequestMode, userText: request?.userText, withheldImages: request?.withheldImages },
       );
     } catch (err) {
       // Safety net: covers (a) isRunning guard throw, (b) any unhandled rejection

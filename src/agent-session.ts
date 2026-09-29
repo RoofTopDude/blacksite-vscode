@@ -1,4 +1,6 @@
 import type * as vscode from "vscode";
+import * as fs from "fs";
+import * as path from "path";
 import type { HookInput, HookOutcome, HookProvider } from "./hooks.js";
 import { browserTool, redactBrowserPayload } from "./browser/privacy.js";
 import type { LocalRuntime, McpServer } from "@blacksite/local-runtime";
@@ -670,6 +672,11 @@ const INTERNAL_AUTO_CONTINUE_PROMPT = [
   "Otherwise, take the next step based on the latest tool result.",
 ].join("\n");
 
+/** Shown with every completion reminder. The lists are the harness's own bookkeeping, and the agent
+ *  is the one who notices when it has fallen behind what is on disk. */
+const DELETED_PATH_HINT = "A path marked (deleted) no longer exists: check what depended on it (its importers, or the tests that covered it), not the path itself.";
+const WORKSPACE_REFRESH_HINT = "If an entry looks out of date (a scratch file you already removed, a change made outside your tools), call workspace_refresh to re-sync these lists and the diagnostics with the disk before checking anything.";
+
 /**
  * The end-of-turn completion reminder: outstanding Codebase Map notes, outstanding verification,
  * or both, in one message.
@@ -683,6 +690,7 @@ const INTERNAL_AUTO_CONTINUE_PROMPT = [
 function completionReminderPrompt(
   notePaths: string[] | undefined,
   verification: { paths: string[]; failedDetail?: string } | undefined,
+  debtHint: string,
 ): string {
   const lines = ["[Internal continuation]", "Before you finish:"];
   if (notePaths?.length) {
@@ -698,6 +706,7 @@ function completionReminderPrompt(
       + "Prefer a targeted test. If no applicable test exists, run code_diagnostics for the changed files; for interactive UI, retained browser evidence also qualifies. Fix failures when they are caused by these edits.",
     );
   }
+  lines.push(debtHint);
   lines.push("Then write your complete final answer again, even if you already gave one: only the text you write after these tool calls is treated as your reply.");
   if (verification?.paths.length) {
     lines.push("If verification is impossible because the project lacks a runnable check, say so in that answer after attempting the best available check.");
@@ -1386,8 +1395,10 @@ export interface AgentSessionOptions {
   referenceProvider?: ReferenceToolProvider;
   /** Backs the skill_* tools with the workspace/user/bundled skill catalog. */
   skillProvider?: SkillToolProvider;
-  /** True when the active model can see image content blocks directly. */
-  supportsVision?: boolean;
+  /** True when the active model can see image content blocks directly. A function is read on every
+   *  use, so capability metadata that arrives after the session was built (a live model catalog)
+   *  still applies to it. */
+  supportsVision?: boolean | (() => boolean);
   /** Describes an image via a secondary model, for reference_zoom_image when supportsVision is false. */
   visionFallbackProvider?: VisionFallbackProvider;
   /** Backs the file_edit tool with a diff-preview-and-apply flow in the editor. */
@@ -1400,6 +1411,12 @@ export interface AgentSessionOptions {
    * follow-up code_diagnostics round.
    */
   mutationDiagnosticsProvider?: (paths: string[]) => Promise<unknown | undefined>;
+  /** Workspace-relative paths VS Code still holds diagnostics for that are gone from disk. Backs
+   *  workspace_refresh's report of which diagnostics are stale. */
+  staleDiagnosticFiles?: () => string[];
+  /** Every open workspace folder. Tracked paths from language-server edits are relative to their
+   *  own folder, and map ids lead with its name, so "is this file still on disk" needs them all. */
+  workspaceRoots?: () => string[];
   /**
    * Snapshots the files each tool call is about to write so the change can be reopened as a
    * VS Code diff later (host-side, needs vscode — see edit-diff-journal.ts). Purely
@@ -1618,6 +1635,17 @@ export interface TranscriptDocumentProvider {
   dispatch(op: string, payload: Record<string, unknown>, ctx: { sessionId: string }): Promise<Record<string, unknown>>;
 }
 
+/** Options for {@link AgentSession.send}. */
+export interface SendOptions {
+  images?: ImageBlock[];
+  requestMode?: RequestMode;
+  preserveRequestMode?: boolean;
+  userText?: string;
+  /** Image attachments the caller left out because the model is not vision-capable, so the turn
+   *  can say so where the user will see it rather than only in a note to the model. */
+  withheldImages?: number;
+}
+
 // ── AgentSession ───────────────────────────────────────────────────────────────
 
 export class AgentSession {
@@ -1721,6 +1749,19 @@ export class AgentSession {
   /** Files changed since the last explicit test/diagnostic/evidence check. */
   private _verification: VerificationGateState = { status: "idle", files: [] };
   private _verificationEnforcementCount = 0;
+  /** The verification state an editing episode started from, so that when every file in it turns
+   *  out to be a scratch file the session created and deleted, the gate goes back to where it was
+   *  rather than to idle. Not persisted: after a restore the fallback is idle. */
+  private _verificationBeforeEdits: VerificationGateState | undefined;
+  /** Workspace-relative paths this session created with file_write. A created file that is gone
+   *  again nets out to no change, so it owes no verification and no map note. */
+  private _createdFiles = new Set<string>();
+  /** Whether this turn has already told the user that images are being kept from the model. Once
+   *  per turn: a screenshot-heavy run would otherwise repeat it for every capture. */
+  private _visionNoticeIssued = false;
+  /** Images a tool round produced that the model did not see, and whether the vision fallback
+   *  described them instead. Drained into one diagnostic after the round. */
+  private _withheldToolImages: Array<{ toolName: string; described: boolean }> = [];
   /** Last complete tool round, ignoring ephemeral tool-call ids. Used only to detect an
       exact no-new-evidence loop; legitimate multi-step investigation never trips it. */
   private _lastToolRoundFingerprint = "";
@@ -1914,19 +1955,20 @@ export class AgentSession {
   private _completionChecklist(): string {
     const items: string[] = [];
     if (this._dirtyMapFiles.size > 0 && this._mapNoteToolUsable()) {
-      items.push(`- A Codebase Map note (map_note_add) for each edited file: ${checklistPaths([...this._dirtyMapFiles])}`);
+      items.push(`- A Codebase Map note (map_note_add) for each edited file: ${checklistPaths(this._describeDebtPaths([...this._dirtyMapFiles]))}`);
     }
     if ((this._verification.status === "pending" || this._verification.status === "failed")
       && this._verification.files.length > 0
       && this._verificationToolUsable()) {
       const failed = this._verification.status === "failed" ? " (the last check failed)" : "";
-      items.push(`- A verification check after your last edit — a targeted test, code_diagnostics, or UI evidence — covering: ${checklistPaths(this._verification.files)}${failed}`);
+      items.push(`- A verification check after your last edit — a targeted test, code_diagnostics, or UI evidence — covering: ${checklistPaths(this._describeDebtPaths(this._verification.files))}${failed}`);
     }
     if (items.length === 0) return "";
     return [
       "# Before your final answer",
       "Still outstanding from your edits. Do these after your last edit and before you write your final answer, so that the answer is the last thing you write:",
       ...items,
+      this._debtHint(),
     ].join("\n");
   }
 
@@ -1953,7 +1995,23 @@ export class AgentSession {
   /** Whether this session's model can see image content blocks. Callers building image
    *  payloads must consult THIS (not a fresh capability resolve) so the text note and the
    *  actual blocks can never disagree about what the model receives. */
-  get supportsVision(): boolean { return this.opts.supportsVision === true; }
+  get supportsVision(): boolean {
+    const value = this.opts.supportsVision;
+    return (typeof value === "function" ? value() : value) === true;
+  }
+
+  /** The user-facing notice for images the model did not receive, or null once already given
+   *  this turn. `what` is the subject of the sentence ("2 attached images were"). */
+  private _visionWithheldNotice(what: string, described: boolean): string | null {
+    if (this._visionNoticeIssued) return null;
+    this._visionNoticeIssued = true;
+    const reason = `${this.opts.model} is not recognised as a vision model`;
+    if (described) return `${what} not shown to the model: ${reason}, so the configured vision fallback described the content in text instead.`;
+    const remedy = this.opts.visionFallbackProvider
+      ? "The configured vision fallback could not describe the content either."
+      : "Pick a vision-capable model, or set an Image fallback model in Settings > Media & system so images are at least described.";
+    return `${what} not shown to the model: ${reason}. ${remedy}`;
+  }
 
   private _modelStateKey(): string {
     return `${this.provider}:${this.opts.model.trim().toLowerCase()}`;
@@ -1994,6 +2052,7 @@ export class AgentSession {
       noteEnforcementCount: this._noteEnforcementCount || undefined,
       verification: this._verification.status !== "idle" ? { ...this._verification, files: [...this._verification.files] } : undefined,
       verificationEnforcementCount: this._verificationEnforcementCount || undefined,
+      createdFiles: this._createdFiles.size > 0 ? [...this._createdFiles] : undefined,
     };
     if (includeFullHistory) state.fullHistory = stripImagesForPersistence(this._fullHistory);
     return state;
@@ -2046,6 +2105,8 @@ export class AgentSession {
       ? { ...state.verification, files: [...state.verification.files] }
       : { status: "idle", files: [] };
     this._verificationEnforcementCount = state.verificationEnforcementCount ?? 0;
+    this._verificationBeforeEdits = undefined;
+    this._createdFiles = new Set((state.createdFiles ?? []).filter((entry) => typeof entry === "string"));
     this._isCompacting = false;
     if (sameModel) this._providerTurnSession.importState?.(state.providerState);
   }
@@ -2116,6 +2177,18 @@ export class AgentSession {
       }
       return;
     }
+    /* A deleted file can never be annotated (map_note_add refuses a path that is not on the map),
+       so asking for a note on one only burns reminders. A move leaves nothing at the source. */
+    if (toolName === "file_delete" || toolName === "file_move") {
+      const gone = toolName === "file_delete" ? [r.path, r.relativePath] : [r.source];
+      for (const value of gone) {
+        if (typeof value !== "string" || !value) continue;
+        this._dirtyMapFiles.delete(normalizeStoredPath(value));
+        this._dirtyMapFiles.delete(this._canonicalPath(value));
+      }
+      if (this._dirtyMapFiles.size === 0) this._noteEnforcementCount = 0;
+      return;
+    }
     if (toolName === "map_note_add" || toolName === "map_note_update" || toolName === "map_link") {
       const note = r.note as { from?: unknown; to?: unknown } | undefined;
       if (note && typeof note === "object") {
@@ -2137,11 +2210,29 @@ export class AgentSession {
     ]);
 
     if (ok && mutationTools.has(toolName)) {
-      const paths = verificationPaths(toolName, call, row);
-      const outstanding = this._verification.status === "pending" || this._verification.status === "failed"
-        ? this._verification.files
-        : [];
-      const files = [...new Set([...outstanding, ...paths].map(normalizeStoredPath).filter(Boolean))];
+      const outstanding = this._outstandingVerificationFiles();
+      if (outstanding.length === 0) this._verificationBeforeEdits = { ...this._verification, files: [...this._verification.files] };
+      // Canonical, so the absolute path a tool reports and the relative one it was given are one file.
+      let added = this._canonicalPaths(verificationPaths(toolName, call, row));
+      let removed: string[] = [];
+      if (toolName === "file_write" && row.created === true) for (const file of added) this._createdFiles.add(file);
+      if (toolName === "file_delete") {
+        /* Deleting a file this session created nets out to no change: it owes no check. The
+           deletion of a file that existed before is a real change, and stays pending. */
+        removed = added;
+        added = added.filter((file) => !this._createdFiles.delete(file));
+      } else if (toolName === "file_move") {
+        // Nothing is left at the source to check; the destination carries the change.
+        removed = this._canonicalPaths([row.source, call.source]);
+        const destinations = this._canonicalPaths([row.destination, call.destination]);
+        if (removed.some((file) => this._createdFiles.delete(file))) for (const file of destinations) this._createdFiles.add(file);
+        added = destinations;
+      }
+      const files = [...new Set([...outstanding.filter((file) => !removed.includes(file)), ...added])];
+      if (files.length === 0) {
+        this._settleVerification();
+        return { ...row, verification: this._verification };
+      }
       this._verification = {
         status: "pending",
         files,
@@ -2152,6 +2243,8 @@ export class AgentSession {
       return { ...row, verification: this._verification };
     }
 
+    // A check aimed at a file that no longer exists checked nothing, so it neither passes nor fails.
+    if (row.code === "file_missing") return result;
     const method = verificationMethod(toolName, call);
     if (!method || this._verification.files.length === 0) return result;
     const passed = verificationPassed(toolName, row, ok);
@@ -2165,6 +2258,141 @@ export class AgentSession {
     };
     if (passed) this._verificationEnforcementCount = 0;
     return { ...row, verification: this._verification };
+  }
+
+  /**
+   * workspace_refresh: bring the harness's own bookkeeping back in line with the disk, on the
+   * agent's request. The automatic pass each iteration only drops files this session created; here
+   * the agent has said the lists look wrong, so map-note debt for any missing file goes too, and
+   * the map index and diagnostics are re-read rather than waited for.
+   *
+   * Deliberately not a verification method. Fresh diagnostics for the pending files come back as
+   * information; a check still has to be run on purpose, so this can never quietly clear the gate.
+   */
+  private async _handleWorkspaceRefresh(): Promise<Record<string, unknown>> {
+    const dropped = this._reconcileEditDebtWithDisk({ includePreexisting: true });
+    let mapIndex: { appliedChanges: number } | undefined;
+    try { mapIndex = await this.opts.graphProvider?.syncIndex?.(); } catch { /* the map is an enrichment */ }
+    await this._refreshWorkspaceContext();
+
+    const pending = this._outstandingVerificationFiles();
+    const onDisk = pending.filter((file) => this._pathExists(file));
+    let diagnostics: unknown;
+    if (onDisk.length > 0 && this.opts.mutationDiagnosticsProvider) {
+      try { diagnostics = await this.opts.mutationDiagnosticsProvider(onDisk); } catch { /* reported as absent */ }
+    }
+    let staleDiagnostics: string[] | undefined;
+    try { staleDiagnostics = this.opts.staleDiagnosticFiles?.(); } catch { /* optional */ }
+
+    const outstanding: string[] = [];
+    if (pending.length > 0) {
+      outstanding.push(`verification (${this._verification.status}): ${this._describeDebtPaths(pending).join(", ")}`);
+    }
+    if (this._dirtyMapFiles.size > 0 && this._mapNoteToolUsable()) {
+      outstanding.push(`map notes: ${[...this._dirtyMapFiles].join(", ")}`);
+    }
+    return {
+      ok: true,
+      droppedReminders: dropped,
+      outstanding,
+      ...(mapIndex ? { mapIndex } : {}),
+      ...(staleDiagnostics?.length ? { staleDiagnosticsFor: staleDiagnostics } : {}),
+      ...(diagnostics !== undefined ? { diagnostics } : {}),
+      note: outstanding.length === 0
+        ? "Nothing is outstanding. The workspace state in your next turn reflects the disk."
+        : "Still outstanding as listed. Diagnostics for deleted files are stale and already excluded from the workspace state; run a check for what remains.",
+    };
+  }
+
+  private _debtHint(): string {
+    return this._disabledTools.has("workspace_refresh") ? DELETED_PATH_HINT : `${DELETED_PATH_HINT} ${WORKSPACE_REFRESH_HINT}`;
+  }
+
+  private _outstandingVerificationFiles(): string[] {
+    return this._verification.status === "pending" || this._verification.status === "failed"
+      ? this._verification.files
+      : [];
+  }
+
+  /** Nothing is left to verify: every file the episode changed was a scratch file the session
+   *  created and removed again. Back to the state the episode started from. */
+  private _settleVerification(): void {
+    this._verification = this._verificationBeforeEdits ?? { status: "idle", files: [] };
+    this._verificationBeforeEdits = undefined;
+    this._verificationEnforcementCount = 0;
+  }
+
+  /** Workspace-relative with forward slashes when the path is inside the workspace. */
+  private _canonicalPath(value: string): string {
+    const normalized = normalizeStoredPath(value);
+    if (!path.isAbsolute(normalized)) return normalized;
+    const relative = path.relative(this.opts.workspaceRoot, normalized);
+    return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? normalizeStoredPath(relative) : normalized;
+  }
+
+  private _canonicalPaths(values: unknown[]): string[] {
+    return [...new Set(values
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => this._canonicalPath(value))
+      .filter(Boolean))];
+  }
+
+  /** Whether a tracked path is on disk, in any workspace folder. An error reads as present: debt
+   *  is only ever dropped on positive evidence that the file is gone. */
+  private _pathExists(value: string): boolean {
+    try {
+      if (path.isAbsolute(value)) return fs.existsSync(value);
+      const roots = [this.opts.workspaceRoot, ...(this.opts.workspaceRoots?.() ?? [])];
+      if (roots.some((root) => fs.existsSync(path.join(root, value)))) return true;
+      // Multi-root map ids lead with the folder's name.
+      const [head, ...rest] = value.split("/");
+      return rest.length > 0 && roots.some((root) => path.basename(root) === head && fs.existsSync(path.join(root, ...rest)));
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * Drop completion debt for files that are gone from disk, and return what was dropped.
+   *
+   * The gates used to learn about a file only through the tool that touched it. A scratch script
+   * the agent wrote to check something and then removed — with `rm`, `git clean`, or even
+   * file_delete, which counted as one more edit — stayed on the list, and the closing reminders
+   * asked for a test or a map note for a file that no longer existed. Neither could succeed
+   * (map_note_add refuses a missing file, code_diagnostics had nothing to open), so the session
+   * spent its whole reminder budget on it.
+   *
+   * By default only files this session created are dropped: they net out to no change. A file that
+   * existed before and was deleted is a real change, so its verification stays pending; with
+   * `includePreexisting` (the agent's own workspace_refresh) its map-note debt is dropped too,
+   * since a missing file cannot carry a note.
+   */
+  private _reconcileEditDebtWithDisk(options: { includePreexisting?: boolean } = {}): string[] {
+    const dropped = new Set<string>();
+    const outstanding = this._outstandingVerificationFiles();
+    const vanishedCreations = outstanding.filter((file) => this._createdFiles.has(file) && !this._pathExists(file));
+    if (vanishedCreations.length > 0) {
+      for (const file of vanishedCreations) dropped.add(file);
+      const files = outstanding.filter((file) => !vanishedCreations.includes(file));
+      if (files.length === 0) this._settleVerification();
+      else this._verification = { ...this._verification, files, updatedAt: Date.now() };
+    }
+    for (const entry of [...this._dirtyMapFiles]) {
+      const file = this._canonicalPath(entry);
+      if ((options.includePreexisting || this._createdFiles.has(file)) && !this._pathExists(entry)) {
+        this._dirtyMapFiles.delete(entry);
+        dropped.add(file);
+      }
+    }
+    if (this._dirtyMapFiles.size === 0) this._noteEnforcementCount = 0;
+    for (const file of dropped) this._createdFiles.delete(file);
+    return [...dropped];
+  }
+
+  /** Paths for a reminder, with the ones no longer on disk marked so the agent checks what
+   *  depended on them rather than trying to open them. */
+  private _describeDebtPaths(paths: readonly string[]): string[] {
+    return paths.map((file) => this._pathExists(file) ? file : `${file} (deleted)`);
   }
 
   private _verificationToolUsable(): boolean {
@@ -3027,6 +3255,7 @@ export class AgentSession {
    * useful. Used for reference_zoom_image and browser_screenshot alike.
    */
   private async _extractImageForModel(
+    toolName: string,
     result: Record<string, unknown>,
     field: string,
     pendingImages: ImageBlock[],
@@ -3050,7 +3279,7 @@ export class AgentSession {
       return { ...rest, _imageError: `The image could not be prepared for the model: ${err instanceof Error ? err.message : String(err)}` };
     }
 
-    if (this.opts.supportsVision) {
+    if (this.supportsVision) {
       pendingImages.push({ type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } });
       return { ...rest, imageAttached: true };
     }
@@ -3060,11 +3289,14 @@ export class AgentSession {
           this.opts.visionFallbackProvider.describeImage(image.mediaType, image.data, describeInstruction),
           new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("Vision fallback timed out after 30s")), 30_000)),
         ]);
+        this._withheldToolImages.push({ toolName, described: true });
         return { ...rest, description, _visionNote: "Described via the configured vision fallback model — the active model has no vision support." };
       } catch (err) {
+        this._withheldToolImages.push({ toolName, described: false });
         return { ...rest, _visionFallbackError: err instanceof Error ? err.message : String(err) };
       }
     }
+    this._withheldToolImages.push({ toolName, described: false });
     return { ...rest, _visionNote: "Image captured, but the active model has no vision support and no vision fallback is configured — only metadata is available." };
   }
 
@@ -3130,7 +3362,7 @@ export class AgentSession {
     const mapped: Record<string, unknown>[] = [];
     for (const step of steps) {
       mapped.push(step["action"] === "screenshot"
-        ? await this._extractImageForModel(step, "dataUrl", pendingImages, describeInstruction)
+        ? await this._extractImageForModel("browser_run_script", step, "dataUrl", pendingImages, describeInstruction)
         : step);
     }
     return { ...result, steps: mapped };
@@ -3685,7 +3917,7 @@ export class AgentSession {
    * reviewers that judge intent (auto mode, loop approvals, the plan conductor) must see the
    * user's words, not the context that rode along with them or the harness talking to itself.
    */
-  async *send(userContent: string, sendOpts?: { images?: ImageBlock[]; requestMode?: RequestMode; preserveRequestMode?: boolean; userText?: string }): AsyncGenerator<AgentEvent> {
+  async *send(userContent: string, sendOpts?: SendOptions): AsyncGenerator<AgentEvent> {
     let stopReason = "cancelled";
     try {
       // Harness continuations and delegated instructions are not user submissions.
@@ -3736,7 +3968,7 @@ export class AgentSession {
     return outcome.blocked ? { ok: false, error: outcome.blocked } : null;
   }
 
-  private async *_sendCore(userContent: string, sendOpts?: { images?: ImageBlock[]; requestMode?: RequestMode; preserveRequestMode?: boolean; userText?: string }): AsyncGenerator<AgentEvent> {
+  private async *_sendCore(userContent: string, sendOpts?: SendOptions): AsyncGenerator<AgentEvent> {
     const typed = sendOpts?.userText?.trim();
     if (typed) {
       this._userPrompts.push(typed.length > MAX_RECORDED_PROMPT_CHARS ? `${typed.slice(0, MAX_RECORDED_PROMPT_CHARS)}…` : typed);
@@ -3750,7 +3982,17 @@ export class AgentSession {
     // User-attached images become real vision blocks in the user turn when the model can see
     // them. A non-vision model gets the text only — the caller substitutes a text note and the
     // reference_* tools (with the vision fallback) remain the inspection path.
-    const userImages = this.opts.supportsVision ? sendOpts?.images : undefined;
+    const supportsVision = this.supportsVision;
+    const userImages = supportsVision ? sendOpts?.images : undefined;
+    this._visionNoticeIssued = false;
+    this._withheldToolImages = [];
+    const withheldAttachments = (sendOpts?.withheldImages ?? 0) + (supportsVision ? 0 : sendOpts?.images?.length ?? 0);
+    const attachmentNotice = withheldAttachments > 0
+      ? this._visionWithheldNotice(
+        `${withheldAttachments} attached image${withheldAttachments === 1 ? " was" : "s were"}`,
+        !!this.opts.visionFallbackProvider,
+      )
+      : null;
     this._providerTurnSession.appendUserText(userContent, userImages);
     this._lastStopReason = undefined;
     this._pendingGate = undefined;
@@ -3759,6 +4001,7 @@ export class AgentSession {
     // given in; carrying it into a later request would approve work the user has not seen yet.
     this._approvalGrants.clear();
     yield { type: "runtime_state", state: this.runtimeState };
+    if (attachmentNotice) yield { type: "execution_diagnostic", level: "warn", message: attachmentNotice };
     if (!this.opts.contextLength && !this._contextLengthWarned) {
       this._contextLengthWarned = true;
       yield {
@@ -3792,6 +4035,16 @@ export class AgentSession {
       // Refresh again after every tool round, not only after a new user message, so
       // the agent never plans its next edit against pre-edit diagnostics or topology.
       await this._refreshWorkspaceContext();
+      // Before the model sees its checklist: a scratch file it created and has since removed (by any
+      // means, shell included) no longer owes a check or a note.
+      const reconciled = this._reconcileEditDebtWithDisk();
+      if (reconciled.length > 0) {
+        yield {
+          type: "execution_diagnostic",
+          level: "info",
+          message: `Dropped completion reminders for files this session created and has since deleted: ${reconciled.join(", ")}.`,
+        };
+      }
 
       // Surface any diagnostics from a background compaction that finished since the last
       // iteration (a background task can't yield into the stream itself).
@@ -4180,7 +4433,7 @@ export class AgentSession {
             this._noteEnforcementCount = 0;
           } else if (this._noteEnforcementCount < MAX_NOTE_ENFORCEMENT_CONTINUATIONS) {
             this._noteEnforcementCount += 1;
-            noteReminderPaths = [...this._dirtyMapFiles];
+            noteReminderPaths = this._describeDebtPaths([...this._dirtyMapFiles]);
             yield {
               type: "execution_diagnostic",
               level: "info",
@@ -4215,7 +4468,7 @@ export class AgentSession {
           } else if (this._verificationEnforcementCount < MAX_VERIFICATION_ENFORCEMENT_CONTINUATIONS) {
             this._verificationEnforcementCount += 1;
             verificationReminder = {
-              paths: [...this._verification.files],
+              paths: this._describeDebtPaths(this._verification.files),
               failedDetail: this._verification.status === "failed" ? this._verification.detail : undefined,
             };
             yield {
@@ -4239,7 +4492,7 @@ export class AgentSession {
         }
 
         if (noteReminderPaths || verificationReminder) {
-          this._providerTurnSession.appendUserText(completionReminderPrompt(noteReminderPaths, verificationReminder));
+          this._providerTurnSession.appendUserText(completionReminderPrompt(noteReminderPaths, verificationReminder, this._debtHint()));
           yield { type: "runtime_state", state: this.runtimeState };
           continue;
         }
@@ -4734,6 +4987,8 @@ export class AgentSession {
                     { sessionId: this.sessionId },
                   );
                 }
+              } else if (runtimeType === "session.workspace_refresh") {
+                result = await this._handleWorkspaceRefresh();
               } else if (runtimeType === "session.tool_output_page") {
                 result = this._toolOutput.page(payload);
               } else if (runtimeType === "session.tool_output_search") {
@@ -5078,32 +5333,32 @@ export class AgentSession {
             let modelResult: unknown = result;
             if (ok && tc.name === "reference_zoom_image") {
               modelResult = await this._extractImageForModel(
-                result as Record<string, unknown>, "mediaDataUrl", pendingImages,
+                tc.name, result as Record<string, unknown>, "mediaDataUrl", pendingImages,
                 "Describe this cropped/zoomed image region in detail — visible text, UI elements, colors, and anything relevant to why it was zoomed in on.",
               );
             } else if (ok && tc.name === "sequence_inspect"
               && typeof (result as Record<string, unknown>)["mediaDataUrl"] === "string") {
               modelResult = await this._extractImageForModel(
-                result as Record<string, unknown>, "mediaDataUrl", pendingImages,
+                tc.name, result as Record<string, unknown>, "mediaDataUrl", pendingImages,
                 "Inspect this retained run artifact as evidence. Describe the visible state precisely, and distinguish observations from conclusions.",
               );
             } else if (ok && tc.name === "file_read" && typeof (result as Record<string, unknown>)["mediaDataUrl"] === "string") {
               // file_read on an image file returns a data URL rather than text — hand the model
               // the real picture, exactly as reference_zoom_image/browser_screenshot already do.
               modelResult = await this._extractImageForModel(
-                result as Record<string, unknown>, "mediaDataUrl", pendingImages,
+                tc.name, result as Record<string, unknown>, "mediaDataUrl", pendingImages,
                 "Describe this image file in detail — visible text, layout, UI elements, colors, and anything relevant to why it was opened.",
               );
             } else if (ok && tc.name === "browser_screenshot") {
               modelResult = await this._extractImageForModel(
-                result as Record<string, unknown>, "dataUrl", pendingImages,
+                tc.name, result as Record<string, unknown>, "dataUrl", pendingImages,
                 "Describe this browser screenshot in detail — visible text, layout, UI elements, colors, and anything relevant to verifying the page rendered correctly.",
               );
             } else if (ok && tc.name === "ui_preview_render") {
               // The whole point of this tool is that the agent *looks* at its own preview before
               // the user does, so the screenshot has to arrive as a real vision block.
               modelResult = await this._extractImageForModel(
-                result as Record<string, unknown>, "dataUrl", pendingImages,
+                tc.name, result as Record<string, unknown>, "dataUrl", pendingImages,
                 "Review this rendered UI preview as the user will see it. Judge layout, spacing, hierarchy, typography, "
                 + "state treatment and whether it reads as a finished piece of the product — and name specifically what to fix.",
               );
@@ -5158,6 +5413,16 @@ export class AgentSession {
         }
       }
 
+      if (this._withheldToolImages.length) {
+        const withheld = this._withheldToolImages;
+        this._withheldToolImages = [];
+        const tools = [...new Set(withheld.map((entry) => entry.toolName))].join(", ");
+        const notice = this._visionWithheldNotice(
+          `${withheld.length} image${withheld.length === 1 ? "" : "s"} from ${tools} ${withheld.length === 1 ? "was" : "were"}`,
+          withheld.every((entry) => entry.described),
+        );
+        if (notice) yield { type: "execution_diagnostic", level: "warn", message: notice };
+      }
       this._providerTurnSession.appendToolResults(toolResults, pendingImages.length ? pendingImages : undefined);
       yield { type: "runtime_state", state: this.runtimeState };
 
