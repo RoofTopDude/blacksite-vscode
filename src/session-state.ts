@@ -74,6 +74,12 @@ export interface PersistedSessionState {
    *  travel with the checkpoint so a resumed run follows the procedure it was actually
    *  following, not whatever that skill file happens to say now. */
   loadedSkills?: Array<{ name: string; markdown: string }>;
+  /** Tools loaded through tool_search (on-demand loading), and the tool_search results a native
+   *  Anthropic request expands into tool_reference blocks. */
+  loadedTools?: string[];
+  toolReferenceResults?: Array<{ toolUseId: string; names: string[] }>;
+  /** What the user typed, one entry per user message (see AgentSession.send). */
+  userPrompts?: string[];
   compressedSummary?: string;
   compressionCount?: number;
   lastInputTokens?: number;

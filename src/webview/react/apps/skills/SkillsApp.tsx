@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { post, onMessage } from "@/lib/bridge";
 
-type Origin = "workspace" | "user" | "bundled";
+type Origin = "workspace" | "user" | "plugin" | "bundled";
 type Severity = "error" | "warning";
 
 interface Issue { severity: Severity; field: string; message: string }
@@ -17,6 +17,10 @@ interface Skill {
   name: string;
   description: string;
   origin: Origin;
+  /** The folder it came from: ".claude/skills", "~/.agents/skills", "plugin: x", "built-in". */
+  location: string;
+  /** Blacksite's own folder (.blacksite/skills): the only one it deletes from. */
+  managed: boolean;
   enabled: boolean;
   available: boolean;
   unavailableReason?: string;
@@ -43,15 +47,31 @@ const EMPTY_DRAFT: Draft = { name: "", description: "", body: "", scope: "", req
 const ORIGIN_LABEL: Record<Origin, string> = {
   workspace: "workspace",
   user: "personal",
+  plugin: "plugin",
   bundled: "built-in",
 };
 
 /** The origin badge doubles as the answer to "why can't I delete this one". */
 const ORIGIN_HINT: Record<Origin, string> = {
-  workspace: "Committed in .blacksite/skills — shared with everyone on this repository.",
-  user: "Private to you, in ~/.blacksite/skills.",
+  workspace: "Committed in the repository (.blacksite/skills, or the shared .agents, .claude and .github skill folders) — shared with everyone on it.",
+  user: "Private to you, in ~/.blacksite/skills or the shared ~/.agents, ~/.claude and ~/.copilot skill folders.",
+  plugin: "Provided by an enabled Agent Plugin. Manage plugins with Blacksite: Manage Plugins.",
   bundled: "Ships with Blacksite. Copy it to the workspace to make a version this repo owns.",
 };
+
+/** Host messages quote commands and paths in backticks ("Requires `wrangler`"); show those
+ *  as code rather than literal backticks. */
+function InlineCode({ text }: { text: string }) {
+  return (
+    <>
+      {text.split(/(`[^`]+`)/).map((part, index) => (
+        part.length > 2 && part.startsWith("`") && part.endsWith("`")
+          ? <code key={index} className="rounded bg-white/[0.06] px-1 font-mono">{part.slice(1, -1)}</code>
+          : part
+      ))}
+    </>
+  );
+}
 
 function splitList(value: string): string[] {
   return value.split(",").map((entry) => entry.trim()).filter(Boolean);
@@ -134,7 +154,7 @@ export function SkillsApp() {
   const canSave = draft.name.trim() !== "" && draft.description.trim() !== "" && errors.length === 0;
 
   const grouped = useMemo(() => {
-    const order: Origin[] = ["workspace", "user", "bundled"];
+    const order: Origin[] = ["workspace", "user", "plugin", "bundled"];
     return order
       .map((origin) => ({ origin, items: skills.filter((skill) => skill.origin === origin) }))
       .filter((group) => group.items.length > 0);
@@ -147,7 +167,7 @@ export function SkillsApp() {
       <div className="border-b border-border px-3 py-2.5">
         <PanelHeader
           title="Skills"
-          eyebrow="Procedures the agent loads on demand"
+          eyebrow="On-demand procedures"
           sub={
             skills.length === 0
               ? "No skills installed yet."
@@ -164,7 +184,7 @@ export function SkillsApp() {
 
       <div className="flex-1 overflow-y-auto px-3 py-3">
         {composing && (
-          <div className="mb-4 rounded-md border border-border bg-surface p-3">
+          <div className="mb-4 rounded-md border border-border bg-card p-3">
             <div className="mb-3 rounded border border-border/70 bg-background/40 p-2.5">
               <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-foreground">
                 <Sparkles className="size-3.5" /> Describe it and let the agent draft it
@@ -176,7 +196,7 @@ export function SkillsApp() {
                 onChange={(event) => setAgentPrompt(event.target.value)}
               />
               <div className="mt-1.5 flex items-center justify-between gap-2">
-                <span className="text-[11px] text-muted-foreground">
+                <span className="text-2xs text-muted-foreground">
                   Composes the request in chat. You send it, and review the draft before it saves.
                 </span>
                 <Button
@@ -199,7 +219,7 @@ export function SkillsApp() {
                   placeholder="release-cut"
                   onChange={(event) => updateDraft({ name: event.target.value.toLowerCase() })}
                 />
-                <p className="mt-1 text-[11px] text-muted-foreground">Lowercase kebab-case. Also the folder name.</p>
+                <p className="mt-1 text-2xs text-muted-foreground">Lowercase kebab-case. Also the folder name.</p>
               </div>
 
               <div>
@@ -211,7 +231,7 @@ export function SkillsApp() {
                   placeholder="Cut a release: version bump, changelog section, package and verify the vsix. Use when the user asks to release, cut a version, or publish a build."
                   onChange={(event) => updateDraft({ description: event.target.value })}
                 />
-                <p className="mt-1 text-[11px] text-muted-foreground">
+                <p className="mt-1 text-2xs text-muted-foreground">
                   {draft.description.length}/{descriptionMax} · This is the only part the agent sees before loading —
                   it decides whether the skill is ever used. Say what it does <em>and</em> what should trigger it.
                 </p>
@@ -222,12 +242,12 @@ export function SkillsApp() {
                 <Textarea
                   id="skill-body"
                   rows={10}
-                  className="font-mono text-[11px]"
+                  className="font-mono text-2xs"
                   value={draft.body}
                   placeholder={"# What this covers\n\nWhen this applies, and when it does not.\n\n## Steps\n\n1. …"}
                   onChange={(event) => updateDraft({ body: event.target.value })}
                 />
-                <p className="mt-1 text-[11px] text-muted-foreground">
+                <p className="mt-1 text-2xs text-muted-foreground">
                   Markdown. Keep it under ~{recommendedBodyLines} lines; move deep detail into reference/ files.
                 </p>
               </div>
@@ -255,8 +275,8 @@ export function SkillsApp() {
             </div>
 
             {shadowWarning && (
-              <p className="mt-2.5 flex items-start gap-1.5 text-[11px] text-warning">
-                <AlertTriangle className="mt-px size-3 shrink-0" />{shadowWarning}
+              <p className="mt-2.5 flex items-start gap-1.5 text-2xs text-warn">
+                <AlertTriangle className="mt-px size-3 shrink-0" /><span><InlineCode text={shadowWarning} /></span>
               </p>
             )}
             {(errors.length > 0 || warnings.length > 0) && (
@@ -264,9 +284,9 @@ export function SkillsApp() {
                 {[...errors, ...warnings].map((issue, index) => (
                   <li
                     key={`${issue.field}-${index}`}
-                    className={`text-[11px] ${issue.severity === "error" ? "text-destructive" : "text-muted-foreground"}`}
+                    className={`text-2xs ${issue.severity === "error" ? "text-destructive" : "text-muted-foreground"}`}
                   >
-                    <span className="font-medium">{issue.field}</span> — {issue.message}
+                    <span className="font-medium">{issue.field}</span> — <InlineCode text={issue.message} />
                   </li>
                 ))}
               </ul>
@@ -312,7 +332,7 @@ function SkillRow({ skill }: { skill: Skill }) {
   const blocking = skill.issues.filter((issue) => issue.severity === "error");
 
   return (
-    <div className="rounded-md border border-border bg-surface px-2.5 py-2">
+    <div className="rounded-md border border-border bg-card px-2.5 py-2">
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <button
@@ -321,14 +341,14 @@ function SkillRow({ skill }: { skill: Skill }) {
             onClick={() => setExpanded((open) => !open)}
           >
             <span className="truncate text-xs font-medium text-foreground">{skill.name}</span>
-            {skill.mode && <span className="shrink-0 text-[10px] text-muted-foreground">{skill.mode}</span>}
+            {skill.mode && <span className="shrink-0 text-2xs text-muted-foreground">{skill.mode}</span>}
             {skill.shadows.length > 0 && (
-              <span className="shrink-0 text-[10px] text-muted-foreground" title={`Overrides the ${skill.shadows.join(" and ")} copy.`}>
+              <span className="shrink-0 text-2xs text-muted-foreground" title={`Overrides the ${skill.shadows.join(" and ")} copy.`}>
                 overrides {skill.shadows.join(", ")}
               </span>
             )}
           </button>
-          <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-muted-foreground">{skill.description}</p>
+          <p className="mt-0.5 line-clamp-2 text-2xs leading-snug text-muted-foreground">{skill.description}</p>
         </div>
         <Switch
           checked={skill.enabled}
@@ -338,13 +358,13 @@ function SkillRow({ skill }: { skill: Skill }) {
       </div>
 
       {!skill.available && skill.unavailableReason !== "disabled" && (
-        <p className="mt-1.5 flex items-start gap-1.5 text-[11px] text-warning">
-          <AlertTriangle className="mt-px size-3 shrink-0" />{skill.unavailableReason}
+        <p className="mt-1.5 flex items-start gap-1.5 text-2xs text-warn">
+          <AlertTriangle className="mt-px size-3 shrink-0" /><span><InlineCode text={skill.unavailableReason ?? ""} /></span>
         </p>
       )}
       {blocking.map((issue, index) => (
-        <p key={index} className="mt-1.5 text-[11px] text-destructive">
-          <span className="font-medium">{issue.field}</span> — {issue.message}
+        <p key={index} className="mt-1.5 text-2xs text-destructive">
+          <span className="font-medium">{issue.field}</span> — <InlineCode text={issue.message} />
         </p>
       ))}
 
@@ -353,12 +373,13 @@ function SkillRow({ skill }: { skill: Skill }) {
           {skill.scope.length > 0 && <Detail label="Scope" value={skill.scope.join(", ")} />}
           {skill.requires.length > 0 && <Detail label="Requires" value={skill.requires.join(", ")} />}
           {skill.files.length > 0 && <Detail label="Bundled files" value={skill.files.join(", ")} />}
+          <Detail label="From" value={skill.location} />
           <Detail label="Body" value={`${skill.bodyLines} lines`} />
           <div className="flex flex-wrap gap-1.5 pt-0.5">
             <Button size="sm" variant="ghost" onClick={() => post({ type: "open_skill", name: skill.name })}>
               <FileText className="size-3.5" />Open SKILL.md
             </Button>
-            {skill.origin === "workspace" && (
+            {skill.managed && (
               <Button size="sm" variant="ghost" onClick={() => post({ type: "delete_skill", name: skill.name })}>
                 <Trash2 className="size-3.5" />Delete
               </Button>
@@ -372,7 +393,7 @@ function SkillRow({ skill }: { skill: Skill }) {
 
 function Detail({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex gap-1.5 text-[11px]">
+    <div className="flex gap-1.5 text-2xs">
       <span className="shrink-0 text-muted-foreground">{label}</span>
       <span className="min-w-0 break-words text-foreground/80">{value}</span>
     </div>

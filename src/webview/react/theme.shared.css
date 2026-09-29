@@ -324,7 +324,11 @@
   z-index: 40;
   top: calc(100% + 4px);
   left: 0;
-  right: 0;
+  /* At least as wide as the trigger, wider when an option needs it, never wider than the
+     panel. Select flips it to data-align="end" when it would overflow the right edge. */
+  min-width: 100%;
+  width: max-content;
+  max-width: calc(100vw - 16px);
   max-height: 240px;
   overflow-y: auto;
   padding: 3px;
@@ -340,6 +344,10 @@
 .bls-select[data-side="top"] .bls-select-list {
   top: auto;
   bottom: calc(100% + 4px);
+}
+.bls-select[data-align="end"] .bls-select-list {
+  left: auto;
+  right: 0;
 }
 
 .bls-select-option {

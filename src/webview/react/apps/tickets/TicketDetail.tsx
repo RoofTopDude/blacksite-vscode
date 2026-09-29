@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 import { absoluteTime, basename, shortRelative } from "./format";
 import { AssigneeIcon, PriorityIcon, StatusIcon } from "./icons";
 import {
-  ASSIGNEE_LABEL, ASSIGNEE_ORDER, COMPLEXITY_ORDER, PRIORITY_LABEL, PRIORITY_ORDER,
+  ASSIGNEE_LABEL, ASSIGNEE_ORDER, COMPLEXITY_LABEL, COMPLEXITY_ORDER, PRIORITY_LABEL, PRIORITY_ORDER,
   STATUS_LABEL, STATUS_ORDER,
   type LinkablePlan, type ResolvedTerritory, type Ticket, type TicketEvent,
 } from "./types";
@@ -417,7 +417,7 @@ export function TicketDetail({
               value={ticket.complexity ?? ""}
               options={[
                 { value: "", label: "Unsized" },
-                ...COMPLEXITY_ORDER.map((complexity) => ({ value: complexity, label: complexity })),
+                ...COMPLEXITY_ORDER.map((complexity) => ({ value: complexity, label: COMPLEXITY_LABEL[complexity] })),
               ]}
               onChange={(complexity) => set({ complexity })}
             />

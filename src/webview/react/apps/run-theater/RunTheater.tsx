@@ -48,7 +48,12 @@ export function RunTheater() {
   useTransportShortcuts(state);
 
   if (state.loading) {
-    return <div className="theater-root flex h-screen items-center justify-center"><span className="pulse-dot" /></div>;
+    return (
+      <div className="theater-root flex h-screen items-center justify-center gap-2 text-xs text-muted-foreground">
+        <span className="pulse-dot" />
+        Loading run…
+      </div>
+    );
   }
   if (!run) {
     return (

@@ -439,6 +439,35 @@ function isVersionProbe(args: string[]): boolean {
   return args.length > 0 && args.every((arg) => ["--version", "-version", "-V", "-v"].includes(arg));
 }
 
+/** git subcommands that only read the repository. `stash`, `branch`, `remote`, `reflog` and friends
+ *  are absent on purpose: each has a mutating form spelled with the same subcommand. */
+const READ_ONLY_GIT_SUBCOMMANDS = new Set([
+  "status", "log", "diff", "show", "blame", "ls-files", "ls-tree", "rev-parse", "describe",
+  "shortlog", "grep", "cat-file", "merge-base",
+]);
+
+/**
+ * True only for a command that cannot change anything, whatever else is true of it: an inspection
+ * binary from the no-write set, a bare version probe, or a read-only git subcommand without an
+ * output-file flag. Deliberately stricter than the approval tiers, which answer a different
+ * question ("does this need a prompt?") and rate plenty of writers as silent. Plan mode relies on it.
+ */
+export function isReadOnlyCommand(command: string, args: string[]): boolean {
+  if (hasExecutablePath(command)) return false;
+  const base = normalizeCommandName(command);
+  const list = args.map(String);
+  if (READ_ONLY_INSPECTION_BINARIES.has(base)) return true;
+  if (isVersionProbe(list)) return true;
+  if (base === "git") {
+    const sub = list[0] ?? "";
+    if (!READ_ONLY_GIT_SUBCOMMANDS.has(sub)) return false;
+    // `--output=<file>` makes diff/log/show write a file; `-c`/`--exec-path` style options only
+    // appear before the subcommand, which the check above already rejects.
+    return !list.some((arg) => arg === "--output" || arg.startsWith("--output=") || arg === "--ext-diff");
+  }
+  return false;
+}
+
 /**
  * Development commands can load scripts, plugins, hooks, repository configuration, or an entire
  * nested shell even when their nominal subcommand looks read-only (`git status` may launch a

@@ -285,7 +285,7 @@ export function NotesApp() {
     <div className="notes-root h-screen w-full overflow-y-auto text-foreground">
       <div className="mx-auto flex w-full max-w-[760px] flex-col px-5 pb-16 pt-6">
         <header className="notes-header sticky top-0 z-10 -mx-5 px-5 pb-3 pt-1">
-          <div className="map-eyebrow">Project Relay · Working memory</div>
+          <div className="map-eyebrow">Blacksite · Working memory</div>
           <div className="flex items-baseline justify-between gap-3">
             <h1 className="text-xl font-semibold text-foreground">Map notes — {workspaceName}</h1>
             <span className="shrink-0 text-xs text-muted-foreground">

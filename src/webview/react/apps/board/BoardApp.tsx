@@ -200,7 +200,7 @@ export function BoardApp() {
                   {!isCollapsed && (
                     <div className="board-column-body">
                       {shown.length === 0 ? (
-                        <div className="board-column-empty">Nothing in {STATUS_LABEL[status].toLowerCase()}</div>
+                        <div className="board-column-empty">No tickets</div>
                       ) : shown.map((entry) => (
                         <div key={entry.id} data-ticket-id={entry.id}>
                           <TicketCard

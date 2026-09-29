@@ -58,6 +58,8 @@ import { RunFocusCoordinator } from "./runs/run-focus-coordinator.js";
 import { WindowsDesktopCaptureService } from "./sequences/windows-desktop-capture.js";
 import { DiagramViewer, MermaidCodeLensProvider } from "./diagrams/diagram-viewer.js";
 import { extendMarkdownItWithMermaid } from "./diagrams/markdown-preview-mermaid.js";
+import { PluginRegistry } from "./plugins/plugin-registry.js";
+import { installPluginFromFolder, managePlugins, pluginEntryActionHandler } from "./plugins/plugin-commands.js";
 
 let chatProvider: ChatProvider | undefined;
 
@@ -107,7 +109,21 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   /* Bundled skills are staged to out/skills by esbuild.mjs, so they resolve the same way in
      a packaged VSIX and in a dev host. A missing directory is fine — the store simply finds
      no bundled origin and lists whatever the workspace and the user have. */
-  const skills = new SkillStore(workspaceRoot, path.join(context.extensionUri.fsPath, "out", "skills"));
+  /* Agent Plugins (see src/plugins/). Created before the skill store, which lists enabled
+     plugins' skills, and wired into the MCP registry below. PLUGIN_DATA folders live in the
+     extension's global storage, outside every workspace. */
+  const plugins = new PluginRegistry(
+    workspaceRoot,
+    context.workspaceState,
+    context.globalState,
+    path.join(context.globalStorageUri.fsPath, "plugin-data"),
+  );
+  const skills = new SkillStore(
+    workspaceRoot,
+    path.join(context.extensionUri.fsPath, "out", "skills"),
+    undefined,
+    () => plugins.skillSources(),
+  );
   /* Tickets derive their status from the plan executing them, and resolve their declared
      territory against the live Codebase Map index — both read lazily so the store stays
      independently constructible (and unit-testable) without either. */
@@ -249,6 +265,7 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
      chat provider reads them on the next tool call, and both watch the same change event. */
   const mcpRegistry = new McpRegistry(context, () => getGraphRoots().map((root) => root.path));
   context.subscriptions.push(mcpRegistry, { dispose: () => closeMcpConnections() });
+  mcpRegistry.setPluginSource(() => plugins.mcpEntries(), pluginEntryActionHandler(plugins));
 
   chatProvider = new ChatProvider(
     context,
@@ -858,6 +875,28 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     }),
   );
 
+  // ── Agent Plugins ──────────────────────────────────────────
+  // A plugin change moves skills and MCP servers at once, so both catalogs refresh together.
+  context.subscriptions.push(plugins.onDidChange(() => {
+    skills.invalidate();
+    skillsProvider.refresh();
+    mcpRegistry.notifyPluginsChanged();
+  }));
+  try {
+    const pluginWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(workspaceRoot, "{.blacksite,.agents}/plugins/**"),
+    );
+    const onPluginFiles = () => plugins.invalidate();
+    pluginWatcher.onDidChange(onPluginFiles);
+    pluginWatcher.onDidCreate(onPluginFiles);
+    pluginWatcher.onDidDelete(onPluginFiles);
+    context.subscriptions.push(pluginWatcher);
+  } catch { /* no workspace folder — user plugins still load */ }
+  context.subscriptions.push(
+    vscode.commands.registerCommand("blacksite.managePlugins", () => managePlugins(plugins)),
+    vscode.commands.registerCommand("blacksite.installPlugin", () => installPluginFromFolder(plugins)),
+  );
+
   // ── Skills ─────────────────────────────────────────────────
   context.subscriptions.push(
     vscode.commands.registerCommand("blacksite.openSkills", () => {
@@ -868,9 +907,9 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     }),
     vscode.commands.registerCommand("blacksite.skills.copyToWorkspace", async (name?: string) => {
       const target = name ?? (await vscode.window.showQuickPick(
-        skills.list().filter((skill) => skill.origin !== "workspace").map((skill) => ({
+        skills.list().filter((skill) => !skill.managed).map((skill) => ({
           label: skill.name,
-          description: skill.origin,
+          description: skill.location,
           detail: skill.description,
         })),
         { title: "Copy Skill To Workspace", placeHolder: "Pick a built-in or personal skill to fork" },

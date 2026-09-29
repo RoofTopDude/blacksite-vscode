@@ -53,19 +53,46 @@ export interface EditApprovalRequest {
   /** One sentence from the model on why this change, rendered as its own element on the
    *  approval card rather than folded into `summary`'s prose. */
   rationale?: string;
+  /** Workspace-relative paths the edit touches (text and resource operations alike). Lets an
+   *  approver decide by *where* a change lands, not only by how it is described. */
+  paths?: string[];
 }
 
 export type EditApprovalProvider = (request: EditApprovalRequest) => Promise<"apply" | "all" | "reject" | null>;
 
-export interface WorkspaceEditApplyOptions {
-  summary: string;
-  autoApprove: boolean;
-  expectedVersions?: ReadonlyMap<string, number>;
+/**
+ * Per-request routing a caller threads through to the applier untouched — from an agent tool
+ * call, through the edit or language-server service, to here. One type, so a new hook reaches
+ * every mutation path at once instead of being copied field by field into each call site.
+ */
+export interface EditRouting {
   /** A request-local approver takes precedence over the interactive chat provider. This is
    *  what keeps simultaneous unattended loop lanes scoped to their own ticket reviewer. */
   approvalProvider?: EditApprovalProvider;
   /** Unattended runs must not steal editor focus by opening proposal tabs. */
   showPreview?: boolean;
+  /** Decide per request whether diff previews open; takes precedence over showPreview. Auto
+   *  mode uses it to preview only the edits it will hand to a person. */
+  shouldPreview?: (request: EditApprovalRequest) => boolean;
+  /** Called with the workspace-relative paths an approved edit is about to change, before it is
+   *  applied: the last moment their previous content still exists (rewind snapshots it). */
+  beforeApply?: (paths: string[]) => Promise<void>;
+}
+
+/** The routing fields of an options object, for passing on to the applier. */
+export function editRouting(options: EditRouting): EditRouting {
+  return {
+    approvalProvider: options.approvalProvider,
+    showPreview: options.showPreview,
+    shouldPreview: options.shouldPreview,
+    beforeApply: options.beforeApply,
+  };
+}
+
+export interface WorkspaceEditApplyOptions extends EditRouting {
+  summary: string;
+  autoApprove: boolean;
+  expectedVersions?: ReadonlyMap<string, number>;
   rationale?: string;
 }
 
@@ -137,7 +164,7 @@ export class WorkspaceEditApplier {
     let decision: "apply" | "all" | "reject" = "apply";
     // Resource operations always receive explicit approval, even after Apply All.
     if (!opts.autoApprove || resourceOperations > 0 || inspection.snippetEdits > 0) {
-      decision = await this._previewAndConfirm(entries, opts.summary, inspection, opts.approvalProvider, opts.showPreview !== false, opts.rationale);
+      decision = await this._previewAndConfirm(entries, opts.summary, inspection, opts);
       if (decision === "reject") return result(false, files, edits, inspection, true, "rejected");
     }
 
@@ -146,6 +173,10 @@ export class WorkspaceEditApplier {
       return result(false, files, edits, inspection, false, "conflict");
     }
 
+    if (opts.beforeApply) {
+      // An enrichment (rewind snapshots): its failure must never block the approved edit.
+      try { await opts.beforeApply(inspection.touchedUris.map((uri) => this._rel(uri))); } catch { /* see above */ }
+    }
     const applied = await vscode.workspace.applyEdit(edit);
     if (!applied) return result(false, files, edits, inspection, false, "apply_failed");
     const saveUris = [
@@ -185,11 +216,22 @@ export class WorkspaceEditApplier {
     entries: ReadonlyArray<[vscode.Uri, readonly vscode.TextEdit[]]>,
     summary: string,
     inspection: WorkspaceEditInspection,
-    approvalProvider: EditApprovalProvider | undefined,
-    showPreview: boolean,
-    rationale?: string,
+    opts: WorkspaceEditApplyOptions,
   ): Promise<"apply" | "all" | "reject"> {
+    const { approvalProvider, rationale } = opts;
     const resourceOperations = inspection.resourceOperations.length + inspection.opaqueResourceOperations;
+    const requestBase: Omit<EditApprovalRequest, "summary"> = {
+      fileCount: Math.max(entries.length, inspection.touchedUris.length),
+      resourceOperations: resourceOperations || undefined,
+      resourceOperationDetails: inspection.resourceOperations.map((operation) => this._resourceOperationLabel(operation)),
+      destructive: inspection.destructive || undefined,
+      snippetEdits: inspection.snippetEdits || undefined,
+      rationale,
+      paths: inspection.touchedUris.map((uri) => this._rel(uri)),
+    };
+    const showPreview = opts.shouldPreview
+      ? opts.shouldPreview({ summary, ...requestBase })
+      : opts.showPreview !== false;
     try {
       if (showPreview) {
         for (const [uri, edits] of entries.slice(0, MAX_PREVIEW_DIFFS)) {
@@ -218,17 +260,7 @@ export class WorkspaceEditApplier {
       ].filter(Boolean).join("\n");
 
       const provider = approvalProvider ?? this._approvalProvider;
-      let outcome = provider
-        ? await provider({
-            summary: detail,
-            fileCount: Math.max(entries.length, inspection.touchedUris.length),
-            resourceOperations: resourceOperations || undefined,
-            resourceOperationDetails: inspection.resourceOperations.map((operation) => this._resourceOperationLabel(operation)),
-            destructive: inspection.destructive || undefined,
-            snippetEdits: inspection.snippetEdits || undefined,
-            rationale,
-          })
-        : null;
+      let outcome = provider ? await provider({ summary: detail, ...requestBase }) : null;
       if (!outcome) {
         const choice = await vscode.window.showWarningMessage(
           `Apply Blacksite changes to ${filesLabel(entries.length, resourceOperations)}?`,

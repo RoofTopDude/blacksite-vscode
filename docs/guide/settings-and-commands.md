@@ -17,6 +17,10 @@ The defaults are intended to be usable. If you are looking for a button or comma
 [Commands](#commands); the settings tables are technical reference for the cases where you
 deliberately want different behavior.
 
+Lifecycle scripts are configured through the user-only `blacksite.hooks.commands` setting
+(default: no hooks). See [Lifecycle hooks](approvals-and-safety.html#lifecycle-hooks) for
+the events, JSON protocol, blocking behavior, and examples.
+
 ## Finding your way around
 
 The view switcher at the top of every Blacksite panel lists all workspace views and recent

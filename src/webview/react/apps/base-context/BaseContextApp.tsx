@@ -5,12 +5,24 @@ import { PanelHeader } from "@/components/PanelHeader";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { post, onMessage } from "@/lib/bridge";
+import { formatRelativeTime } from "@/lib/format";
 
 interface FileRef { id: string; path: string; addedAt?: string; }
 interface Topic { id: string; title: string; notes: string; enabled: boolean; pinned: boolean; updatedAt?: string; createdAt?: string; files: FileRef[]; }
 interface Doc { topics: Topic[]; }
 
 const EMPTY: Doc = { topics: [] };
+
+/** The host stores ISO timestamps; show them relative, with the exact time on hover. */
+function TopicUpdated({ at }: { at?: string }) {
+  const ms = at ? Date.parse(at) : NaN;
+  const valid = Number.isFinite(ms);
+  return (
+    <span className="text-xs text-muted-foreground" title={valid ? new Date(ms).toLocaleString() : undefined}>
+      Updated {(valid && formatRelativeTime(ms)) || "recently"}
+    </span>
+  );
+}
 
 export function BaseContextApp() {
   const [doc, setDoc] = useState<Doc>(EMPTY);
@@ -176,7 +188,7 @@ export function BaseContextApp() {
                   </div>
 
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs text-muted-foreground">Updated {topic.updatedAt || topic.createdAt || "recently"}</span>
+                    <TopicUpdated at={topic.updatedAt || topic.createdAt} />
                     <div className="flex gap-1.5">
                       <Button size="xs" variant="outline" onClick={() => post({ type: "add_file_to_topic", topicId: topic.id })}>Add active file</Button>
                       <Button size="xs" variant="ghost" onClick={() => post({ type: "delete_topic", topicId: topic.id })}>Delete</Button>

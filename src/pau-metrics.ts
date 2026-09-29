@@ -41,6 +41,9 @@ export interface PauCaptureInput {
    * everything downstream gates on.
    */
   toolSchemas?: unknown;
+  /** Tool definitions this turn kept out of context (on-demand loading). Never counted as context;
+   *  estimated only so a receipt can show what loading them on demand saved. */
+  deferredToolSchemas?: unknown;
   /** The turn's token classes kept apart. Collapsing them into one total, as this used to do,
    *  discards the entire subject of cache economics: they differ by up to 20x in price. */
   usage?: { input: number; cacheRead: number; cacheWrite: number };
@@ -110,6 +113,10 @@ export interface PauReceiptSummary {
   topHogs: PauReceiptTopHog[];
   /** Tokens attributable to the wire tool catalog, counted for the first time. */
   toolSchemaTokens?: number;
+  /** Estimated tokens of tool definitions deferred this turn — the catalog that would otherwise
+   *  have been in context. Scaled from the in-context segment's own tokens-per-character, so the
+   *  two figures share one tokenizer and compare directly. */
+  deferredToolSchemaTokens?: number;
   cache?: PauCacheObservation;
   economics?: PauEconomicsSummary;
   /** Advisory only. Rendered for a human; never fed back into the model's context. */
@@ -131,6 +138,12 @@ export function pauTraceFormatFor(provider: string, useResponsesApi?: boolean, b
   if (provider === "openai" || provider === "openrouter") return "openai";
   if (provider === "bedrock") return bedrockApi === "mantle" ? "anthropic" : null;
   return null;
+}
+
+function schemaChars(schemas: unknown): number {
+  if (schemas === undefined) return 0;
+  const text = typeof schemas === "string" ? schemas : JSON.stringify(schemas);
+  return text && text !== "[]" ? text.length : 0;
 }
 
 export function capturePauReceipt(input: PauCaptureInput): PauReceipt {
@@ -248,6 +261,12 @@ export function capturePauReceipt(input: PauCaptureInput): PauReceipt {
       },
     };
     if (toolSegment) summary.toolSchemaTokens = toolSegment.tokens;
+    const deferredChars = schemaChars(input.deferredToolSchemas);
+    if (deferredChars > 0) {
+      const inContextChars = schemaChars(input.toolSchemas);
+      const tokensPerChar = toolSegment && inContextChars > 0 ? toolSegment.tokens / inContextChars : 0.25;
+      summary.deferredToolSchemaTokens = Math.round(deferredChars * tokensPerChar);
+    }
     if (observation) summary.cache = observation;
 
     // The plan is the only part of this that reads the full segment array, and it is discarded

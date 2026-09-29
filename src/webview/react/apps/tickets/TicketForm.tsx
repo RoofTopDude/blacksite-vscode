@@ -21,7 +21,7 @@ import { cn } from "@/lib/utils";
 import { PriorityIcon, StatusIcon, AssigneeIcon } from "./icons";
 import { PickerField, TokenField } from "./TokenField";
 import {
-  ASSIGNEE_LABEL, ASSIGNEE_ORDER, COMPLEXITY_ORDER, PRIORITY_LABEL, PRIORITY_ORDER,
+  ASSIGNEE_LABEL, ASSIGNEE_ORDER, COMPLEXITY_LABEL, COMPLEXITY_ORDER, PRIORITY_LABEL, PRIORITY_ORDER,
   STATUS_LABEL, STATUS_ORDER,
   type LinkablePlan, type Ticket, type TicketAssignee, type TicketComplexity,
   type TicketPriority, type TicketReference, type TicketStatus,
@@ -412,7 +412,7 @@ export function TicketForm({ draft, onChange, plans, selfId, compact }: TicketFo
             placeholder="Unsized"
             options={[
               { value: "", label: "Unsized" },
-              ...COMPLEXITY_ORDER.map((complexity) => ({ value: complexity, label: complexity })),
+              ...COMPLEXITY_ORDER.map((complexity) => ({ value: complexity, label: COMPLEXITY_LABEL[complexity] })),
             ]}
             onChange={(complexity) => set("complexity", complexity as TicketComplexity | "")}
           />

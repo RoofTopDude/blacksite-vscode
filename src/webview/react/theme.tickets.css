@@ -40,11 +40,11 @@
 .filter-bar.is-compact { padding: 6px 10px; gap: 5px; }
 
 .filter-bar-row.is-tabs-only { overflow: hidden; }
-.filter-select { width: 7.5rem; }
-.filter-bar-row.is-controls .filter-select:last-child { width: 9rem; }
+/* Sized to the selected value ("Sort: Recently updated" is twice "Group: Area"), so neither
+   truncates while the board has room to spare. */
+.filter-select { width: max-content; min-width: 7.5rem; max-width: 16rem; }
 /* In a sidebar the two selects share whatever is left after the Filter button. */
-.filter-bar.is-compact .filter-select,
-.filter-bar.is-compact .filter-bar-row.is-controls .filter-select:last-child {
+.filter-bar.is-compact .filter-select {
   width: auto;
   min-width: 0;
   flex: 1;
@@ -571,7 +571,10 @@
    first, and a property list sitting above the title reads as a form rather than a ticket. */
 .ticket-detail-title {
   flex-shrink: 0;
-  padding: 10px 14px 0;
+  /* The title stays put while the fields below scroll. Without a seam, a half-scrolled
+     field is clipped flush against the title's descenders and reads as overlapping it. */
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  padding: 10px 14px 9px;
   color: var(--foreground);
   font-size: 15px;
   font-weight: 640;

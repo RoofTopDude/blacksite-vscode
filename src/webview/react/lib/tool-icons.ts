@@ -65,6 +65,7 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "subagent_spawn": case "subagent_followup": return "delegate";
     case "tool_output_page": return "page";
     case "tool_output_search": return "search";
+    case "tool_search": return "search";
     case "mcp_list_tools": case "mcp_call_tool": return "mcp";
     case "question_card": return "question";
     // Both exist to make a question card's previews faithful, so they read as part of the same

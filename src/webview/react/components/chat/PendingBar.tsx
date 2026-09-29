@@ -1,11 +1,23 @@
 import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight, ExternalLink, LayoutPanelTop } from "lucide-react";
 import { actions, useStore } from "@/lib/store";
-import { pendingItemsOf } from "@/lib/chat-model";
+import { pendingItemsOf, type PendingItem } from "@/lib/chat-model";
 import { useBrowserGates } from "@/lib/research-store";
 import { ApprovalButtons } from "./ToolLog";
 import { BrowserProposalBody, BrowserProposalPlaceholder } from "./BrowserApprovals";
 import { hasQuestionPreviewGallery, QuestionSetBody } from "./QuestionCard";
+import { StatusPill, type SignalTone } from "./signal";
+
+const TIER_TONE: Record<string, SignalTone> = { destructive: "err", write: "warn", network: "info" };
+
+/** What kind of operation is being gated — the one signal worth reading before the command
+ *  itself. An unrecognized binary's tier is a low-confidence guess, so that takes its place. */
+function ApprovalTier({ item }: { item: PendingItem }) {
+  const label = item.unrecognized ? "unrecognized command" : item.tier.replace(/_/g, "-");
+  if (!label) return null;
+  const tone: SignalTone = item.unrecognized ? "warn" : TIER_TONE[item.tier] ?? "idle";
+  return <StatusPill tone={tone} className="shrink-0 text-2xs">{label}</StatusPill>;
+}
 
 /**
  * Docked "action needed" bar — always visible above the input box regardless of where
@@ -41,6 +53,7 @@ export function PendingBar() {
               ? (item.questions && item.questions.length > 1 ? `Questions (${item.questions.length})` : "Question")
               : item.kind === "browser" ? "Web access" : "Approval needed"}
           </span>
+          {item.kind === "approval" && <ApprovalTier item={item} />}
           {item.laneLabel && (
             <span className="truncate rounded-full bg-white/10 px-1.5 py-0.5 text-2xs text-muted-foreground">
               in {item.laneLabel}
@@ -104,7 +117,21 @@ export function PendingBar() {
           ) : <QuestionSetBody turnId={item.turnId} toolCallId={item.toolCallId} items={item.questions} />
         ) : (
           <>
-            <div className="mb-2 text-base font-medium leading-snug text-foreground">{item.title}</div>
+            {/* pre-line: an edit approval's description is a headline plus a per-file summary,
+                and a sequence's is one line per gated step — collapsed, they ran together. */}
+            <div className="mb-2 whitespace-pre-line text-base font-medium leading-snug text-foreground [overflow-wrap:anywhere]">{item.title}</div>
+            {item.kind === "approval" && item.rationale && (
+              <div className="mb-2 flex items-start gap-1.5">
+                <StatusPill tone="info" className="text-2xs">Why</StatusPill>
+                <span className="text-xs leading-snug text-foreground">{item.rationale}</span>
+              </div>
+            )}
+            {item.kind === "approval" && item.reviewNote && (
+              <div className="mb-2 flex items-start gap-1.5">
+                <StatusPill tone="warn" className="text-2xs">Auto mode asks</StatusPill>
+                <span className="text-xs leading-snug text-foreground">{item.reviewNote}</span>
+              </div>
+            )}
             {item.kind === "browser"
               ? (item.proposal ? <BrowserProposalBody key={item.proposal.id} proposal={item.proposal} /> : <BrowserProposalPlaceholder />)
               : <ApprovalButtons turnId={item.turnId} toolCallId={item.toolCallId} binary={item.binary} />}

@@ -9,13 +9,13 @@
 import { describe, expect, it } from "vitest";
 import { ALL_TOOL_NAMES, TOOL_GROUPS, TOOL_LABELS } from "../../src/webview/react/lib/format.js";
 import { toolIconCategory } from "../../src/webview/react/lib/tool-icons.js";
-import { ALL_TOOLS, UI_TOOLS } from "../../src/tools/definitions.js";
+import { ALL_TOOLS, TOOL_LOADING_TOOLS, UI_TOOLS } from "../../src/tools/definitions.js";
 
-/** UI_TOOLS are appended after the disabled-tool filter in AgentSession._getTools() —
+/** UI_TOOLS (and the on-demand loader, tool_search) are appended after the disabled-tool filter in AgentSession._getTools() —
     deliberately always on, so they have no switch. Derived from the catalog rather than listed by
     hand: this file exists because hand-maintained mirrors of the tool list drift, and a literal
     here would be one more of them. */
-const ALWAYS_ON_TOOLS = new Set(UI_TOOLS.map((tool) => tool.name));
+const ALWAYS_ON_TOOLS = new Set([...UI_TOOLS, ...TOOL_LOADING_TOOLS].map((tool) => tool.name));
 
 const definedNames = new Set(ALL_TOOLS.map((tool) => tool.name));
 

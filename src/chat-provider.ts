@@ -1,4 +1,5 @@
 import { bindWorkspaceUi } from "./workspace-ui-host.js";
+import { configuredHooks } from "./hook-settings.js";
 import { ResearchHost, type BrowserGateEvent } from "./browser/research-host.js";
 import * as vscode from "vscode";
 import * as fs from "fs";
@@ -9,6 +10,8 @@ import { AgentSession, stripImagesForPersistence, type ProviderName } from "./ag
 import { resolvePreviewProjectCss } from "./preview-assets.js";
 import type {
   AgentEvent,
+  ApprovalReviewRequest,
+  ApprovalReviewVerdict,
   BaseAgentEvent,
   ThinkingConfig,
   OpenAIReasoningEffort,
@@ -37,10 +40,18 @@ import type { PlanContinuationService } from "./plans/plan-continuation-service.
 import type { SequenceToolProvider } from "./sequences/sequence-service.js";
 import type { LoopToolProvider } from "./loops/loop-tool-provider.js";
 import { createLoopEditProvider, createLoopLspProvider, stopLaneOnApprovalDenial } from "./loops/loop-approval-routing.js";
-import { DiffEditService } from "./diff-edit-service.js";
+import { DiffEditService, type EditProvider } from "./diff-edit-service.js";
 import { collectForUris } from "./post-edit-diagnostics.js";
-import { LspService } from "./lsp-service.js";
-import { WorkspaceEditApplier } from "./workspace-edit-applier.js";
+import { LspService, type LspProvider } from "./lsp-service.js";
+import { WorkspaceEditApplier, type EditApprovalRequest } from "./workspace-edit-applier.js";
+import {
+  createAutoModeEditProvider,
+  createAutoModeLspProvider,
+  triageAutoApproval,
+  type ApprovalMode,
+} from "./auto-approval-policy.js";
+import { reviewChatApproval } from "./continuation/approval-review.js";
+import { describeRewind, RewindRegistry, rewindNote, untrackedEffect, type RewindScope } from "./rewind.js";
 import { EditDiffJournal } from "./edit-diff-journal.js";
 import { SecretStore } from "./secret-store.js";
 import { SessionStore } from "./session-store.js";
@@ -112,6 +123,7 @@ import {
   delegatedLanePrompt,
   extractLatestAssistantText,
   followUpLanePrompt,
+  laneRequestMode,
   isLaneTimeoutReason,
   laneFailureNextStep,
   laneTimeoutDetail,
@@ -371,6 +383,17 @@ const PROVIDER_DEFAULTS: Record<ProviderName, ProviderSettings> = {
 };
 
 
+/** User-role messages the harness writes itself. None of them is something the user said. */
+const HARNESS_MESSAGE_PREFIXES = [
+  "[tool_result", "[Automatic plan continuation]", "[Internal", "[Resumed from checkpoint]",
+  "Your last response was cut off",
+];
+
+/** `blacksite.tools.loadOnDemand`, read on every request so a toggle applies to the running chat. */
+function readToolLoading(): "on_demand" | "all" {
+  return vscode.workspace.getConfiguration("blacksite.tools").get<boolean>("loadOnDemand", true) ? "on_demand" : "all";
+}
+
 function normalizeModelIdForLookup(modelId: string): string {
   const trimmed = modelId.trim().toLowerCase();
   const slashIndex = trimmed.lastIndexOf("/");
@@ -504,6 +527,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _applier: WorkspaceEditApplier;
   private _editService: DiffEditService;
   private _lspService: LspService;
+  /** The same services behind chat auto mode (see auto-approval-policy.ts). They behave exactly
+   *  like the plain ones in ask mode, so chat sessions and chat lanes always use these. */
+  private _autoEditService: EditProvider;
+  private _autoLspService: LspProvider;
+  /** A rewind point per turn of the active conversation (see rewind.ts). */
+  private readonly _rewind = new RewindRegistry();
+  /** Told to the model with the next message after a code-only or conversation-only rewind. */
+  private _pendingRewindNote = "";
   /** Before/after snapshots per tool call, so any edit the agent made can be reopened as a
    *  real VS Code diff from the transcript row that reported it. */
   private _editDiffs: EditDiffJournal;
@@ -585,6 +616,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._applier.setApprovalProvider((req) => this._requestEditApproval(req));
     this._editService = new DiffEditService(_workspaceRoot, this._applier);
     this._lspService = new LspService(_workspaceRoot, this._applier, () => this._runtime.toolchainRoots().readable);
+    const autoEditDeps = {
+      mode: () => this._approvalMode(),
+      escalate: (request: EditApprovalRequest) => this._requestEditApproval(request),
+    };
+    this._autoEditService = createAutoModeEditProvider(this._editService, autoEditDeps);
+    this._autoLspService = createAutoModeLspProvider(this._lspService, autoEditDeps);
     this._editDiffs = new EditDiffJournal(_workspaceRoot);
     this._logger = new ExecutionLogger(_workspaceRoot, _context);
     this._questionComparison = new QuestionComparisonPanel(_context, (toolCallId, answers) => {
@@ -599,6 +636,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     // the webview is re-sent settings rather than left on the old value until a reload.
     this._context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("blacksite.bedrock")) void this._sendSettingsToWebview();
+      if (event.affectsConfiguration("blacksite.permissions.approvalMode")) this._postApprovalMode();
     }));
     this._context.subscriptions.push({ dispose: () => this._memoryIndex?.dispose() });
     this._context.subscriptions.push(this._questionComparison);
@@ -733,6 +771,108 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * `blacksite.permissions.approvalMode`, from user settings only. A repository's workspace
+   * settings must not be able to switch a user into auto mode, so any workspace value is ignored.
+   */
+  /** Which turns of the active conversation can be rewound, for the rewind control on each
+   *  user message. Empty while a run is live: rewinding under a running turn is refused. */
+  private _postRewindPoints(): void {
+    const sessionId = this._session?.sessionId;
+    this._post({ type: "rewind_points", turnIds: sessionId && !this._liveTurnId ? this._rewind.turnIds(sessionId) : [] });
+  }
+
+  /**
+   * Rewind to before a turn. Shows exactly what will change first — files restored or removed,
+   * files that changed since and lose those changes, files that cannot be restored, and effects
+   * outside the edit history that nothing can undo — then does what the user picks.
+   */
+  private async _handleRewindRequest(turnId: string): Promise<void> {
+    if (this._runner.busy || this._liveTurnId) {
+      void vscode.window.showInformationMessage("Stop the current run before rewinding.");
+      return;
+    }
+    const session = this._session;
+    const point = this._rewind.get(turnId);
+    if (!session || !point || point.sessionId !== session.sessionId) {
+      void vscode.window.showInformationMessage("That message can no longer be rewound. Rewind covers messages sent since this window opened.");
+      this._postRewindPoints();
+      return;
+    }
+    const untracked = this._rewind.from(turnId).flatMap((later) => later.untracked);
+    const plan = await this._editDiffs.planRestore(point.journalSeq);
+    const both = "Restore code and conversation";
+    const conversationOnly = "Restore conversation only";
+    const codeOnly = "Restore code only";
+    const choices = plan.files.length ? [both, conversationOnly, codeOnly] : [conversationOnly];
+    const picked = await vscode.window.showWarningMessage(
+      "Rewind to before this message?",
+      { modal: true, detail: describeRewind(plan, untracked) },
+      ...choices,
+    );
+    const scope: RewindScope | null = picked === both ? "both" : picked === conversationOnly ? "conversation" : picked === codeOnly ? "code" : null;
+    if (!scope) return;
+    // The run may have started while the dialog was open.
+    if (this._runner.busy || this._liveTurnId || this._session !== session) return;
+
+    const changedPaths = plan.files.map((file) => file.path);
+    let summary = "";
+    if (scope !== "conversation" && plan.files.length) {
+      const outcome = await this._editDiffs.applyRestore(plan);
+      const parts = [
+        outcome.restored.length ? `restored ${outcome.restored.length} file${outcome.restored.length === 1 ? "" : "s"}` : "",
+        outcome.deleted.length ? `removed ${outcome.deleted.length}` : "",
+        outcome.failed.length ? `could not restore ${outcome.failed.map((f) => `${f.path} (${f.error})`).join(", ")}` : "",
+      ].filter(Boolean);
+      summary = parts.join("; ");
+      if (outcome.failed.length) void vscode.window.showWarningMessage(`Rewind: ${summary}.`);
+    }
+    if (scope === "code") {
+      session.noteExternalFileChanges(changedPaths, "rewind");
+      this._pendingRewindNote = rewindNote("code", changedPaths);
+      this._post({ type: "rewind_applied", turnId, conversation: false, summary });
+      return;
+    }
+    session.rewindTo(point.snapshot);
+    this._rewind.truncateFrom(turnId);
+    // A crash-resume checkpoint from an interrupted later turn would bring the removed turns back.
+    clearCheckpoint(this._context);
+    this._pendingRewindNote = scope === "conversation" ? rewindNote("conversation", changedPaths) : "";
+    this._persistSession(session);
+    this._post({ type: "rewind_applied", turnId, conversation: true, text: point.userText, summary });
+    this._postSessionRuntimeState();
+    this._postRewindPoints();
+  }
+
+  private _postApprovalMode(): void {
+    this._post({ type: "approval_mode", mode: this._approvalMode() });
+  }
+
+  private _approvalMode(): ApprovalMode {
+    const inspected = vscode.workspace.getConfiguration("blacksite.permissions").inspect<string>("approvalMode");
+    return inspected?.globalValue === "auto" ? "auto" : "ask";
+  }
+
+  /**
+   * Auto mode's decision for a runtime-confirmed call (see auto-approval-policy.ts): the fixed rules
+   * first, the model reviewer only for what they leave open. Null in ask mode, which leaves the
+   * ordinary approval path in charge. Read per call, so switching modes applies at once.
+   */
+  private _approvalReviewer(): (request: ApprovalReviewRequest) => Promise<ApprovalReviewVerdict | null> {
+    return async (request) => {
+      if (this._approvalMode() !== "auto") return null;
+      const triage = triageAutoApproval(request);
+      if (triage.action !== "review") return triage;
+      return reviewChatApproval(this.createContinuationModel(), {
+        userPrompts: this.userPromptsThisSession(),
+        toolName: request.toolName,
+        tier: request.tier,
+        description: request.description,
+        unrecognizedCommand: request.unrecognizedCommand,
+      });
+    };
+  }
+
+  /**
    * Price a delegated lane's usage with the same catalog and fallback tables as the chat
    * transcript. LoopDispatcher accumulates these per-turn estimates into the active execution.
    */
@@ -765,7 +905,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    * point: a paraphrase of the original request cannot catch a plan that has drifted from it.
    */
   userPromptsThisSession(): string[] {
-    const history = (this._session?.history ?? []) as Array<{ role: string; content: unknown }>;
+    // Recorded at send time, before mentions and context were folded in: exactly what was typed.
+    const recorded = this._session?.userPrompts ?? [];
+    if (recorded.length) return recorded;
+    // Sessions persisted before prompts were recorded: read the uncompacted history instead, and
+    // leave out everything the harness wrote into user-role messages itself.
+    const history = (this._session?.fullHistory ?? []) as Array<{ role: string; content: unknown }>;
     const prompts: string[] = [];
     for (const message of history) {
       if (message.role !== "user") continue;
@@ -782,9 +927,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       // Tool results ride in user-role messages on every provider here; they are not things
       // the user said, and feeding them to the conductor as "the original request" would bury
       // the actual request under transcript noise.
-      if (trimmed
-        && !trimmed.startsWith("[tool_result")
-        && !trimmed.startsWith("[Automatic plan continuation]")) prompts.push(trimmed);
+      if (trimmed && !HARNESS_MESSAGE_PREFIXES.some((prefix) => trimmed.startsWith(prefix))) prompts.push(trimmed);
     }
     return prompts;
   }
@@ -1035,6 +1178,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const bedrock = settings.provider === "bedrock" ? await this._secrets.getBedrockConfig() : undefined;
 
     const session = new AgentSession({
+      hookProvider: configuredHooks,
       subscriptionStream: this._subscriptionStream(settings.provider, settings),
       apiKey,
       model: pSettings.model,
@@ -1063,6 +1207,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       // handlers that null out this._session on a provider-setting change, so a frozen boolean
       // here could ignore a live flip until something unrelated happens to rebuild the session.
       pauMetricsEnabled: () => vscode.workspace.getConfiguration("blacksite.pau").get<boolean>("enabled", false),
+      toolLoading: () => readToolLoading(),
       // Cache economics needs rates; the session must not own a rate table. Resolved live for
       // the same reason as the flag above — a model switch must not leave stale prices behind.
       pauPricing: () => this._cachedPricing(settings.provider, pSettings.model),
@@ -1100,9 +1245,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       researchProvider: this._research,
       sequenceProvider: this._sequences,
       loopProvider: this._loopTools,
-      editProvider: this._editService,
+      editProvider: this._autoEditService,
       diagnosticsProvider: this._diagnostics,
-      lspProvider: this._lspService,
+      lspProvider: this._autoLspService,
+      approvalReviewer: this._approvalReviewer(),
       mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
       editDiffJournal: this._editDiffs,
       questionCardProvider: (toolCallId, questions) => this._createQuestionCardPromise(toolCallId, questions),
@@ -1973,7 +2119,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       };
 
       const outcome = newLaneOutcome();
-      yield* streamLaneRun(session.send(followUpLanePrompt(message)), request.parentToolCallId, laneId, outcome, watchdog);
+      yield* streamLaneRun(
+        session.send(followUpLanePrompt(message), laneRequestMode(request.requestMode)),
+        request.parentToolCallId,
+        laneId,
+        outcome,
+        watchdog,
+      );
 
       const answer = extractLatestAssistantText(session.history as unknown as Array<{ role: string; content: unknown }>);
       const timedOut = controller.signal.aborted && isLaneTimeoutReason(controller.signal.reason);
@@ -2117,16 +2269,17 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     // as well; otherwise they fall back to a native VS Code modal with nobody present.
     const laneEditProvider = laneApprovalPolicy
       ? createLoopEditProvider(this._editService, laneApprovalPolicy)
-      : this._editService;
+      : this._autoEditService;
     const laneLspProvider = laneApprovalPolicy
       ? createLoopLspProvider(this._lspService, laneApprovalPolicy)
-      : this._lspService;
+      : this._autoLspService;
 
     // Hoisted so the finally below can always unregister it from the live-session set,
     // even when the lane exits via an exception mid-run.
     let liveChild: AgentSession | null = null;
     try {
       const childSession = new AgentSession({
+        hookProvider: configuredHooks,
         subscriptionStream: this._subscriptionStream(subProvider, settings),
         apiKey: subApiKey,
         model: resolvedSubModel,
@@ -2153,6 +2306,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         openrouterProvider: this._openrouterProviderPreferences(settings),
         openrouterFallbackModels: settings.openrouterConfig?.fallbackModels,
         pauMetricsEnabled: () => vscode.workspace.getConfiguration("blacksite.pau").get<boolean>("enabled", false),
+        toolLoading: () => readToolLoading(),
         // Priced against the lane's own provider/model, not the parent's — a lane delegated to a
         // cheaper model would otherwise have its cache economics computed at the wrong rates.
         pauPricing: () => this._cachedPricing(subProvider, subPSettings.model),
@@ -2189,6 +2343,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         editProvider: laneEditProvider,
         diagnosticsProvider: this._diagnostics,
         lspProvider: laneLspProvider,
+        // A loop lane is reviewed by its own policy; a chat lane follows the chat's approval mode.
+        approvalReviewer: laneApprovalPolicy ? undefined : this._approvalReviewer(),
         mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
         // A delegated lane edits the same workspace, so its rows get the same reviewable diffs.
         editDiffJournal: this._editDiffs,
@@ -2243,7 +2399,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
       const outcome = newLaneOutcome();
       yield* streamLaneRun(
-        childSession.send(delegatedLanePrompt(request.input.task, request.input.context)),
+        childSession.send(delegatedLanePrompt(request.input.task, request.input.context), laneRequestMode(request.requestMode)),
         request.parentToolCallId,
         laneId,
         outcome,
@@ -2373,6 +2529,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       case "ready":
         await this._research.send();
         this._postPreviewAssets();
+        this._postApprovalMode();
+        this._postRewindPoints();
         this._restoreSessionToWebview();
         // A reconnecting webview has the persisted transcript but not the live turn's open
         // gates — replay them or an in-flight question becomes unanswerable.
@@ -2386,6 +2544,18 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const attachments = Array.isArray(p?.attachments) ? p!.attachments.map((a) => String(a)) : [];
         const requestMode = isRequestMode(p?.requestMode) ? p.requestMode : "auto";
         if (content || attachments.length) await this._handleSend(content, p?.context, mentions, attachments, requestMode);
+        break;
+      }
+
+      case "set_approval_mode": {
+        const mode = msg.mode === "auto" ? "auto" : "ask";
+        // User settings only (see _approvalMode); the change event re-posts the mode.
+        await vscode.workspace.getConfiguration("blacksite.permissions")
+          .update("approvalMode", mode, vscode.ConfigurationTarget.Global)
+          .then(undefined, (err: unknown) => {
+            void vscode.window.showWarningMessage(`Blacksite: could not change the approval mode. ${err instanceof Error ? err.message : String(err)}`);
+            this._postApprovalMode();
+          });
         break;
       }
 
@@ -2478,8 +2648,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         // The rows those diffs belonged to are gone from the transcript, so holding their
         // before/after content is pure retained memory.
         this._editDiffs.clear();
+        this._rewind.clear();
+        this._pendingRewindNote = "";
         clearCheckpoint(this._context);
         this._post({ type: "clear" });
+        this._postRewindPoints();
         break;
 
       // ── History ───────────────────────────────────────────────────────────────
@@ -2496,11 +2669,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         this._runner.cancel();
         this._research.reset();
         this._session = null;
+        this._rewind.clear();
+        this._pendingRewindNote = "";
         this._restoredSessionState = { sessionId: stored.sessionId, messages: stored.messages, ...(stored.state ?? {}) };
         this._sessionStore.saveActive(stored);
         this._post({ type: "clear" });
         const display = stored.messages.filter((m) => m.role === "user" || m.role === "assistant");
         this._post({ type: "history_restored", messages: display });
+        this._postRewindPoints();
         if (stored.state?.contextLength || stored.state?.compressionCount || stored.state?.lastInputTokens
           || stored.state?.spentUsd || stored.state?.verification) {
           this._post({
@@ -2508,6 +2684,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
             runtime: this._buildRuntimeFromStoredSession(stored.sessionId, stored.messages, stored.state),
           });
         }
+        break;
+      }
+
+      case "rewind_request": {
+        const turnId = String(msg.turnId ?? "").trim();
+        if (turnId) await this._handleRewindRequest(turnId);
         break;
       }
 
@@ -3403,6 +3585,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       fullContent = `${fullContent}\n\n[Attachment${savedPaths.length > 1 ? "s" : ""} saved in the workspace; open with file_read on this path or with the reference_* tools by name:\n${savedPaths.join("\n")}]`;
     }
 
+    if (this._pendingRewindNote) {
+      fullContent = `${fullContent}
+
+${this._pendingRewindNote}`;
+      this._pendingRewindNote = "";
+    }
+
     const attachmentDocumentIds = attached
       .map((a) => a.documentId)
       .filter((id): id is string => Boolean(id));
@@ -3418,7 +3607,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       promptPreview: content,
       mentionCount: mentions.length,
       contextLabel: context?.label,
-    }, images, { requestMode });
+    }, images, {
+      requestMode,
+      // The words the user typed, apart from the mentions, context and attachment notes folded in
+      // above — the reviewers that judge intent read these (see AgentSession.send).
+      userText: content.trim() || (attachmentNames.length ? `(sent attachments: ${attachmentNames.join(", ")})` : ""),
+    });
   }
 
   /** Byte, pixel and format limits live in vision-image.ts, shared with every other path that
@@ -3867,7 +4061,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     content: string,
     meta?: { inputChars: number; promptPreview: string; mentionCount: number; contextLabel?: string },
     images?: ImageBlock[],
-    request?: { requestMode?: RequestMode; preserveRequestMode?: boolean },
+    request?: { requestMode?: RequestMode; preserveRequestMode?: boolean; userText?: string },
   ): Promise<void> {
     if (!this._session) return;
 
@@ -3882,6 +4076,16 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       errored: false,
     };
 
+    // Before anything in this turn runs: the journal position and the conversation as they are now.
+    this._rewind.add({
+      turnId,
+      sessionId: session.sessionId,
+      journalSeq: this._editDiffs.sequence,
+      snapshot: session.captureRewindSnapshot(),
+      userText: meta?.promptPreview ?? content,
+      createdAt: Date.now(),
+      untracked: [],
+    });
     this._post({ type: "stream_start", id: turnId });
     this._postSessionRuntimeState();
     this._logger.turnStart(turnId, meta);
@@ -3905,7 +4109,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           else if (event.type === "error") summary.errored = true;
           this._handleAgentEvent(event, turnId);
         },
-        { images, requestMode: request?.requestMode, preserveRequestMode: request?.preserveRequestMode },
+        { images, requestMode: request?.requestMode, preserveRequestMode: request?.preserveRequestMode, userText: request?.userText },
       );
     } catch (err) {
       // Safety net: covers (a) isRunning guard throw, (b) any unhandled rejection
@@ -3946,6 +4150,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     } finally {
       this._postSessionRuntimeState();
       this._liveTurnId = undefined;
+      this._postRewindPoints();
       // The turn is over, so nothing can consume an answer any more. Normally every gate has
       // already resolved (the agent blocks on them), but a run that died mid-gate would
       // otherwise leave an entry that replays onto every future webview reconnect.
@@ -4030,6 +4235,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     lane?: { laneId: string; parentToolCallId: string },
   ): void {
     const laneMeta = lane ? { laneId: lane.laneId, parentToolCallId: lane.parentToolCallId } : {};
+    if (event.type === "tool_call_start") this._rewind.recordUntracked(turnId, untrackedEffect(event.toolName, event.input));
     switch (event.type) {
       case "provider_activity":
         this._post({ type: "stream_provider_activity", id: turnId, phase: event.phase, message: event.message, ...laneMeta });
@@ -4138,6 +4344,16 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           toolCallId: event.toolCallId,
           granted: event.granted,
           decision: event.decision,
+          ...laneMeta,
+        });
+        break;
+      case "approval_review":
+        this._post({
+          type: "stream_approval_review",
+          id: turnId,
+          toolCallId: event.toolCallId,
+          verdict: event.verdict,
+          reason: event.reason,
           ...laneMeta,
         });
         break;

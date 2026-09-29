@@ -52,7 +52,10 @@ export const RECOMMENDED_BODY_LINES = 500;
 const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SCALAR_KEYS = new Set(["name", "description", "version", "mode"]);
 const LIST_KEYS = new Set(["scope", "requires", "allowed-tools"]);
-const KNOWN_KEYS = new Set([...SCALAR_KEYS, ...LIST_KEYS, "origin"]);
+/** Keys the Agent Skills standard defines that Blacksite reads past without using. Accepted
+ *  quietly, so a skill written for another tool loads here without a warning per field. */
+const STANDARD_PASSTHROUGH_KEYS = new Set(["license", "compatibility", "metadata"]);
+const KNOWN_KEYS = new Set([...SCALAR_KEYS, ...LIST_KEYS, ...STANDARD_PASSTHROUGH_KEYS, "origin"]);
 const MODES: readonly string[] = ["plan", "review", "debug"];
 
 /**
@@ -145,6 +148,11 @@ function readFrontmatter(lines: string[]): RawFrontmatter {
         collected.push(sanitizeField(stripQuotes(lines[index]!.replace(/^\s*-\s+/, ""))));
         index += 1;
       }
+      // A nested map (the standard's `metadata:` block) is indented `key: value` lines. Nothing
+      // here reads it, so it is consumed whole rather than reported line by line as unparseable.
+      if (!collected.length) {
+        while (index < lines.length && /^\s+[A-Za-z][\w-]*\s*:/.test(lines[index]!)) index += 1;
+      }
       values.set(key, collected.filter(Boolean));
       continue;
     }
@@ -214,7 +222,11 @@ export function parseSkillFile(raw: string, fallbackName = ""): ParsedSkillFile 
   if (scope.length) frontmatter.scope = scope;
   const requires = asList(values.get("requires"));
   if (requires.length) frontmatter.requires = requires;
-  const allowedTools = asList(values.get("allowed-tools"));
+  // The standard writes allowed-tools as one space-delimited string ("Read Grep Bash(git:*)").
+  const allowedRaw = values.get("allowed-tools");
+  const allowedTools = typeof allowedRaw === "string" && !allowedRaw.includes(",")
+    ? allowedRaw.split(/\s+/).map((entry) => sanitizeField(entry)).filter(Boolean)
+    : asList(allowedRaw);
   if (allowedTools.length) frontmatter.allowedTools = allowedTools;
 
   const body = text.slice(fenced[0].length).trim();

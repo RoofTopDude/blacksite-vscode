@@ -58,6 +58,10 @@ export function FilterBar({
 
   const set = <K extends keyof Filters>(key: K, value: Filters[K]): void =>
     onChange({ ...filters, [key]: value });
+  // With no chips to show, the "N of M" count has nothing to share a row with. On the board the
+  // controls row has room to carry it; in the sidebar the selects fill that row, so it gets its own.
+  const countOnly = active === 0 && filters.areas.length === 0 && shown !== total;
+  const inlineCount = countOnly && !compact;
 
   return (
     <div className={cn("filter-bar", compact && "is-compact")}>
@@ -179,16 +183,24 @@ export function FilterBar({
           ariaLabel="Group by"
           className="filter-select"
           value={filters.groupBy}
-          options={GROUPS.map((group) => ({ value: group, label: `Group: ${GROUP_LABEL[group]}` }))}
+          valuePrefix="Group: "
+          options={GROUPS.map((group) => ({ value: group, label: GROUP_LABEL[group] }))}
           onChange={(group) => set("groupBy", group as GroupBy)}
         />
         <Select
           ariaLabel="Sort by"
           className="filter-select"
           value={filters.sortBy}
-          options={SORTS.map((sort) => ({ value: sort, label: `Sort: ${SORT_LABEL[sort]}` }))}
+          valuePrefix="Sort: "
+          options={SORTS.map((sort) => ({ value: sort, label: SORT_LABEL[sort] }))}
           onChange={(sort) => set("sortBy", sort as SortBy)}
         />
+        {inlineCount && (
+          <>
+            <span className="flex-1" />
+            <span className="filter-count">{shown} of {total}</span>
+          </>
+        )}
       </div>
 
       {(active > 0 || filters.areas.length > 0) && (
@@ -213,7 +225,7 @@ export function FilterBar({
           <span className="filter-count">{shown} of {total}</span>
         </div>
       )}
-      {active === 0 && filters.areas.length === 0 && shown !== total && (
+      {countOnly && !inlineCount && (
         <div className="filter-chips">
           <span className="flex-1" />
           <span className="filter-count">{shown} of {total}</span>

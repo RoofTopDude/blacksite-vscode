@@ -37,6 +37,9 @@ export interface ToolCall {
   /** True when the tool is pending because its command binary is unrecognized (not
    *  allow- or deny-listed), rather than (or in addition to) a network/destructive tier. */
   approvalUnrecognized: boolean;
+  /** Auto mode's decision on this call, when auto mode reviewed it: "allowed" ran it without a
+   *  prompt, "escalated" is why the user is being asked. Null in ask mode. */
+  approvalReview: { verdict: "allowed" | "escalated"; reason: string } | null;
   /** Set when this call's gate is a browser/research proposal. The decision buttons and the
    *  exact values it is asking about live on the ephemeral research channel, keyed by this id
    *  — never in the transcript, which is persisted. */
@@ -608,6 +611,7 @@ export function ensureToolCall(_state: ChatState, turn: Turn, payload: any): Too
     approvalTier: "",
     approvalRationale: "",
     approvalUnrecognized: false,
+    approvalReview: null,
     browserProposalId: "",
     pendingSeq: 0,
     startedAt: Date.now(),
@@ -702,6 +706,39 @@ export function applyApprovalPending(
   call.approvalRationale = rationale;
   call.approvalUnrecognized = unrecognizedCommand;
   call.browserProposalId = browserProposalId;
+}
+
+/**
+ * The assistant turn a rewind from this user message would target: the one right after it, when
+ * the host reports it rewindable. Null otherwise (restored history, a turn still running).
+ */
+export function rewindTargetFor(turns: readonly Turn[], userTurnId: string, rewindable: readonly string[]): string | null {
+  const index = turns.findIndex((turn) => turn.id === userTurnId);
+  const next = index >= 0 ? turns[index + 1] : undefined;
+  return next && next.role !== "user" && rewindable.includes(next.id) ? next.id : null;
+}
+
+/**
+ * Remove a rewound assistant turn, every turn after it, and the user message that started it.
+ * Returns the removed user message's text, or null when the turn is not in the transcript.
+ */
+export function truncateTurnsFrom(state: ChatState, assistantTurnId: string): string | null {
+  const index = state.turns.findIndex((turn) => turn.id === assistantTurnId);
+  if (index < 0) return null;
+  const start = index > 0 && state.turns[index - 1]!.role === "user" ? index - 1 : index;
+  const removed = state.turns.splice(start);
+  for (const turn of removed) state.byId.delete(turn.id);
+  state.userTurnCount = state.turns.filter((turn) => turn.role === "user").length;
+  state.hasMessages = state.turns.length > 0;
+  if (state.currentLiveTurnId && !state.byId.has(state.currentLiveTurnId)) state.currentLiveTurnId = null;
+  return removed[0]?.role === "user" ? removed[0].text ?? "" : null;
+}
+
+export function applyApprovalReview(
+  state: ChatState, turn: Turn, toolCallId: string, verdict: "allowed" | "escalated", reason: string,
+): void {
+  const call = ensureToolCall(state, turn, { toolCallId, toolName: "approval", input: {} });
+  call.approvalReview = { verdict, reason };
 }
 
 export function applyApprovalResult(turn: Turn, toolCallId: string, granted: boolean, decision: ApprovalDecision = granted ? "allow" : "deny"): void {
@@ -1120,6 +1157,10 @@ export interface PendingItem {
   tier: string;
   unrecognized: boolean;
   binary: string;
+  /** The agent's stated reason for the gated call, when it gave one. */
+  rationale: string;
+  /** Why auto mode handed this to the user, when it did. */
+  reviewNote: string;
   questions: QuestionItem[] | null;
   /** Set on a "browser" item. Null while the proposal has not reached the webview yet — the
    *  gate event and the research state arrive on different channels, so the card renders a
@@ -1135,7 +1176,7 @@ function pendingItemsInTurn(turn: Turn, laneId: string | null, laneLabel: string
     items.push({
       kind: "question", turnId: turn.id, toolCallId: card.toolCallId, laneId, laneLabel,
       title: card.items.length === 1 ? card.items[0]!.question : `${card.items.length} questions`,
-      tier: "", unrecognized: false, binary: "",
+      tier: "", unrecognized: false, binary: "", rationale: "", reviewNote: "",
       questions: card.items, proposal: null, pendingSeq: card.pendingSeq,
     });
   }
@@ -1147,7 +1188,8 @@ function pendingItemsInTurn(turn: Turn, laneId: string | null, laneLabel: string
       kind: call.browserProposalId ? "browser" : "approval", turnId: turn.id, toolCallId: call.id, laneId, laneLabel,
       title: gate ? browserGateTitle(gate.proposal) : call.approvalDescription || call.label || call.displayName,
       tier: call.approvalTier,
-      unrecognized: call.approvalUnrecognized, binary: approvalBinaryOf(call),
+      unrecognized: call.approvalUnrecognized, binary: approvalBinaryOf(call), rationale: call.approvalRationale,
+      reviewNote: call.approvalReview?.verdict === "escalated" ? call.approvalReview.reason : "",
       questions: null, proposal: gate?.proposal ?? null, pendingSeq: call.pendingSeq,
     });
   }
@@ -1190,7 +1232,7 @@ export function pendingItemsOf(state: ChatState, browserGates: readonly BrowserG
   for (const gate of gates.values()) {
     items.push({
       kind: "browser", turnId: "", toolCallId: gate.proposal.id, laneId: null, laneLabel: null,
-      title: browserGateTitle(gate.proposal), tier: "network", unrecognized: false, binary: "",
+      title: browserGateTitle(gate.proposal), tier: "network", unrecognized: false, binary: "", rationale: "", reviewNote: "",
       questions: null, proposal: gate.proposal, pendingSeq: gate.pendingSeq,
     });
   }
@@ -1279,7 +1321,8 @@ export function turnChrome(turn: Turn, now: number = Date.now()): TurnChrome {
   if (turn.stopReason) metaParts.push(stopReasonLabel(turn.stopReason));
 
   let summary = "Turn complete";
-  if (turn.status === "error") summary = turn.errorMessage || "Turn ended with an error";
+  // The message itself is shown in the turn's error callout; the footer only names the outcome.
+  if (turn.status === "error") summary = "Turn ended with an error";
   else if (turn.stopReason === "max_iterations") summary = "Iteration limit reached";
   else if (pending > 0) summary = "Approval required";
   else if (running > 0 || turn.status === "streaming") summary = "Working through tool activity";

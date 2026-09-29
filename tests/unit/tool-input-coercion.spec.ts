@@ -8,8 +8,8 @@ describe("coerceToolInput", () => {
   });
 
   it("coerces 'true'/'false' strings into boolean fields", () => {
-    expect(coerceToolInput("shell_run", { command: "x", confirmed: "true" })["confirmed"]).toBe(true);
-    expect(coerceToolInput("shell_run", { command: "x", confirmed: "False" })["confirmed"]).toBe(false);
+    expect(coerceToolInput("process_start", { command: "x", allowStdin: "true" })["allowStdin"]).toBe(true);
+    expect(coerceToolInput("process_start", { command: "x", allowStdin: "False" })["allowStdin"]).toBe(false);
   });
 
   it("coerces a number into a string field (github issue numbers)", () => {

@@ -74,7 +74,8 @@
 .runs-brand-icon {
   display: inline-flex;
   position: relative;
-  size: 32px;
+  width: 32px;
+  height: 32px;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
@@ -94,7 +95,8 @@
 }
 
 .runs-brand-icon svg {
-  size: 15px;
+  width: 15px;
+  height: 15px;
 }
 
 .runs-run-picker {
@@ -195,7 +197,7 @@
 
 .runs-compare-disclosure > summary::-webkit-details-marker,
 .runs-evidence-disclosure > summary::-webkit-details-marker { display: none; }
-.runs-compare-disclosure > summary svg { size: 12px; }
+.runs-compare-disclosure > summary svg { width: 12px; height: 12px; }
 .runs-disclosure-chevron { margin-left: auto; transition: transform var(--dur-2) var(--ease-out); }
 details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 .runs-compare-disclosure[open] > summary { border-bottom: 1px solid var(--border); color: var(--foreground); }
@@ -296,7 +298,7 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
   color: var(--s-err);
   font-size: var(--text-xs);
 }
-.runs-digest-alert svg { size: 12px; flex: 0 0 auto; margin-top: 1px; }
+.runs-digest-alert svg { width: 12px; height: 12px; flex: 0 0 auto; margin-top: 1px; }
 
 .runs-step-list { border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent); }
 .runs-step-row {
@@ -314,7 +316,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 .runs-step-row[data-status="failed"] { border-left-color: var(--s-err); }
 .runs-step-index {
   display: grid;
-  size: 18px;
+  width: 18px;
+  height: 18px;
   place-items: center;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -329,7 +332,7 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 .runs-evidence-disclosure { flex: 0 0 auto; }
 .runs-evidence-disclosure > summary { min-height: 48px; color: var(--foreground); }
 .runs-evidence-disclosure > summary > span { display: flex; min-width: 0; align-items: center; gap: 8px; }
-.runs-evidence-disclosure > summary > span > svg { size: 16px; color: var(--primary); }
+.runs-evidence-disclosure > summary > span > svg { width: 16px; height: 16px; color: var(--primary); }
 .runs-evidence-disclosure > summary > span > span { display: flex; min-width: 0; flex-direction: column; }
 .runs-evidence-disclosure > summary strong { font-size: var(--text-sm); font-weight: 600; }
 .runs-evidence-disclosure > summary small { color: var(--muted-foreground); font-size: var(--text-2xs); }
@@ -389,7 +392,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 }
 
 .runs-window-readout svg {
-  size: 10px;
+  width: 10px;
+  height: 10px;
 }
 
 .runs-timeline-toolbar {
@@ -436,7 +440,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 }
 
 .runs-anchor-nav > span svg {
-  size: 10px;
+  width: 10px;
+  height: 10px;
 }
 
 .runs-anchor-nav > span b {
@@ -486,7 +491,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 }
 
 .runs-track-label svg {
-  size: 10px;
+  width: 10px;
+  height: 10px;
   flex: 0 0 auto;
 }
 
@@ -513,7 +519,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 .runs-event-marker {
   position: absolute;
   top: 50%;
-  size: 7px;
+  width: 7px;
+  height: 7px;
   transform: translate(-50%, -50%);
   border: 1px solid color-mix(in srgb, var(--s-info) 64%, var(--border));
   border-radius: 999px;
@@ -634,7 +641,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 }
 
 .runs-artifact-zoom svg {
-  size: 10px;
+  width: 10px;
+  height: 10px;
 }
 
 .runs-artifact-button:hover .runs-artifact-zoom,
@@ -650,7 +658,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 }
 
 .runs-artifact-placeholder svg {
-  size: 24px;
+  width: 24px;
+  height: 24px;
   opacity: 0.45;
 }
 
@@ -667,7 +676,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 
 .runs-artifact-strip button {
   display: inline-flex;
-  size: 46px;
+  width: 46px;
+  height: 46px;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
@@ -685,7 +695,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 }
 
 .runs-artifact-strip svg {
-  size: 16px;
+  width: 16px;
+  height: 16px;
 }
 
 .runs-observation-meta {
@@ -745,7 +756,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 }
 
 .runs-entity-list button svg {
-  size: 10px;
+  width: 10px;
+  height: 10px;
   flex: 0 0 auto;
   color: var(--primary);
 }
@@ -780,7 +792,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 }
 
 .runs-tab-list svg {
-  size: 11px;
+  width: 11px;
+  height: 11px;
 }
 
 .runs-evidence {
@@ -900,7 +913,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 }
 
 .runs-structural-list svg {
-  size: 11px;
+  width: 11px;
+  height: 11px;
 }
 
 .runs-structural-list span {
@@ -1054,7 +1068,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 }
 
 .runs-error > svg {
-  size: 13px;
+  width: 13px;
+  height: 13px;
   flex: 0 0 auto;
 }
 
@@ -1088,7 +1103,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 
 .runs-empty-icon {
   display: inline-flex;
-  size: 34px;
+  width: 34px;
+  height: 34px;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border);
@@ -1098,7 +1114,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 }
 
 .runs-empty-icon svg {
-  size: 16px;
+  width: 16px;
+  height: 16px;
 }
 
 .runs-zero-state,
@@ -1118,7 +1135,8 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 }
 
 .runs-loading > svg {
-  size: 15px;
+  width: 15px;
+  height: 15px;
 }
 
 .runs-empty-header {
@@ -1163,6 +1181,10 @@ details[open] > summary .runs-disclosure-chevron { transform: rotate(180deg); }
 
 .runs-spin {
   animation: runs-spin 1s linear infinite;
+}
+.runs-loading .runs-spin {
+  width: 16px;
+  height: 16px;
 }
 
 @keyframes runs-spin {

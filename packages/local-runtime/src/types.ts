@@ -163,6 +163,10 @@ export interface McpServer {
   env?: Record<string, string>;
   /** Working directory for stdio servers. */
   cwd?: string;
+  /** stdio only: the argument vector, when `url` is the bare executable rather than a command
+   *  line. Taken exactly as given, never re-tokenized, so an argument containing spaces or quotes
+   *  reaches the server intact (Agent Plugin servers declare their command this way). */
+  args?: string[];
   /** Workspace directories reported to the server when it asks for `roots/list`. */
   roots?: string[];
   /** Per-request timeout override in milliseconds. */

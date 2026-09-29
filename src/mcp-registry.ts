@@ -69,7 +69,17 @@ export interface McpServerEntry {
   headers?: Record<string, string>;
   /** Explicit transport override for a server that mis-advertises which revision it speaks. */
   transportHint?: "auto" | "http" | "sse";
+  /** stdio only: an explicit argument vector (`command` is then the bare executable). */
+  args?: string[];
+  /** stdio only: the working directory. Defaults to the workspace root. */
+  cwd?: string;
+  /** Set on a server an Agent Plugin provides. Such entries are read-only here: enabling,
+   *  editing and removing them is the plugin registry's decision (see setPluginSource). */
+  pluginKey?: string;
 }
+
+/** What a plugin-provided entry's owner is asked to do when the panel acts on it. */
+export type PluginEntryAction = { kind: "update"; patch: Partial<McpServerEntry> } | { kind: "remove" };
 
 export interface McpServerToolPolicy {
   /** Explicit per-tool verdicts, keyed by tool name. */
@@ -174,11 +184,31 @@ export class McpRegistry implements OAuthStorage {
   readonly onDidChange = this._onDidChange.event;
   readonly oauth: McpOAuthClient;
 
+  private _pluginEntries: () => McpServerEntry[] = () => [];
+  private _pluginAction: (entry: McpServerEntry, action: PluginEntryAction) => Promise<void> = async () => undefined;
+
   constructor(
     private readonly _context: vscode.ExtensionContext,
     private readonly _roots: () => string[] = () => [],
   ) {
     this.oauth = new McpOAuthClient(this);
+  }
+
+  /**
+   * Servers from Agent Plugins (see src/plugins/plugin-registry.ts): listed alongside configured
+   * ones, never stored with them. Updates and removals on them go to `onAction` — copying one
+   * into workspace state, as an edit to a settings-declared server does, would turn a plugin's
+   * command into an ordinary configured server and step around the trust its plugin requires.
+   */
+  setPluginSource(entries: () => McpServerEntry[], onAction: (entry: McpServerEntry, action: PluginEntryAction) => Promise<void>): void {
+    this._pluginEntries = entries;
+    this._pluginAction = onAction;
+    this._onDidChange.fire();
+  }
+
+  /** Tell listeners the plugin-provided set changed (a plugin was enabled, trusted or removed). */
+  notifyPluginsChanged(): void {
+    this._onDidChange.fire();
   }
 
   dispose(): void {
@@ -205,6 +235,11 @@ export class McpRegistry implements OAuthStorage {
     for (const raw of fromState) {
       const entry = normalizeEntry(raw);
       if (entry) byId.set(entry.id, entry);
+    }
+    // Plugin ids are namespaced ("plugin.<scope>.<name>.<server>"), so they cannot collide with a
+    // configured server; a configured one still wins if somebody copied the id by hand.
+    for (const entry of this._pluginEntries()) {
+      if (!byId.has(entry.id)) byId.set(entry.id, entry);
     }
     return [...byId.values()];
   }
@@ -233,6 +268,10 @@ export class McpRegistry implements OAuthStorage {
   async updateEntry(serverId: string, patch: Partial<McpServerEntry>): Promise<void> {
     const source = this.getEntry(serverId);
     if (!source) return;
+    if (source.pluginKey) {
+      await this._pluginAction(source, { kind: "update", patch });
+      return;
+    }
     const stored = this._storedEntries();
     const index = stored.findIndex((entry) => entry.id === serverId);
     const next = { ...source, ...patch, id: serverId };
@@ -261,6 +300,11 @@ export class McpRegistry implements OAuthStorage {
   }
 
   async removeEntry(serverId: string): Promise<void> {
+    const plugin = this.getEntry(serverId);
+    if (plugin?.pluginKey) {
+      await this._pluginAction(plugin, { kind: "remove" });
+      return;
+    }
     const configured = (vscode.workspace.getConfiguration("blacksite").inspect<unknown[]>("mcpServers")?.globalValue ?? [])
       .map(normalizeEntry)
       .some((entry) => entry?.id === serverId);
@@ -533,7 +577,9 @@ export class McpRegistry implements OAuthStorage {
       server.transport = "stdio";
       // Relative arguments in local MCP commands (for example a filesystem server launched
       // with `.`) are expected to refer to the active workspace, not VS Code's install dir.
-      server.cwd = server.roots?.[0];
+      // A plugin server names its own working directory (its plugin root by default).
+      server.cwd = entry.cwd ?? server.roots?.[0];
+      if (entry.args) server.args = [...entry.args];
       server.env = await this._resolveEnv(entry);
     }
 

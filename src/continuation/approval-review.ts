@@ -149,6 +149,85 @@ export function parseLoopApprovalVerdict(raw: string): LoopApprovalVerdict {
   return fallback(`The continuation reviewer returned an unrecognized action (${safeText(value.action) || "none"}).`);
 }
 
+/* ── Chat auto mode ─────────────────────────────────────────────────────────────────────────────
+   The same no-tools reviewer, pointed at an interactive chat instead of an unattended ticket. The
+   difference that shapes everything below: the user is present. A loop reviewer that refuses
+   blocks a ticket; a chat reviewer that is unsure hands the decision back to a person who can
+   answer in seconds. So "allow" must be clearly right, and everything else escalates — there is no
+   "deny" verdict, because refusing on the user's behalf is not the reviewer's call. */
+
+export interface ChatApprovalReviewBrief {
+  userPrompts: string[];
+  toolName: string;
+  tier: string;
+  description: string;
+  unrecognizedCommand?: boolean;
+}
+
+export type ChatApprovalVerdict =
+  | { action: "allow"; reason: string }
+  | { action: "escalate"; reason: string };
+
+export function buildChatApprovalReviewSystemPrompt(): string {
+  return [
+    "You are the approval reviewer for Blacksite chat running in auto mode. The user is present and watching.",
+    "An execution agent asked to run one operation that normally needs the user's approval. You have no tools and cannot run anything yourself.",
+    "Decide whether this one operation is clearly part of what the user asked for and safe to run without asking them.",
+    "",
+    "Return exactly one JSON object and nothing else:",
+    '{"action":"allow","reason":"one concise sentence"}',
+    '{"action":"escalate","reason":"what the user should weigh before deciding"}',
+    "",
+    "Allow: builds, tests, type checks, linters and formatters; installing or fetching dependencies the requested work needs; project scripts the request calls for; read-only inspection.",
+    "Escalate: anything the user did not ask for or that goes beyond the request; pushing to a remote unless the user explicitly asked to; publishing, deploying or releasing; credential, secret or permission changes; operations reaching outside the workspace; deleting data; network writes you cannot explain from the request; an unrecognized executable whose effect you cannot tell from the description; anything a careful user would want to see first.",
+    "When in doubt, escalate. The user is right there, so escalating costs seconds and a wrong allow can cost much more.",
+  ].join("\n");
+}
+
+export function buildChatApprovalReviewUserPrompt(brief: ChatApprovalReviewBrief): string {
+  const prompts = brief.userPrompts.length
+    ? brief.userPrompts.slice(-8).map((prompt, index) => `  [${index + 1}] ${clip(prompt, 3_000)}`).join("\n")
+    : "  (none recorded)";
+  return [
+    "WHAT THE USER ASKED FOR (their own words, oldest first):",
+    prompts,
+    "",
+    `APPROVAL TIER: ${clip(brief.tier, 80)}${brief.unrecognizedCommand ? " (unrecognized executable)" : ""}`,
+    `TOOL: ${clip(brief.toolName, 160)}`,
+    `REQUESTED OPERATION: ${clip(brief.description, 4_000)}`,
+    "",
+    "Return the JSON decision now.",
+  ].join("\n");
+}
+
+export function parseChatApprovalVerdict(raw: string): ChatApprovalVerdict {
+  const value = extractJsonObject(raw);
+  const reason = safeText(value?.["reason"]);
+  if (value?.["action"] === "allow" && reason) return { action: "allow", reason };
+  if (value?.["action"] === "escalate") {
+    return { action: "escalate", reason: reason || "The reviewer did not consider this safe to run without you." };
+  }
+  // Unreadable, unexplained, or anything else: the person decides.
+  return { action: "escalate", reason: "The reviewer returned no usable decision." };
+}
+
+export async function reviewChatApproval(
+  model: ContinuationModel,
+  brief: ChatApprovalReviewBrief,
+): Promise<ChatApprovalVerdict> {
+  try {
+    return parseChatApprovalVerdict(await model.decide(
+      buildChatApprovalReviewSystemPrompt(),
+      buildChatApprovalReviewUserPrompt(brief),
+    ));
+  } catch (error) {
+    return {
+      action: "escalate",
+      reason: `The reviewer could not be reached (${error instanceof Error ? error.message : String(error)}).`,
+    };
+  }
+}
+
 export async function reviewLoopApproval(
   model: ContinuationModel,
   brief: LoopApprovalReviewBrief,

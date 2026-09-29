@@ -18,7 +18,7 @@ export type { McpToolDescriptor, McpToolPolicy, WwwAuthenticateChallenge } from 
 export {
   classifyOperation, classifyCommandPermission, buildDescription, isAllowedCommand, requiresTierConfirmation,
   normalizeCommandName, validateArgs, DEFAULT_ALLOWED_COMMANDS, resolveConfirmation, resolveShellConfirmation,
-  requiresCodeExecutionConfirmation, resolveCommandForSpawn, externalPathArgs,
+  requiresCodeExecutionConfirmation, resolveCommandForSpawn, externalPathArgs, isReadOnlyCommand,
 } from "./security.js";
 export type { CommandPolicy, CommandClassification, ShellConfirmationOutcome, CommandAccess, ExternalPathArg } from "./security.js";
 export { computeToolchainRoots, isInsideToolchainRoot } from "./toolchain-roots.js";

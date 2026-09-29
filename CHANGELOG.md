@@ -3,6 +3,36 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.26.0
+
+### Added
+
+- **Lifecycle hooks.** User-configured scripts can check submitted prompts, block tool calls,
+  format changed files after tools return, and log run completion. Configure
+  `blacksite.hooks.commands` in user settings. Hooks receive JSON on stdin, support exact
+  tool filters and bounded execution, and apply to chat and delegated lanes. Pre-tool
+  failures block execution even with Allow All; post-tool and stop failures show warnings.
+- **Rewind and conversation branches.** Persistent edit snapshots support restoring tracked
+  files with a conversation rewind, and earlier messages can be edited or forked.
+- **Normal-chat approval review and scoped grants.** Reviewer-assisted approvals are available
+  outside Ticket Loops, with command argument scopes and grants reset for each new request.
+- **On-demand tool loading.** A small initial tool catalog expands through `tool_search` as
+  needed. PAU reports loaded and deferred tool context.
+- **Local agent plugins.** Discover and manage plugin skills and MCP servers through the
+  extension's plugin commands and skills view.
+
+### Changed
+
+- Plan mode now withholds mutating tools and rejects prohibited calls at dispatch, including
+  delegated work. Planning artifacts and supported evidence gathering remain available.
+- Updated chat, history, planning, tickets, and run views with clearer presentation and controls.
+
+### Limitations
+
+- Commands and lifecycle scripts still run with the user's OS permissions. This release does
+  not add an operating-system sandbox. Hook configuration is user-only and requires workspace
+  trust. Rewind covers retained, tracked file snapshots, not arbitrary shell or script effects.
+
 ## 1.25.0
 
 Diagrams. The agent can now draw what it explains, and you can open any diagram full size to

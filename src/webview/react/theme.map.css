@@ -110,10 +110,13 @@
 
 .map-toolbar {
   /* Reserve the bottom-right legend/key instead of letting a tall control
-     stack sit behind it. The inner rail scrolls independently. */
+     stack sit behind it. The inner rail scrolls independently. 100% is the
+     map's own height — not 100vh, which also counts the workspace bar above
+     it — and the legend publishes its live height (see Legend in GraphApp):
+     142px top + 8px gap + 12px legend inset = 162px. */
   top: 142px;
   width: 228px;
-  max-height: max(44px, calc(100vh - 382px));
+  max-height: max(44px, calc(100% - 162px - var(--map-legend-height, 220px)));
   overflow: hidden;
   padding: 0;
   border-radius: 10px;
@@ -618,7 +621,7 @@
 
 .map-command-panel {
   width: 344px;
-  max-height: calc(100vh - 24px);
+  max-height: calc(100% - 24px);
   overflow-y: auto;
 }
 .map-command-title {
@@ -764,7 +767,7 @@
     right: 8px;
     top: calc(var(--map-command-height, 168px) + 20px);
     width: 228px;
-    max-height: calc(100vh - var(--map-command-height, 168px) - 68px);
+    max-height: calc(100% - var(--map-command-height, 168px) - 68px);
     z-index: 5;
   }
   .map-toolbar[data-expanded="false"] {
@@ -775,7 +778,7 @@
     bottom: 44px;
     width: calc(100cqw - 16px);
     max-width: 360px;
-    max-height: min(48vh, calc(100vh - 250px));
+    max-height: min(48%, calc(100% - 250px));
   }
   .map-lsp-panel {
     left: 8px;

@@ -1,11 +1,12 @@
 import { useState, type CSSProperties } from "react";
-import { Bot, Check, ChevronRight, Copy } from "lucide-react";
+import { Bot, Check, ChevronRight, Copy, Undo2, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { countLabel, formatClock, formatDuration, liveElapsedMs } from "@/lib/format";
 import {
-  artifactCallsOf, placeholderText, questionCardSettled, turnChrome, turnIsLive, turnNarrative,
+  artifactCallsOf, placeholderText, questionCardSettled, rewindTargetFor, turnChrome, turnIsLive, turnNarrative,
   type TextSegment, type Turn as TurnModel,
 } from "@/lib/chat-model";
+import { actions, useStore } from "@/lib/store";
 import { useLiveClock } from "@/lib/use-live-clock";
 import { agentLaneColor, cssColor } from "@/lib/graph/colors";
 import { Markdown } from "./Markdown";
@@ -60,13 +61,30 @@ function NarrationLog({ updates }: { updates: TextSegment[] }) {
   );
 }
 
+/**
+ * Why the run stopped, set apart from the reply. The message comes from the provider or the
+ * host, not the agent, so it gets its own signal-toned surface instead of reading as prose.
+ */
+function ErrorCallout({ message }: { message: string }) {
+  return (
+    <div role="alert" className="turn-error-callout">
+      <XCircle className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-semibold">The run stopped with an error</div>
+        <div className="mt-0.5 whitespace-pre-wrap text-xs leading-relaxed text-foreground [overflow-wrap:anywhere]">{message}</div>
+      </div>
+    </div>
+  );
+}
+
 function AssistantBody({ turn }: { turn: TurnModel }) {
   const hasTools = turn.toolCallList.length > 0;
   const streaming = turn.status === "streaming";
   const { updates, reply } = turnNarrative(turn);
+  const error = turn.status === "error" ? turn.errorMessage : "";
   // The turn produced nothing to show at all — no prose, no actions. placeholderText
-  // explains why (cancelled, empty response, still starting).
-  const empty = !updates.length && !reply && !hasTools;
+  // explains why (cancelled, empty response, still starting); an error explains itself.
+  const empty = !updates.length && !reply && !hasTools && !error;
 
   return (
     <>
@@ -82,6 +100,7 @@ function AssistantBody({ turn }: { turn: TurnModel }) {
         </div>
       )}
       {empty && <p className="text-base italic text-muted-foreground">{placeholderText(turn)}</p>}
+      {error && <ErrorCallout message={error} />}
       <Artifacts turn={turn} />
       <ToolLog turn={turn} />
     </>
@@ -198,6 +217,24 @@ function CopyReplyButton({ raw, title = "Copy reply markdown" }: { raw: string; 
   );
 }
 
+/** Rewind to before this message. The host shows what will be restored, lost and left undone
+ *  before anything changes, so the button itself asks nothing. */
+function RewindButton({ userTurnId }: { userTurnId: string }) {
+  const store = useStore();
+  const target = rewindTargetFor(store.chat.turns, userTurnId, store.rewindableTurnIds);
+  if (!target || store.chat.running) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => actions.rewindTo(target)}
+      title="Rewind to before this message"
+      className="chat-interactive rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+    >
+      <Undo2 className="size-3" />
+    </button>
+  );
+}
+
 export function Turn({ turn }: { turn: TurnModel }) {
   const animate = !turn.historical;
   // Called unconditionally (Rules of Hooks) even for user turns, which are always
@@ -219,6 +256,7 @@ export function Turn({ turn }: { turn: TurnModel }) {
             conversation carry a time reference and the same copy affordance.
             Restored history has no reliable per-message stamp, so it stays clean. */}
         <div className="flex items-center gap-1">
+          <RewindButton userTurnId={turn.id} />
           {turn.text && <CopyReplyButton raw={turn.text} title="Copy message" />}
           {turn.startedAt != null && (
             <span className="text-2xs text-muted-foreground/80">{formatClock(turn.startedAt)}</span>

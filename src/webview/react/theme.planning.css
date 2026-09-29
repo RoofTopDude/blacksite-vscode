@@ -224,9 +224,9 @@
 
 .plan-phase-chevron {
   flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
   color: var(--muted-foreground);
-  font-size: var(--text-xl);
-  line-height: 1;
   transition: transform 0.18s ease;
 }
 

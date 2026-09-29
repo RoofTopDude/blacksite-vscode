@@ -1,4 +1,5 @@
 import type * as vscode from "vscode";
+import type { HookInput, HookOutcome, HookProvider } from "./hooks.js";
 import { browserTool, redactBrowserPayload } from "./browser/privacy.js";
 import type { LocalRuntime, McpServer } from "@blacksite/local-runtime";
 import {
@@ -7,7 +8,11 @@ import {
   validateToolInput,
   coerceToolInput,
   suggestToolName,
+  isMutatingServiceTool,
+  TOOL_LOADING_TOOLS,
 } from "./tools/definitions.js";
+// Re-exported: specs and older call sites import it from here.
+export { isMutatingServiceTool } from "./tools/definitions.js";
 import type { ToolDefinition, QCardOption, QCardQuestion } from "./tools/definitions.js";
 import { ToolOutputStore } from "./agent/tool-output-store.js";
 import type { AgentMemoryIndex } from "./agent-memory-index.js";
@@ -53,6 +58,23 @@ import {
   type RequestMode,
 } from "./request-modes.js";
 import { requestApprovalWithDetails, type ApprovalDecision } from "./approval-gate.js";
+import {
+  commandApprovalScope,
+  TurnApprovalGrants,
+  type ApprovalCategory,
+  type ApprovalScope,
+} from "./approval-scope.js";
+import { planModeRefusal, planModeWithholds } from "./plan-mode-policy.js";
+import {
+  buildToolRoster,
+  expandToolReferences,
+  firstSentence,
+  isCoreTool,
+  searchTools,
+  supportsNativeToolSearch,
+  toolSearchDescription,
+  TOOL_SEARCH_NAME,
+} from "./agent/tool-loading.js";
 import { saveCheckpoint, clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
 import { streamBedrockConverse, signBedrockRequest, mantleEndpoint } from "./bedrock-client.js";
@@ -284,6 +306,14 @@ type CompactionOutcome = "compressed" | "skipped" | "failed";
  * of these: advertised-always must mean dispatchable-always, or the two would disagree.
  */
 const UI_TOOL_NAMES = new Set(UI_TOOLS.map((t) => t.name));
+
+/** The grant an "Allow All" on an editor diff records, and the one editor/LSP edits consult. */
+const EDIT_WRITE_SCOPE: ApprovalScope = { category: "edit", tier: "write" };
+
+/** Bounds on the recorded user prompts: enough history for a reviewer to judge intent, never a
+ *  second copy of a long conversation. */
+const MAX_RECORDED_PROMPTS = 50;
+const MAX_RECORDED_PROMPT_CHARS = 8_000;
 
 /**
  * Tool results that must never be shed from context, because nothing can regenerate them.
@@ -798,6 +828,9 @@ export type BaseAgentEvent =
   | { type: "tool_call_result"; toolCallId: string; toolName: string; ok: boolean; summary: string; result: unknown; elapsedMs: number; diffs?: ToolDiffSummary[] }
   | { type: "approval_pending"; toolCallId: string; description: string; tier: string; unrecognizedCommand?: boolean }
   | { type: "approval_result"; toolCallId: string; granted: boolean; decision: ApprovalDecision }
+  /** Auto mode's decision on a gated call, before (or instead of) asking the user. "allowed" runs
+   *  the call once; "escalated" means the user is asked next, with this reason. */
+  | { type: "approval_review"; toolCallId: string; verdict: "allowed" | "escalated"; reason: string }
   | { type: "question_card_pending"; toolCallId: string; questions: QCardQuestion[] }
   | { type: "question_card_result"; toolCallId: string; answers: string[][] }
   | { type: "turn_complete"; stopReason: AgentStopReason; iterations: number }
@@ -924,11 +957,34 @@ export type SubagentProviderMessage =
     result: SubagentSpawnFailureResult | SubagentSpawnToolResult;
   };
 
+/** A conversation at one moment, for rewind. See AgentSession.captureRewindSnapshot. */
+export interface SessionRewindSnapshot {
+  messages: SessionMessage[];
+  fullHistory: SessionMessage[];
+  state: PersistedSessionState;
+}
+
+export interface ApprovalReviewRequest {
+  toolCallId: string;
+  toolName: string;
+  category: ApprovalCategory;
+  tier: string;
+  description: string;
+  unrecognizedCommand?: boolean;
+  /** The call's arguments, for rules that depend on them (which file an edit targets). */
+  input: Record<string, unknown>;
+}
+
+export type ApprovalReviewVerdict = { action: "allow" | "escalate"; reason: string };
+
 export interface SubagentSpawnRequest {
   parentSessionId: string;
   parentToolCallId: string;
   input: SubagentSpawnInput;
   signal?: AbortSignal;
+  /** The parent's active request mode. A lane spawned while the parent plans is itself in plan
+   *  mode — otherwise delegation would be a way around the read-only restriction. */
+  requestMode?: ActiveRequestMode;
 }
 
 export interface SubagentFollowUpInput {
@@ -942,6 +998,8 @@ export interface SubagentFollowUpRequest {
   parentToolCallId: string;
   input: SubagentFollowUpInput;
   signal?: AbortSignal;
+  /** See SubagentSpawnRequest.requestMode. */
+  requestMode?: ActiveRequestMode;
 }
 
 export interface SubagentProvider {
@@ -1200,6 +1258,7 @@ export type McpServerResolution =
   | { ok: false; message: string };
 
 export interface AgentSessionOptions {
+  hookProvider?: HookProvider;
   /** Subscription-backed model calls; credentials never enter the API transports. */
   subscriptionStream?: SubscriptionStream;
   apiKey: string;
@@ -1226,6 +1285,14 @@ export interface AgentSessionOptions {
    *  rate table, and the host already resolves one per provider/model. Undefined means unpriced,
    *  which the receipt reports as such rather than papering over with a default. */
   pauPricing?: () => ModelPricing | undefined;
+  /** "on_demand" loads a small core of tools up front and the rest through tool_search (see
+   *  agent/tool-loading.ts); "all" sends the whole catalog every request. Read live, like the PAU
+   *  flag, so the setting takes effect on a running conversation. Absent means "all". */
+  toolLoading?: () => "on_demand" | "all";
+  /** Chat auto mode (see auto-approval-policy.ts). Consulted by the approval gate before anyone is
+   *  prompted: "allow" runs the call once, "escalate" asks the user with the reason, null (ask
+   *  mode) leaves the ordinary path in charge. Never consulted for a covered "Allow all" grant. */
+  approvalReviewer?: (request: ApprovalReviewRequest) => Promise<ApprovalReviewVerdict | null>;
   signal?: AbortSignal;
   maxIterations?: number;
   temperature?: number;
@@ -1342,6 +1409,8 @@ export interface AgentSessionOptions {
   editDiffJournal?: {
     captureBefore(toolCallId: string, toolName: string, input: Record<string, unknown> | undefined): Promise<void>;
     captureAfter(toolCallId: string, ok: boolean): Promise<ToolDiffSummary[]>;
+    /** Snapshot files a call changes that its input did not name (see EditDiffJournal.captureFiles). */
+    captureFiles?(toolCallId: string, toolName: string, relPaths: readonly string[]): Promise<void>;
   };
   /** Backs the report_problems tool with VS Code's Problems panel. */
   diagnosticsProvider?: DiagnosticsProvider;
@@ -1566,8 +1635,20 @@ export class AgentSession {
    * cancellation, so the runner calls attachSignal() right before iterating.
    */
   private _signal?: AbortSignal;
-  /** Set once the user chooses "Allow All" — suppresses further approval prompts for this session. */
-  private _autoApprove = false;
+  /**
+   * "Allow All" answers given during the current turn, keyed by what they approved (category and
+   * tier). Cleared at the start of every send(), so one answer never outlives the run it was
+   * given in, and approving all edits never approves a command. See approval-scope.ts.
+   */
+  private readonly _approvalGrants = new TurnApprovalGrants();
+  /** Tools tool_search has loaded this session (on-demand loading). Sticky: a loaded tool is never
+   *  unloaded, because re-listing it later would cost another cache miss on client-side routes. */
+  private _loadedTools = new Set<string>();
+  /** The user's own words, one entry per user message, oldest first. See send(). */
+  private _userPrompts: string[] = [];
+  /** tool_search results, by tool_use id, whose content a native Anthropic request replaces with
+   *  `tool_reference` blocks. Stored apart from the message so history stays provider-neutral. */
+  private _toolReferenceResults = new Map<string, string[]>();
   /** Accumulated JSON summary from model-based compression of older history. */
   private _compressedSummary = "";
   /** Number of compressions applied this session. */
@@ -1759,6 +1840,44 @@ export class AgentSession {
   /** Names of the skills currently in the working context, in load order. */
   get loadedSkills(): string[] { return [...this._loadedSkills.keys()]; }
 
+  /** What the user typed this session, oldest first (see send). Empty for sessions persisted
+   *  before prompts were recorded; callers fall back to reading the history. */
+  get userPrompts(): string[] { return [...this._userPrompts]; }
+
+  /**
+   * Everything needed to put the conversation back to this moment (see rewindTo). Taken at the
+   * start of a turn. Cheap: message objects are shared — the full history already keeps every one
+   * alive — and only the arrays and the small persisted state are copied.
+   */
+  captureRewindSnapshot(): SessionRewindSnapshot {
+    return { messages: [...this.messages], fullHistory: [...this._fullHistory], state: this.exportState(false) };
+  }
+
+  /**
+   * Return the conversation to a snapshot, discarding every turn after it. Run-scoped state goes
+   * too: approval grants, a pending gate, and the file-freshness ledger, whose reads belong to
+   * turns the model no longer remembers.
+   */
+  rewindTo(snapshot: SessionRewindSnapshot): void {
+    this.restoreState({
+      ...snapshot.state,
+      sessionId: this.sessionId,
+      messages: snapshot.messages,
+      fullHistory: snapshot.fullHistory,
+    });
+    this._approvalGrants.clear();
+    this._pendingGate = undefined;
+    this._freshness.clear();
+    this._lastToolRoundFingerprint = "";
+    this._duplicateToolRoundCount = 0;
+  }
+
+  /** Files that changed without this session doing it (a rewind restoring them). An edit built on
+   *  the session's older copy then gets the stale-file warning instead of an anchor mismatch. */
+  noteExternalFileChanges(paths: readonly string[], by: string): void {
+    this._freshness.recordExternalWrites(paths, by);
+  }
+
   /**
    * The active skills block. Ordered after the request-mode profile and before the
    * workspace state deliberately: the mode is the broader posture a skill specializes,
@@ -1852,6 +1971,11 @@ export class AgentSession {
       loadedSkills: this._loadedSkills.size
         ? [...this._loadedSkills.entries()].map(([name, markdown]) => ({ name, markdown }))
         : undefined,
+      loadedTools: this._loadedTools.size ? [...this._loadedTools] : undefined,
+      userPrompts: this._userPrompts.length ? [...this._userPrompts] : undefined,
+      toolReferenceResults: this._toolReferenceResults.size
+        ? [...this._toolReferenceResults.entries()].map(([toolUseId, names]) => ({ toolUseId, names: [...names] }))
+        : undefined,
       compressedSummary: this._compressedSummary || undefined,
       compressionCount: this._compressionCount || undefined,
       lastInputTokens: this._lastInputTokens || undefined,
@@ -1888,6 +2012,13 @@ export class AgentSession {
       (state.loadedSkills ?? [])
         .filter((entry) => entry?.name && entry?.markdown)
         .map((entry) => [entry.name, entry.markdown]),
+    );
+    this._loadedTools = new Set((state.loadedTools ?? []).filter((name) => typeof name === "string"));
+    this._userPrompts = (state.userPrompts ?? []).filter((prompt) => typeof prompt === "string");
+    this._toolReferenceResults = new Map(
+      (state.toolReferenceResults ?? [])
+        .filter((entry) => entry && typeof entry.toolUseId === "string" && Array.isArray(entry.names))
+        .map((entry) => [entry.toolUseId, entry.names.map(String)]),
     );
     this._compressionCount = state.compressionCount ?? 0;
     this._lastInputTokens = state.lastInputTokens ?? 0;
@@ -2202,14 +2333,22 @@ export class AgentSession {
    * charged the gap to heuristic tokenization. Returns undefined when there are no tools, so the
    * capture path can skip the segment entirely rather than adding an empty one.
    */
-  private _pauToolSchemas(format: "anthropic" | "openai"): unknown {
-    const tools = this._getTools();
-    if (tools.length === 0) return undefined;
-    if (format === "anthropic") return this._buildAnthropicWireTools();
-    return tools.map((t) => ({
-      type: "function" as const,
-      function: { name: t.name, description: t.description, parameters: t.input_schema },
-    }));
+  private _pauToolSchemas(format: "anthropic" | "openai"): { inContext: unknown; deferred: unknown } {
+    // Measured as what occupies the window: with on-demand loading that is core + loaded tools,
+    // not the whole catalog a native request lists with defer_loading. The rest is reported apart
+    // so a receipt shows the saving directly.
+    const { inContext, outOfContext } = this._toolPlan();
+    const render = (tools: ToolDefinition[]): unknown => {
+      if (tools.length === 0) return undefined;
+      if (format === "anthropic") {
+        return this._buildAnthropicWireTools({ wire: tools, deferred: new Set(), inContext: tools, outOfContext: [] });
+      }
+      return tools.map((t) => ({
+        type: "function" as const,
+        function: { name: t.name, description: t.description, parameters: t.input_schema },
+      }));
+    };
+    return { inContext: render(inContext), deferred: render(outOfContext) };
   }
 
   /**
@@ -2259,6 +2398,7 @@ export class AgentSession {
             toOpenAIMessages(normalized, this._openAIEffectiveSystem()),
             this._dynamicContext(),
           );
+      const toolSchemas = this._pauToolSchemas(format);
       const receipt = capturePauReceipt({
         traceInput,
         format,
@@ -2266,7 +2406,8 @@ export class AgentSession {
         model: this.opts.model,
         provider: this.provider,
         contextWindow: this._effectiveContextLength(),
-        toolSchemas: this._pauToolSchemas(format),
+        toolSchemas: toolSchemas.inContext,
+        deferredToolSchemas: toolSchemas.deferred,
         usage: {
           input: usage.inputTokens,
           cacheRead: usage.cacheReadTokens,
@@ -2348,7 +2489,7 @@ export class AgentSession {
             ? `${this.opts.systemPrompt}\n\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}`
             : this.opts.systemPrompt,
           messages: [...normalizeForProvider(this.messages), ...(subscriptionContext ? [{ role: "user" as const, content: subscriptionContext }] : [])],
-          tools: this._getTools(),
+          tools: this._toolPlan().wire,
           signal: this._signal,
         })
         : this.provider === "anthropic"
@@ -2671,8 +2812,146 @@ export class AgentSession {
     const EDITOR_BACKED_TOOLS = new Set(["file_edit", "file_edit_batch", "json_edit"]);
     const usable = this.opts.editProvider ? all : all.filter((t) => !EDITOR_BACKED_TOOLS.has(t.name));
     const filtered = this._disabledTools.size ? usable.filter((t) => !this._disabledTools.has(t.name)) : usable;
+    // Plan mode is read-only by construction: the mutating tools are not offered at all, so the
+    // model plans with what it can actually use instead of being asked to hold back.
+    const modeFiltered = this._activeRequestMode === "plan"
+      ? filtered.filter((t) => !planModeWithholds(t.name))
+      : filtered;
     // UI_TOOLS are always included and not user-toggleable
-    return [...filtered, ...UI_TOOLS];
+    const available = [...modeFiltered, ...UI_TOOLS];
+    return this._onDemandTools() ? [...available, ...TOOL_LOADING_TOOLS] : available;
+  }
+
+  /** The applier's pre-apply hook for one call: snapshot the files an approved editor or
+   *  language-server edit is about to change, including those only the applied edit names. */
+  private _journalBeforeApply(tc: ToolUseBlock): ((paths: string[]) => Promise<void>) | undefined {
+    const journal = this.opts.editDiffJournal;
+    if (!journal?.captureFiles) return undefined;
+    return (paths) => journal.captureFiles!(tc.id, tc.name, paths);
+  }
+
+  private _onDemandTools(): boolean {
+    return this.opts.toolLoading?.() === "on_demand";
+  }
+
+  /** The Anthropic API can defer definitions itself (see agent/tool-loading.ts). Direct API only:
+   *  Bedrock Converse has no equivalent and Mantle is not verified to support it. */
+  private _nativeToolSearch(): boolean {
+    return this._onDemandTools()
+      && this.provider === "anthropic"
+      && !this.opts.subscriptionStream
+      && supportsNativeToolSearch(this.opts.model);
+  }
+
+  /**
+   * What a request carries, split three ways:
+   *  - `wire`: the tools array to send. Native: every available tool. Client-side: core + loaded.
+   *  - `deferred`: names sent with `defer_loading: true` (native only).
+   *  - `inContext`: the definitions actually occupying the context window — what PAU measures.
+   * With on-demand loading off, all three are simply the available catalog.
+   */
+  private _toolPlan(): { wire: ToolDefinition[]; deferred: ReadonlySet<string>; inContext: ToolDefinition[]; outOfContext: ToolDefinition[] } {
+    const available = this._getTools();
+    if (!this._onDemandTools()) return { wire: available, deferred: new Set(), inContext: available, outOfContext: [] };
+    const core: ToolDefinition[] = [];
+    const rest: ToolDefinition[] = [];
+    for (const tool of available) (isCoreTool(tool.name) ? core : rest).push(tool);
+    const unloaded = rest.filter((tool) => !this._loadedTools.has(tool.name));
+    const loaded = rest.filter((tool) => this._loadedTools.has(tool.name));
+    // The roster lists what is left to load. Natively the API keeps loaded tools deferred too, so
+    // the roster (and with it the cached prefix) stays fixed for the whole session there.
+    const native = this._nativeToolSearch();
+    const roster = buildToolRoster(native ? rest : unloaded);
+    const withRoster = core.map((tool) => tool.name === TOOL_SEARCH_NAME
+      ? { ...tool, description: toolSearchDescription(roster) }
+      : tool);
+    if (native) {
+      return {
+        wire: [...withRoster, ...rest],
+        deferred: new Set(rest.map((tool) => tool.name)),
+        inContext: [...withRoster, ...loaded],
+        outOfContext: unloaded,
+      };
+    }
+    const wire = [...withRoster, ...loaded];
+    return { wire, deferred: new Set(), inContext: wire, outOfContext: unloaded };
+  }
+
+  /**
+   * tool_search. Loads by exact name first, then by query; reports what it could not find with a
+   * nearest-name hint so a typo costs one retry, not a guess. Natively the loaded names become
+   * `tool_reference` blocks at serialization (see _anthropicWireMessages).
+   */
+  private _handleToolSearch(toolCallId: string, payload: Record<string, unknown>): unknown {
+    if (!this._onDemandTools()) {
+      return { ok: false, error: "Every tool is already loaded in this session; call the one you need directly." };
+    }
+    const available = this._getTools();
+    const byName = new Map(available.map((tool) => [tool.name, tool]));
+    const loadable = available.filter((tool) => !isCoreTool(tool.name));
+    const names = Array.isArray(payload["names"]) ? (payload["names"] as unknown[]).map((n) => String(n).trim()).filter(Boolean) : [];
+    const query = typeof payload["query"] === "string" ? payload["query"].trim() : "";
+    if (!names.length && !query) {
+      return { ok: false, error: "Pass `names` (exact tool names from the roster) or `query` (what you need to do)." };
+    }
+    const found: ToolDefinition[] = [];
+    const alreadyLoaded: string[] = [];
+    const notFound: Array<{ name: string; didYouMean?: string }> = [];
+    const loadableNames = loadable.map((t) => t.name);
+    for (const name of names) {
+      const tool = byName.get(name);
+      if (!tool) {
+        const didYouMean = suggestToolName(name, loadableNames);
+        notFound.push(didYouMean ? { name, didYouMean } : { name });
+      } else if (isCoreTool(name)) {
+        alreadyLoaded.push(name);
+      } else {
+        found.push(tool);
+      }
+    }
+    if (query) {
+      for (const tool of searchTools(query, loadable)) {
+        if (!found.includes(tool)) found.push(tool);
+      }
+    }
+    for (const tool of found) this._loadedTools.add(tool.name);
+    const loadedNames = found.map((tool) => tool.name);
+    if (loadedNames.length && this._nativeToolSearch()) this._toolReferenceResults.set(toolCallId, loadedNames);
+    if (!loadedNames.length) {
+      return {
+        ok: false,
+        error: query && !names.length
+          ? `No tool matched "${query}". Check the roster in tool_search's description for the exact name.`
+          : "Nothing new was loaded.",
+        ...(alreadyLoaded.length ? { alreadyLoaded } : {}),
+        ...(notFound.length ? { notFound } : {}),
+      };
+    }
+    return {
+      ok: true,
+      loaded: found.map((tool) => ({ name: tool.name, summary: firstSentence(tool.description) })),
+      ...(alreadyLoaded.length ? { alreadyLoaded } : {}),
+      ...(notFound.length ? { notFound } : {}),
+      message: `Loaded ${loadedNames.length} tool${loadedNames.length === 1 ? "" : "s"}; call ${loadedNames.length === 1 ? "it" : "them"} directly from now on.`,
+    };
+  }
+
+  /** A tool the model called without loading it first still runs — it exists and is available —
+   *  and counts as loaded from then on, so the definition is there when it calls it again. */
+  private _noteToolUse(name: string): void {
+    if (!this._onDemandTools() || isCoreTool(name) || this._loadedTools.has(name)) return;
+    if (this._getTools().some((tool) => tool.name === name)) this._loadedTools.add(name);
+  }
+
+  /** Anthropic-format history for the wire, with tool_search results expanded natively. */
+  private _anthropicWireMessages(sentToolNames: ReadonlySet<string>): unknown[] {
+    const messages = appendWorkspaceContextTail(
+      withRollingCacheBreakpoint(stripUnsignedThinking(normalizeForProvider(this.messages)), this.opts.cacheTtl),
+      this._dynamicContext(),
+    );
+    return this._nativeToolSearch()
+      ? expandToolReferences(messages as Array<{ role: string; content: unknown }>, this._toolReferenceResults, sentToolNames)
+      : messages;
   }
 
   private _handleTranscriptRead(payload: Record<string, unknown>): unknown {
@@ -2876,6 +3155,13 @@ export class AgentSession {
     if (this._disabledTools.has(tc.name) && !UI_TOOL_NAMES.has(tc.name)) {
       return { ok: false, error: `The "${tc.name}" tool is disabled in this session's settings and cannot be used. Continue without it.` };
     }
+    // Defence in depth behind the catalog filter in _getTools(): a withheld tool can still be
+    // named from memory of an earlier turn, and shell/git calls are only refusable by argument.
+    if (this._activeRequestMode === "plan") {
+      const dispatch = resolveToolDispatch(tc.name, tc.input);
+      const refusal = planModeRefusal(tc.name, dispatch.runtimeType, dispatch.payload);
+      if (refusal) return { ok: false, error: refusal };
+    }
     const missing = this._missingCommandError(tc);
     if (missing) return missing;
     const issues = validateToolInput(tc.name, tc.input);
@@ -2942,6 +3228,76 @@ export class AgentSession {
   }
 
   /** Truncates an oversized tool result, retaining the full text for the paging tools. */
+  /**
+   * The single approval gate for runtime-confirmed tools: commands, runtime file operations,
+   * external service mutations and sequences. Editor and language-server edits are approved by the
+   * WorkspaceEditApplier instead, but they read and record the same turn grants.
+   *
+   * Order matters: an existing grant for this exact scope answers first, then a run with no
+   * interactive approver resolves by policy, and only then is a human asked. Emits the
+   * approval_pending / approval_result events itself so every caller reports decisions the same way.
+   */
+  private async *_approvalGate(
+    tc: ToolUseBlock,
+    scope: ApprovalScope,
+    description: string,
+    unrecognizedCommand: boolean | undefined,
+    input: Record<string, unknown>,
+  ): AsyncGenerator<AgentEvent, { granted: boolean; decision: ApprovalDecision; deniedByPolicy: boolean }> {
+    const tier = scope.tier;
+    let decision: ApprovalDecision;
+    let deniedByPolicy = false;
+    const review = this._approvalGrants.has(scope) || !this.opts.approvalReviewer
+      ? null
+      : await this.opts.approvalReviewer({
+        toolCallId: tc.id,
+        toolName: tc.name,
+        category: scope.category,
+        tier,
+        description,
+        unrecognizedCommand,
+        input,
+      });
+    if (review) {
+      yield { type: "approval_review", toolCallId: tc.id, verdict: review.action === "allow" ? "allowed" : "escalated", reason: review.reason };
+    }
+    if (this._approvalGrants.has(scope)) {
+      decision = "allow_all";
+    } else if (review?.action === "allow") {
+      // One-shot: an automatic approval never becomes a grant that covers later calls.
+      decision = "allow";
+    } else {
+      // An interactive approver is available when the host wired an approvalProvider or the run
+      // left the policy at "interactive" (the host modal). Autonomous / delegated runs that set
+      // "deny"/"allow" resolve by policy WITHOUT a pending gate — a gate would leave the run
+      // blocked forever with no one to answer it.
+      const autoPolicy = this.opts.autonomousApprovalPolicy ?? "interactive";
+      const canPromptInteractively = !!this.opts.approvalProvider || autoPolicy === "interactive";
+      if (!canPromptInteractively) {
+        decision = autoPolicy === "allow" ? "allow_all" : "deny";
+        deniedByPolicy = decision === "deny";
+      } else {
+        this._pendingGate = { kind: "approval", toolCallId: tc.id, toolName: tc.name, description, tier, unrecognizedCommand };
+        yield { type: "runtime_state", state: this.runtimeState };
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        yield { type: "approval_pending", toolCallId: tc.id, description, tier, unrecognizedCommand };
+        try {
+          decision = this.opts.approvalProvider
+            ? await this.opts.approvalProvider(tc.id, tc.name, description, tier)
+            : await requestApprovalWithDetails(tc.name, description, tier);
+        } finally {
+          this._pendingGate = undefined;
+          yield { type: "runtime_state", state: this.runtimeState };
+          if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
+        }
+      }
+      if (decision === "allow_all") this._approvalGrants.grant(scope);
+    }
+    const granted = decision !== "deny";
+    yield { type: "approval_result", toolCallId: tc.id, granted, decision };
+    return { granted, decision, deniedByPolicy };
+  }
+
   private _capToolResult(toolCallId: string, stringified: string): string {
     return this._toolOutput.cap(toolCallId, stringified);
   }
@@ -2984,6 +3340,7 @@ export class AgentSession {
       // If the accumulated summary has grown past the cap, re-condense it into a
       // single replacement block so the uncached system-prompt content stays bounded
       // across many compression passes (the core "preserve the head" invariant).
+      let nextSummary = newAccumulated;
       if (newAccumulated.length > MAX_SUMMARY_CHARS) {
         try {
           const recondenseMessages: AgentMessage[] = [{
@@ -2991,15 +3348,17 @@ export class AgentSession {
             content: `The following is an accumulated multi-pass summary of earlier conversation history that has grown large. Condense it into a single comprehensive summary that preserves all key decisions, facts, tool results, file changes, and context, while eliminating redundancy between passes.\n\n${newAccumulated}`,
           }];
           const recondensed = await this._compressWithRetry(compressionProvider, recondenseMessages, 1);
-          this._compressedSummary = `[Recondensed after ${this._compressionCount + 1} passes]\n${recondensed}`;
+          nextSummary = `[Recondensed after ${this._compressionCount + 1} passes]\n${recondensed}`;
         } catch {
           // Re-condensation failed — fall back to the naive concatenation so at least
           // the new pass's content is recorded. Next compression attempt will retry.
-          this._compressedSummary = newAccumulated;
         }
-      } else {
-        this._compressedSummary = newAccumulated;
       }
+      // The history this pass summarised may have been replaced while it ran — a rewind or a
+      // restore put a different conversation in place. Applying the result then would slice the
+      // wrong messages and attach a summary of a conversation that no longer exists.
+      if (toCompress.some((message, index) => this.messages[index] !== message)) return "skipped";
+      this._compressedSummary = nextSummary;
       // Remove exactly the summarised prefix rather than replacing the whole array. When
       // compaction runs in the background, messages may have been appended while the
       // summariser ran; slicing off only the first `toCompress.length` preserves them.
@@ -3319,7 +3678,70 @@ export class AgentSession {
     saveCheckpoint(this.opts.context, cp);
   }
 
-  async *send(userContent: string, sendOpts?: { images?: ImageBlock[]; requestMode?: RequestMode; preserveRequestMode?: boolean }): AsyncGenerator<AgentEvent> {
+  /**
+   * `userText` is what the user actually typed, when this turn answers a user message — before
+   * @-mention bodies, selection context and attachment notes are folded into `userContent`, and
+   * absent for harness turns (plan continuation, checkpoint resume). It is kept apart because the
+   * reviewers that judge intent (auto mode, loop approvals, the plan conductor) must see the
+   * user's words, not the context that rode along with them or the harness talking to itself.
+   */
+  async *send(userContent: string, sendOpts?: { images?: ImageBlock[]; requestMode?: RequestMode; preserveRequestMode?: boolean; userText?: string }): AsyncGenerator<AgentEvent> {
+    let stopReason = "cancelled";
+    try {
+      // Harness continuations and delegated instructions are not user submissions.
+      if (sendOpts?.userText !== undefined) {
+        const outcome = await this._runHook({ event: "UserPromptSubmit", prompt: sendOpts.userText });
+        if (outcome.blocked) {
+          stopReason = "error";
+          this._lastStopReason = "error";
+          yield { type: "error", message: outcome.blocked };
+          const stopped = await this._runHook({ event: "Stop", stopReason });
+          stopReason = "";
+          for (const message of stopped.warnings ?? []) yield { type: "execution_diagnostic", level: "warn", message };
+          yield { type: "turn_complete", stopReason: "error", iterations: 0 };
+          return;
+        }
+      }
+      for await (const event of this._sendCore(userContent, sendOpts)) {
+        if (event.type === "turn_complete") {
+          const outcome = await this._runHook({ event: "Stop", stopReason: event.stopReason });
+          stopReason = "";
+          for (const message of outcome.warnings ?? []) yield { type: "execution_diagnostic", level: "warn", message };
+        }
+        yield event;
+      }
+    } catch (error) {
+      if (stopReason) stopReason = "error";
+      throw error;
+    } finally {
+      // Also notify on thrown failures or a consumer closing the stream early.
+      // Do not yield from finally: a closed consumer would leave the generator suspended.
+      if (stopReason) await this._runHook({ event: "Stop", stopReason });
+    }
+  }
+
+  private async _runHook(input: Omit<HookInput, "sessionId" | "workspaceRoot">): Promise<HookOutcome> {
+    try {
+      return await this.opts.hookProvider?.({ ...input, sessionId: this.sessionId, workspaceRoot: this.opts.workspaceRoot },
+        // Stop hooks must still run after cancellation, under their own timeout.
+        input.event === "Stop" ? undefined : this._signal) ?? {};
+    } catch (error) {
+      const message = `${input.event} hook failed: ${error instanceof Error ? error.message : String(error)}`;
+      return input.event === "PreToolUse" || input.event === "UserPromptSubmit" ? { blocked: message } : { warnings: [message] };
+    }
+  }
+
+  private async _preToolError(tc: ToolUseBlock): Promise<{ ok: false; error: string } | null> {
+    const outcome = await this._runHook({ event: "PreToolUse", toolCallId: tc.id, toolName: tc.name, toolInput: tc.input });
+    return outcome.blocked ? { ok: false, error: outcome.blocked } : null;
+  }
+
+  private async *_sendCore(userContent: string, sendOpts?: { images?: ImageBlock[]; requestMode?: RequestMode; preserveRequestMode?: boolean; userText?: string }): AsyncGenerator<AgentEvent> {
+    const typed = sendOpts?.userText?.trim();
+    if (typed) {
+      this._userPrompts.push(typed.length > MAX_RECORDED_PROMPT_CHARS ? `${typed.slice(0, MAX_RECORDED_PROMPT_CHARS)}…` : typed);
+      if (this._userPrompts.length > MAX_RECORDED_PROMPTS) this._userPrompts.splice(0, this._userPrompts.length - MAX_RECORDED_PROMPTS);
+    }
     if (!sendOpts?.preserveRequestMode) {
       this._requestMode = sendOpts?.requestMode ?? "auto";
       this._activeRequestMode = resolveRequestMode(this._requestMode, userContent);
@@ -3333,6 +3755,9 @@ export class AgentSession {
     this._lastStopReason = undefined;
     this._pendingGate = undefined;
     this._autoContinueCount = 0;
+    // A new turn starts with no standing approvals. "Allow All" is an answer about the run it was
+    // given in; carrying it into a later request would approve work the user has not seen yet.
+    this._approvalGrants.clear();
     yield { type: "runtime_state", state: this.runtimeState };
     if (!this.opts.contextLength && !this._contextLengthWarned) {
       this._contextLengthWarned = true;
@@ -3886,7 +4311,7 @@ export class AgentSession {
             const toolStartedAt = Date.now();
             const idx = tcToIndex.get(tc.id)!;
 
-            const validationError = this._toolValidationError(tc);
+            const validationError = this._toolValidationError(tc) ?? await this._preToolError(tc);
             if (validationError) {
               toolResults[idx] = {
                 type: "tool_result",
@@ -3934,6 +4359,7 @@ export class AgentSession {
                 try {
                   for await (const subEvent of self.opts.subagentProvider.spawn({
                     parentSessionId: self.sessionId,
+                    requestMode: self._activeRequestMode,
                     parentToolCallId: tc.id,
                     input: subagentInput,
                     signal: self._signal,
@@ -3963,6 +4389,9 @@ export class AgentSession {
               }
               const elapsedMs = Math.max(Date.now() - toolStartedAt, 0);
               const ok = isOk(finalResult);
+              const hookOutcome = await self._runHook({ event: "PostToolUse", toolCallId: tc.id,
+                toolName: tc.name, toolInput: tc.input, result: finalResult, ok });
+              for (const message of hookOutcome.warnings ?? []) yield { type: "execution_diagnostic", level: "warn", message };
               const summary = ok ? summarizeResult(finalResult) : String((finalResult as Record<string, unknown> | undefined)?.["error"] ?? "Failed");
 
               toolResults[idx] = {
@@ -4007,7 +4436,7 @@ export class AgentSession {
             const toolStartedAt = Date.now();
             const idx = tcToIndex.get(tc.id)!;
 
-            const validationError = this._toolValidationError(tc);
+            const validationError = this._toolValidationError(tc) ?? await this._preToolError(tc);
             if (validationError) {
               toolResults[idx] = {
                 type: "tool_result",
@@ -4025,6 +4454,8 @@ export class AgentSession {
               };
               continue;
             }
+
+            this._noteToolUse(tc.name);
 
             if (runtimeType.startsWith("mcp.")) {
               const serverId = String(payload["serverId"] ?? "").trim();
@@ -4200,9 +4631,9 @@ export class AgentSession {
                       expectedReplacements: typeof payload["expectedReplacements"] === "number" ? payload["expectedReplacements"] : undefined,
                       rationale: typeof payload["rationale"] === "string" ? payload["rationale"] : undefined,
                     },
-                    { autoApprove: this._autoApprove },
+                    { autoApprove: this._approvalGrants.has(EDIT_WRITE_SCOPE), beforeApply: this._journalBeforeApply(tc) },
                   );
-                  if (r.ok && r.autoApproveAll) this._autoApprove = true;
+                  if (r.ok && r.autoApproveAll) this._approvalGrants.grant(EDIT_WRITE_SCOPE);
                   if ("autoApproveAll" in r) delete (r as { autoApproveAll?: boolean }).autoApproveAll;
                   result = r;
                 }
@@ -4221,9 +4652,9 @@ export class AgentSession {
                     : [];
                   const r = await this.opts.editProvider.applyBatchEdits(
                     { edits, rationale: typeof payload["rationale"] === "string" ? payload["rationale"] : undefined },
-                    { autoApprove: this._autoApprove },
+                    { autoApprove: this._approvalGrants.has(EDIT_WRITE_SCOPE), beforeApply: this._journalBeforeApply(tc) },
                   );
-                  if (r.ok && r.autoApproveAll) this._autoApprove = true;
+                  if (r.ok && r.autoApproveAll) this._approvalGrants.grant(EDIT_WRITE_SCOPE);
                   if ("autoApproveAll" in r) delete (r as { autoApproveAll?: boolean }).autoApproveAll;
                   result = r;
                 }
@@ -4237,7 +4668,7 @@ export class AgentSession {
                       destination: String(payload["destination"] ?? ""),
                       overwrite: payload["overwrite"] === true,
                     },
-                    { autoApprove: this._autoApprove },
+                    { autoApprove: this._approvalGrants.has(EDIT_WRITE_SCOPE), beforeApply: this._journalBeforeApply(tc) },
                   );
                 }
               } else if (runtimeType === "editor.json_edit") {
@@ -4259,9 +4690,9 @@ export class AgentSession {
                       operations: operations as JsonOperation[],
                       rationale: typeof payload["rationale"] === "string" ? payload["rationale"] : undefined,
                     },
-                    { autoApprove: this._autoApprove },
+                    { autoApprove: this._approvalGrants.has(EDIT_WRITE_SCOPE), beforeApply: this._journalBeforeApply(tc) },
                   );
-                  if (r.ok && r.autoApproveAll) this._autoApprove = true;
+                  if (r.ok && r.autoApproveAll) this._approvalGrants.grant(EDIT_WRITE_SCOPE);
                   if ("autoApproveAll" in r) delete (r as { autoApproveAll?: boolean }).autoApproveAll;
                   result = r;
                 }
@@ -4279,12 +4710,14 @@ export class AgentSession {
                   const r = await this.opts.lspProvider.dispatch(
                     runtimeType.slice("lsp.".length),
                     payload,
-                    { autoApprove: this._autoApprove, signal: this._signal },
+                    { autoApprove: this._approvalGrants.has(EDIT_WRITE_SCOPE), signal: this._signal, beforeApply: this._journalBeforeApply(tc) },
                   );
-                  if (r.ok && (r as { autoApproveAll?: boolean }).autoApproveAll) this._autoApprove = true;
+                  if (r.ok && (r as { autoApproveAll?: boolean }).autoApproveAll) this._approvalGrants.grant(EDIT_WRITE_SCOPE);
                   if ("autoApproveAll" in r) delete (r as { autoApproveAll?: boolean }).autoApproveAll;
                   result = r;
                 }
+              } else if (runtimeType === "tools.search") {
+                result = this._handleToolSearch(tc.id, payload);
               } else if (runtimeType === "memory.semantic_search") {
                 result = await this._handleMemorySemanticSearch(payload);
               } else if (runtimeType.startsWith("memory.")) {
@@ -4385,6 +4818,7 @@ export class AgentSession {
                     try {
                       for await (const subEvent of this.opts.subagentProvider.spawn({
                         parentSessionId: this.sessionId,
+                        requestMode: this._activeRequestMode,
                         parentToolCallId: tc.id,
                         input: subagentInput,
                         signal: this._signal,
@@ -4435,6 +4869,7 @@ export class AgentSession {
                   try {
                     for await (const subEvent of this.opts.subagentProvider.followUp({
                       parentSessionId: this.sessionId,
+                      requestMode: this._activeRequestMode,
                       parentToolCallId: tc.id,
                       input: followUpInput,
                       signal: this._signal,
@@ -4470,10 +4905,12 @@ export class AgentSession {
                   result = { ok: false, error: "Execution Runs are not available in this workspace." };
                 } else {
                   const operation = runtimeType.slice("sequence.".length);
+                  // Never pre-confirmed: whether an earlier "Allow All" covers this depends on the
+                  // tier the sequence reports, which is only known once it asks.
                   const firstResult = await this.opts.sequenceProvider.dispatch(operation, payload, {
                     sessionId: this.sessionId,
                     signal: this._signal,
-                    confirmed: this._autoApprove,
+                    confirmed: false,
                   });
                   if (isConfirmationRequired(firstResult)) {
                     const { tier, description, unrecognizedCommand } = firstResult as {
@@ -4481,43 +4918,13 @@ export class AgentSession {
                       description: string;
                       unrecognizedCommand?: boolean;
                     };
-                    let granted = this._autoApprove;
-                    let decision: ApprovalDecision = this._autoApprove ? "allow_all" : "deny";
-                    let deniedByPolicy = false;
-                    if (!granted) {
-                      const autoPolicy = this.opts.autonomousApprovalPolicy ?? "interactive";
-                      const canPromptInteractively = !!this.opts.approvalProvider || autoPolicy === "interactive";
-                      if (!canPromptInteractively) {
-                        decision = autoPolicy === "allow" ? "allow_all" : "deny";
-                        deniedByPolicy = decision === "deny";
-                        if (decision === "allow_all") this._autoApprove = true;
-                        granted = decision !== "deny";
-                      } else {
-                        this._pendingGate = {
-                          kind: "approval",
-                          toolCallId: tc.id,
-                          toolName: tc.name,
-                          description,
-                          tier,
-                          unrecognizedCommand,
-                        };
-                        yield { type: "runtime_state", state: this.runtimeState };
-                        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
-                        yield { type: "approval_pending", toolCallId: tc.id, description, tier, unrecognizedCommand };
-                        try {
-                          decision = this.opts.approvalProvider
-                            ? await this.opts.approvalProvider(tc.id, tc.name, description, tier)
-                            : await requestApprovalWithDetails(tc.name, description, tier);
-                        } finally {
-                          this._pendingGate = undefined;
-                          yield { type: "runtime_state", state: this.runtimeState };
-                          if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
-                        }
-                        if (decision === "allow_all") this._autoApprove = true;
-                        granted = decision !== "deny";
-                      }
-                    }
-                    yield { type: "approval_result", toolCallId: tc.id, granted, decision };
+                    const { granted, deniedByPolicy } = yield* this._approvalGate(
+                      tc,
+                      { category: "sequence", tier },
+                      description,
+                      unrecognizedCommand,
+                      payload,
+                    );
                     if (!granted) {
                       const denial = deniedByPolicy
                         ? `This ${tier} operation requires approval, but this run has no interactive approver to grant it — it was automatically denied.`
@@ -4562,42 +4969,18 @@ export class AgentSession {
                   result = { ok: false, error: enriched["_serviceError"] };
                 } else {
                   let granted = true;
-                  let decision: ApprovalDecision = "allow";
                   let deniedByPolicy = false;
                   const mutating = isMutatingServiceTool(tc.name);
-                  const tier = "network";
                   const destination = String(enriched["host"] ?? enriched["instanceUrl"] ?? "the configured service");
                   const description = `${tc.name.replace(/_/g, " ")} on ${destination}`;
                   if (mutating) {
-                    granted = this._autoApprove;
-                    decision = this._autoApprove ? "allow_all" : "deny";
-                    if (!granted) {
-                      const autoPolicy = this.opts.autonomousApprovalPolicy ?? "interactive";
-                      const canPromptInteractively = !!this.opts.approvalProvider || autoPolicy === "interactive";
-                      if (!canPromptInteractively) {
-                        decision = autoPolicy === "allow" ? "allow_all" : "deny";
-                        deniedByPolicy = decision === "deny";
-                        if (decision === "allow_all") this._autoApprove = true;
-                        granted = decision !== "deny";
-                      } else {
-                        this._pendingGate = { kind: "approval", toolCallId: tc.id, toolName: tc.name, description, tier };
-                        yield { type: "runtime_state", state: this.runtimeState };
-                        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
-                        yield { type: "approval_pending", toolCallId: tc.id, description, tier };
-                        try {
-                          decision = this.opts.approvalProvider
-                            ? await this.opts.approvalProvider(tc.id, tc.name, description, tier)
-                            : await requestApprovalWithDetails(tc.name, description, tier);
-                        } finally {
-                          this._pendingGate = undefined;
-                          yield { type: "runtime_state", state: this.runtimeState };
-                          if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
-                        }
-                        if (decision === "allow_all") this._autoApprove = true;
-                        granted = decision !== "deny";
-                      }
-                    }
-                    yield { type: "approval_result", toolCallId: tc.id, granted, decision };
+                    ({ granted, deniedByPolicy } = yield* this._approvalGate(
+                      tc,
+                      { category: "service", tier: "network" },
+                      description,
+                      undefined,
+                      payload,
+                    ));
                   }
                   if (!granted) {
                     result = deniedByPolicy
@@ -4613,40 +4996,13 @@ export class AgentSession {
                 const firstResult = runtimeResultOrError(firstResponse, tc.name, () => this._getTools().map((t) => t.name));
                 if (isConfirmationRequired(firstResult)) {
                   const { tier, description, unrecognizedCommand } = firstResult as { tier: string; description: string; unrecognizedCommand?: boolean };
-                  let granted = this._autoApprove;
-                  let decision: ApprovalDecision = this._autoApprove ? "allow_all" : "deny";
-                  let deniedByPolicy = false;
-                  if (!granted) {
-                    // An interactive approver is available when the host wired an approvalProvider
-                    // or the run left the policy at "interactive" (the host modal). Autonomous /
-                    // delegated runs that set "deny"/"allow" resolve by policy WITHOUT a pending
-                    // gate — a gate would leave the run blocked forever with no one to answer it.
-                    const autoPolicy = this.opts.autonomousApprovalPolicy ?? "interactive";
-                    const canPromptInteractively = !!this.opts.approvalProvider || autoPolicy === "interactive";
-                    if (!canPromptInteractively) {
-                      decision = autoPolicy === "allow" ? "allow_all" : "deny";
-                      deniedByPolicy = decision === "deny";
-                      if (decision === "allow_all") this._autoApprove = true;
-                      granted = decision !== "deny";
-                    } else {
-                      this._pendingGate = { kind: "approval", toolCallId: tc.id, toolName: tc.name, description, tier, unrecognizedCommand };
-                      yield { type: "runtime_state", state: this.runtimeState };
-                      if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
-                      yield { type: "approval_pending", toolCallId: tc.id, description, tier, unrecognizedCommand };
-                      try {
-                        decision = this.opts.approvalProvider
-                          ? await this.opts.approvalProvider(tc.id, tc.name, description, tier)
-                          : await requestApprovalWithDetails(tc.name, description, tier);
-                      } finally {
-                        this._pendingGate = undefined;
-                        yield { type: "runtime_state", state: this.runtimeState };
-                        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();
-                      }
-                      if (decision === "allow_all") this._autoApprove = true;
-                      granted = decision !== "deny";
-                    }
-                  }
-                  yield { type: "approval_result", toolCallId: tc.id, granted, decision };
+                  const { granted, deniedByPolicy } = yield* this._approvalGate(
+                    tc,
+                    commandApprovalScope(tc.name, runtimeType, tier, payload, unrecognizedCommand),
+                    description,
+                    unrecognizedCommand,
+                    payload,
+                  );
                   if (!granted) {
                     result = deniedByPolicy
                       ? { ok: false, error: `This ${tier} operation requires approval, but this run has no interactive approver to grant it — it was automatically denied. Continue without it, or take a read-only / non-${tier} approach.` }
@@ -4669,6 +5025,12 @@ export class AgentSession {
             // ever does, JSON.stringify(undefined) → undefined would crash _capToolResult and
             // take down the whole turn. Normalize to a clean error instead.
             if (result === undefined) result = { ok: false, error: "Tool returned no result." };
+
+            // Formatters finish before diagnostics and the journal's after-snapshot.
+            // Send the original model input, never the credential-enriched dispatch payload.
+            const hookOutcome = await this._runHook({ event: "PostToolUse", toolCallId: tc.id,
+              toolName: tc.name, toolInput: tc.input, result, ok: isOk(result) });
+            for (const message of hookOutcome.warnings ?? []) yield { type: "execution_diagnostic", level: "warn", message };
 
             // Augment successful tool results with semantically similar past calls.
             // The lookup is time-bounded (1.8 s) and fully non-blocking if the index
@@ -4951,17 +5313,22 @@ export class AgentSession {
 
   /** Build the Anthropic wire tool list — strict-marked where the schema qualifies, unless the
    *  session already learned strict isn't accepted — with the trailing cache breakpoint. */
-  private _buildAnthropicWireTools(): Array<Record<string, unknown>> {
+  private _buildAnthropicWireTools(plan = this._toolPlan()): Array<Record<string, unknown>> {
     const tools = this._strictToolsUnsupported
-      ? this._getTools().map(({ name, description, input_schema }) =>
+      ? plan.wire.map(({ name, description, input_schema }) =>
           ({ name, description, input_schema }) as Record<string, unknown>)
-      : withAnthropicStrictTools(this._getTools());
-    // Cache the (large, stable) tool-schema block by marking the last tool. Tools come first in
-    // Anthropic's prefix order (tools → system → messages), so this entry holds the tool schemas
+      : withAnthropicStrictTools(plan.wire);
+    // Deferred tools stay out of the prompt prefix until a tool_reference expands them. The plan
+    // lists every non-deferred tool first, so the tool breakpoint below lands on the last one —
+    // a deferred tool may not carry cache_control at all.
+    for (const tool of tools) if (plan.deferred.has(String(tool["name"]))) tool["defer_loading"] = true;
+    // Cache the (large, stable) tool-schema block by marking the last loaded tool. Tools come first
+    // in Anthropic's prefix order (tools → system → messages), so this entry holds the tool schemas
     // alone — which is what lets delegated lanes, whose system prompts differ from the parent's,
     // still share it. The system block carries its own breakpoint for tools+system. One of the
     // four breakpoints a request may carry; see withRollingCacheBreakpoint for the other two.
-    if (tools.length > 0) tools[tools.length - 1]!["cache_control"] = cacheControlFor(this.opts.cacheTtl);
+    const lastLoaded = tools.map((tool) => tool["defer_loading"] !== true).lastIndexOf(true);
+    if (lastLoaded >= 0) tools[lastLoaded]!["cache_control"] = cacheControlFor(this.opts.cacheTtl);
     return tools;
   }
 
@@ -4979,12 +5346,13 @@ export class AgentSession {
     const extras = resolveAnthropicBetaExtras(this.opts.model, this.opts, false);
 
     const makeBody = (): Record<string, unknown> => {
+      const toolPlan = this._toolPlan();
       const body: Record<string, unknown> = {
         model: this.opts.model,
         max_tokens: plan.maxTokens,
         system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary, this.opts.cacheTtl),
-        messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(stripUnsignedThinking(normalizeForProvider(this.messages)), this.opts.cacheTtl), this._dynamicContext()),
-        tools: this._buildAnthropicWireTools(),
+        messages: this._anthropicWireMessages(new Set(toolPlan.wire.map((tool) => tool.name))),
+        tools: this._buildAnthropicWireTools(toolPlan),
         stream: true,
       };
       if (plan.temperature !== undefined) body["temperature"] = plan.temperature;
@@ -5257,8 +5625,8 @@ export class AgentSession {
         maxTokens: plan.maxTokens,
         temperature: plan.temperature,
         tools: useCache
-          ? withBedrockToolsCacheBreakpoint(toBedrockTools(this._getTools()), ttl)
-          : toBedrockTools(this._getTools()),
+          ? withBedrockToolsCacheBreakpoint(toBedrockTools(this._toolPlan().wire), ttl)
+          : toBedrockTools(this._toolPlan().wire),
         thinking,
         effort: plan.effort,
       };
@@ -5464,14 +5832,15 @@ export class AgentSession {
     // Body + SigV4 signature are built together: a retry with different tools (the strict
     // fallback below) must re-sign, since the signature covers the payload hash.
     const makeRequest = (): { body: string; signedHeaders: Record<string, string> } => {
+      const toolPlan = this._toolPlan();
       const reqBody: Record<string, unknown> = {
         model: this.opts.model,
         max_tokens: plan.maxTokens,
         // Mantle uses the Anthropic Messages wire format — reuse the same cached-blocks
         // builder so the stable system-prompt head is cache-eligible here too.
         system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary, this.opts.cacheTtl),
-        messages: appendWorkspaceContextTail(withRollingCacheBreakpoint(stripUnsignedThinking(normalizeForProvider(this.messages)), this.opts.cacheTtl), this._dynamicContext()),
-        tools: this._buildAnthropicWireTools(),
+        messages: this._anthropicWireMessages(new Set(toolPlan.wire.map((tool) => tool.name))),
+        tools: this._buildAnthropicWireTools(toolPlan),
         stream: true,
       };
       if (plan.temperature !== undefined) reqBody["temperature"] = plan.temperature;
@@ -5541,7 +5910,7 @@ export class AgentSession {
     const explicitCache = this.provider === "openai" && openAISupportsExplicitPromptCache(this.opts.model);
     if (explicitCache) msgs = withOpenAICacheBreakpoints(msgs);
     msgs = appendOpenAIWorkspaceContextTail(msgs, this._dynamicContext());
-    const tools = this._getTools().map(t => ({
+    const tools = this._toolPlan().wire.map(t => ({
       type: "function" as const,
       function: { name: t.name, description: t.description, parameters: t.input_schema },
     }));
@@ -5869,7 +6238,7 @@ export class AgentSession {
     const plan = this._planThinking();
     const maxTok = plan.maxTokens;
     const reasoningEffort = resolveReasoningEffort(this.opts.model, this.opts.reasoningEffort);
-    const tools = toResponsesTools(this._getTools());
+    const tools = toResponsesTools(this._toolPlan().wire);
     const serviceTier = this.opts.serviceTier && this.opts.serviceTier !== "auto" ? this.opts.serviceTier : undefined;
 
     const makeBody = (): Record<string, unknown> => {
@@ -6196,17 +6565,6 @@ export function filterConfiguredServiceTools(configured: ReadonlySet<string> | u
   return SERVICE_TOOLS.filter((t) => configured.has(t.name.split("_")[0] ?? ""));
 }
 
-const MUTATING_SERVICE_TOOLS = new Set([
-  "github_create_issue", "github_create_pr", "github_add_comment",
-  "gitlab_create_issue", "gitlab_create_mr",
-  "jira_create_issue", "jira_update_issue", "jira_add_comment",
-  "confluence_create_page", "confluence_update_page",
-  "salesforce_create_object", "salesforce_update_object",
-]);
-
-export function isMutatingServiceTool(toolName: string): boolean {
-  return MUTATING_SERVICE_TOOLS.has(toolName);
-}
 
 
 

@@ -221,8 +221,10 @@ describe("AgentSession long-horizon hardening", () => {
     expect(writeCalls).toHaveLength(1);
     expect(writeCalls[0]?.[0]).toMatchObject({
       type: "system.write_file",
-      payload: { path: "notes.txt", content: "ok", confirmed: true },
+      payload: { path: "notes.txt", content: "ok" },
     });
+    // The model's own `confirmed: true` is a host-only field and never reaches the runtime.
+    expect((writeCalls[0]?.[0] as { payload: Record<string, unknown> }).payload).not.toHaveProperty("confirmed");
   });
 
   it("persists pending approval state into checkpoints before waiting", async () => {

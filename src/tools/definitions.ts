@@ -163,7 +163,6 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
       command: str("Executable/binary to run (not a full shell line — no operators)"),
       args: arr({ type: "string" }, "Command arguments, one per array element"),
       cwd: str("Working directory absolute path or relative to the workspace root; it must stay within the workspace"),
-      confirmed: bool("Set true to confirm network or destructive operations after review"),
       timeout: num("Timeout in milliseconds, max 600000"),
       allowedBinaries: arr({ type: "string" }, "Additional binaries to allow beyond defaults"),
     },
@@ -178,7 +177,6 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
       args: arr({ type: "string" }, "Arguments"),
       cwd: str("Working directory absolute path or relative to the workspace root; it must stay within the workspace"),
       allowStdin: bool("Allow sending input via process_send_input"),
-      confirmed: bool("Confirm network or destructive tier"),
       allowedBinaries: arr({ type: "string" }, "Additional allowed binaries"),
     },
     ["command"],
@@ -276,7 +274,6 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
       source: str("Existing path, absolute or relative to the workspace root"),
       destination: str("Destination path, absolute or relative to the workspace root"),
       overwrite: bool("Replace the destination if it already exists (default false)"),
-      confirmed: bool("Optional approval flag injected by the extension after the user approves the copy"),
     },
     ["source", "destination"],
   ),
@@ -325,7 +322,6 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
       path: str("Absolute file path or path relative to the workspace root"),
       content: str("File content to write (or the next chunk, with mode 'append')"),
       mode: enumStr("'overwrite' (default) replaces the whole file; 'append' adds content to the end — use it to land large files in chunks.", ["overwrite", "append"]),
-      confirmed: bool("Optional approval flag injected by the extension after the user approves the write"),
     },
     ["path", "content"],
   ),
@@ -335,7 +331,6 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
     "Delete a file or directory inside the workspace. The extension will request approval before applying this destructive operation.",
     {
       path: str("Absolute path or path relative to the workspace root"),
-      confirmed: bool("Optional approval flag injected by the extension after the user approves the delete"),
     },
     ["path"],
   ),
@@ -1092,7 +1087,6 @@ export const GIT_TOOLS: ToolDefinition[] = [
       base: str("For context: base branch/ref override (auto-detected when omitted)"),
       force: bool("For push: force push"),
       setUpstream: bool("For push: set upstream"),
-      confirmed: bool("For push: confirm after review"),
     },
     ["op"],
   ),
@@ -1871,7 +1865,7 @@ export const SEQUENCE_TOOLS: ToolDefinition[] = [
     "sequence.execute",
     "Compile, authorize, execute, and retain one bounded linear sequence. Every completed step and failure is stored as an Execution Run; the compact result returns stable IDs for targeted sequence_inspect calls instead of copying the full trace into context. " +
       "Use adapter/action/params on each step (for example browser + navigate + {url}). Each adapter accepts only its own action set (see `action`'s enum) — mixing them (e.g. a process action on the browser adapter) is rejected at compile time before anything runs. Keep external or destructive effects out of sequences; a process step still goes through the normal command approval tiers. " +
-      "A `process` step may come back with `requiresConfirmation: true` instead of running — that means the command needs approval; surface it to the user and, once they approve, call this again with the identical payload plus `confirmed: true` to actually run it.",
+      "A `process` step that needs command approval waits for the user's decision inside this same call; approval is granted by the extension, never by an argument you pass.",
     {
       title: str("Human-readable run title"),
       target: obj("Primary sequence target", {
@@ -1931,7 +1925,6 @@ export const SEQUENCE_TOOLS: ToolDefinition[] = [
       baseline_run_id: str("Optional comparison baseline — the run sequence_compare will diff this one against by default"),
       retention_class: enumStr("Retention policy (default 'standard'). 'temporary' is for short-lived exploratory runs subject to automatic pruning; 'pinned' is never auto-pruned — use it for a baseline or other durable evidence.", ["temporary", "standard", "pinned"]),
       lane_id: str("Optional parent/delegated subagent lane ID"),
-      confirmed: bool("Set true, with the exact same payload that returned requiresConfirmation, to run a step that needed command approval. Omit on the first call."),
     },
     ["title", "target", "steps"],
   ),
@@ -1990,7 +1983,7 @@ export const SEQUENCE_TOOLS: ToolDefinition[] = [
     "sequence_resume",
     "sequence.resume",
     "Continue a retained partial run (status partial/failed/cancelled/timed_out — anything else is rejected) only when its adapter and side-effect ledger make logical resume safe: the runtime environment must be unchanged, and every already-completed step's side effect must be reversible. " +
-      "Unsafe or unsupported resumes are rejected with a narrowed replacement-sequence recommendation instead of running anything. On success this compiles and runs a new sequence_execute internally, so the response and its confirmation flow (requiresConfirmation/confirmed) are the same shape.",
+      "Unsafe or unsupported resumes are rejected with a narrowed replacement-sequence recommendation instead of running anything. On success this compiles and runs a new sequence_execute internally, so the response and its approval flow are the same shape.",
     {
       run_id: str("Partial run ID"),
       from_checkpoint_id: str("Always rejected today — this MVP's checkpoints are inspection markers only, with no adapter able to restore from one yet. Omit this for a conservative logical replay of the unfinished tail instead."),
@@ -2325,6 +2318,37 @@ export const GRAPH_TOOLS: ToolDefinition[] = [
   ),
 ];
 
+/**
+ * The loader for on-demand tools (see src/agent/tool-loading.ts). Advertised only when on-demand
+ * loading is on, and with its description replaced per session by one that lists every tool it
+ * can load — the static text here is what validation and dispatch see.
+ */
+export const TOOL_LOADING_TOOLS: ToolDefinition[] = [
+  tool(
+    "tool_search",
+    "tools.search",
+    "Load tools that are not loaded yet, by exact name or by a description of what you need.",
+    {
+      names: arr({ type: "string" }, "Exact names of the tools to load"),
+      query: str("Words describing the capability you need, used when you do not know the tool's name"),
+    },
+  ),
+];
+
+/** External-service tools that change something on the other side. They always need approval, and
+ * plan mode withholds them. */
+const MUTATING_SERVICE_TOOLS = new Set([
+  "github_create_issue", "github_create_pr", "github_add_comment",
+  "gitlab_create_issue", "gitlab_create_mr",
+  "jira_create_issue", "jira_update_issue", "jira_add_comment",
+  "confluence_create_page", "confluence_update_page",
+  "salesforce_create_object", "salesforce_update_object",
+]);
+
+export function isMutatingServiceTool(toolName: string): boolean {
+  return MUTATING_SERVICE_TOOLS.has(toolName);
+}
+
 export const ALL_TOOLS: ToolDefinition[] = [
   ...WORKSPACE_TOOLS,
   ...CODE_INTEL_TOOLS,
@@ -2350,6 +2374,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...SEQUENCE_TOOLS,
   ...LOOP_TOOLS,
   ...UI_TOOLS,
+  ...TOOL_LOADING_TOOLS,
 ];
 
 const TOOL_DEFINITION_MAP: Record<string, ToolDefinition> = Object.fromEntries(
@@ -2371,15 +2396,37 @@ const TOOL_ROUTE_MAP: Record<string, Pick<ToolDefinition, "runtimeType" | "runti
   ]),
 );
 
+/**
+ * Payload fields the host sets and the model must never supply.
+ *
+ * `confirmed` is how the extension tells the runtime that a human (or a configured policy) approved
+ * an operation. Several tool schemas used to advertise it and the dispatcher forwarded the model's
+ * arguments untouched, so a model that set `confirmed: true` — on its own, or because a file it
+ * read told it to — ran destructive commands, deletes, whole-file writes and pushes with no prompt.
+ * The host adds it back itself, and only after the approval gate grants the call.
+ */
+export const HOST_ONLY_PAYLOAD_KEYS: readonly string[] = ["confirmed"];
+
+export function stripHostOnlyFields(payload: Record<string, unknown>): Record<string, unknown> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  if (!HOST_ONLY_PAYLOAD_KEYS.some((key) => key in payload)) return payload;
+  const clean = { ...payload };
+  for (const key of HOST_ONLY_PAYLOAD_KEYS) delete clean[key];
+  return clean;
+}
+
+/** Route a *model* tool call to its runtime handler. Every input is model-authored, so host-only
+ *  fields are removed here — the one place all dispatch passes through. */
 export function resolveToolDispatch(
   toolName: string,
   input: Record<string, unknown>,
 ): { runtimeType: string; payload: Record<string, unknown> } {
+  const modelInput = stripHostOnlyFields(input);
   const route = TOOL_ROUTE_MAP[toolName];
-  if (!route) return { runtimeType: toolName.replace(/_/g, "."), payload: input };
+  if (!route) return { runtimeType: toolName.replace(/_/g, "."), payload: modelInput };
   return {
     runtimeType: route.runtimeType,
-    payload: { ...input, ...(route.runtimePayload ?? {}) },
+    payload: { ...modelInput, ...(route.runtimePayload ?? {}) },
   };
 }
 

@@ -15,6 +15,7 @@ import {
   toolDisplayName,
   stopReasonLabel,
   toolChangePresentation,
+  changeVerb,
   humanizeWord,
   diagSuffix,
   hostLabel,
@@ -449,5 +450,20 @@ describe("toolChangePresentation", () => {
 
   it("returns null for file_edit without path", () => {
     expect(toolChangePresentation("file_edit", {}, {})).toBeNull();
+  });
+});
+
+describe("changeVerb", () => {
+  const edit = toolChangePresentation("file_edit", { path: "src/foo.ts", oldString: "a", newString: "b" }, {})!;
+
+  it("keeps the in-progress verb while the call is running or awaiting approval", () => {
+    expect(changeVerb(edit, false)).toBe("Editing");
+  });
+  it("switches to the completed verb once the call has landed", () => {
+    expect(changeVerb(edit, true)).toBe("Edited");
+    expect(changeVerb({ ...edit, verb: "Writing" }, true)).toBe("Wrote");
+  });
+  it("leaves an unmapped verb unchanged", () => {
+    expect(changeVerb({ ...edit, verb: "Touching" }, true)).toBe("Touching");
   });
 });

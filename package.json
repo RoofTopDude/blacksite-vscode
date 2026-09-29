@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.25.0",
+  "version": "1.26.0",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -209,6 +209,21 @@
       {
         "command": "blacksite.manageMcp",
         "title": "Manage MCP Servers",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.managePlugins",
+        "title": "Manage Plugins",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.installPlugin",
+        "title": "Install Plugin From Folder…",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.manageHooks",
+        "title": "Manage Hooks",
         "category": "Blacksite"
       },
       {
@@ -573,6 +588,20 @@
           },
           "markdownDescription": "Terminal binaries whose network/destructive operations run without an approval prompt. Populated by choosing \"Always allow\" on an approval, or edit manually (for example `git`, `npm`). Entries in a workspace settings file take effect only after you choose \"Always allow → This project\" for that binary on this machine, so a repository cannot pre-approve commands.",
           "scope": "resource"
+        },
+        "blacksite.permissions.approvalMode": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "auto"
+          ],
+          "enumDescriptions": [
+            "Every gated operation waits for your approval.",
+            "Routine operations are settled for you: workspace edits apply (they are reversible with Rewind) and commands go to an independent reviewer that allows only what is clearly part of your request. Destructive operations, external-service changes, recorded sequences and protected paths (.git, .vscode, .blacksite, CI, credentials) always ask."
+          ],
+          "default": "ask",
+          "scope": "application",
+          "markdownDescription": "How chat approvals are handled. **Ask** prompts for every gated operation. **Auto** approves routine ones for you and escalates the rest to you — it never denies on your behalf, and an automatic approval never becomes an \"Allow all\" grant. Read from user settings only, so a repository cannot switch it on. Toggle it from the chat input as well."
         },
         "blacksite.permissions.allowEvalFlags": {
           "type": "boolean",
@@ -956,6 +985,63 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "**Beta.** Measure what's consuming the agent's context window each turn (token load, duplication, replay across turns, hog segments) using the [PAU Profiler](https://github.com/RoofTopDude/pau-profiler) library, shown in the PAU panel. Read-only instrumentation: it does not change what is sent to the model or how compaction behaves, and analysis runs after the turn's request has already been sent. **Off by default while this gets real-world testing.**"
+        },
+        "blacksite.hooks.commands": {
+          "type": "array",
+          "scope": "application",
+          "default": [],
+          "maxItems": 32,
+          "markdownDescription": "User-configured lifecycle scripts, run in trusted workspaces. Commands receive JSON on stdin, without shell interpolation. Nonzero exits or timeouts block UserPromptSubmit/PreToolUse; PostToolUse/Stop failures appear as warnings. Scripts run with your user rights. Workspace settings cannot configure hooks.",
+          "items": {
+            "type": "object",
+            "required": [
+              "event",
+              "command"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "event": {
+                "type": "string",
+                "enum": [
+                  "UserPromptSubmit",
+                  "PreToolUse",
+                  "PostToolUse",
+                  "Stop"
+                ]
+              },
+              "command": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Executable path or name. Use node, python, or pwsh explicitly for scripts."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "tools": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": "Exact tool names to match. Omit to match every tool."
+              },
+              "timeoutMs": {
+                "type": "integer",
+                "minimum": 100,
+                "maximum": 60000,
+                "default": 10000
+              }
+            }
+          }
+        },
+        "blacksite.tools.loadOnDemand": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Load a small core of tools (file reading and editing, search, terminal, git, tests, diagnostics) up front and let the agent load the rest with `tool_search` when it needs them. Cuts the tool definitions sent with every request by roughly three quarters. On the Anthropic API the deferred tools never disturb the prompt cache; on other providers each load costs one cache miss. Turn off to send the whole catalog every time. With the PAU panel enabled, each receipt shows the tool tokens in context and the tokens deferred."
         },
         "blacksite.preview.projectStylesheet": {
           "type": "array",

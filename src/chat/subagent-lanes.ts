@@ -10,6 +10,7 @@
 */
 import { SERVICE_TOOLS } from "../tools/definitions.js";
 import type { ApprovalDecision } from "../approval-gate.js";
+import type { ActiveRequestMode, RequestMode } from "../request-modes.js";
 import type { AgentSession } from "../agent-session.js";
 import type {
   AgentEvent,
@@ -360,6 +361,15 @@ export function laneUnavailableFailure(subRequestId: string, error: string): Sub
   };
 }
 
+/**
+ * The request mode a delegated lane runs under. Only plan mode is inherited: it is a restriction,
+ * and a lane that could write while its parent plans would be a way around it. The review and
+ * debug profiles are guidance for the parent's own method, and a lane has its own brief.
+ */
+export function laneRequestMode(parentMode: ActiveRequestMode | undefined): { requestMode: RequestMode } | undefined {
+  return parentMode === "plan" ? { requestMode: "plan" } : undefined;
+}
+
 export function followUpLanePrompt(message: string): string {
   return `Follow-up from the parent agent on the task you already completed in this lane:\n${message.trim()}`;
 }
@@ -422,6 +432,8 @@ export function namespaceChildEvent(laneId: string, event: BaseAgentEvent): Base
     case "approval_pending":
       return { ...event, toolCallId: namespacedId(event.toolCallId) };
     case "approval_result":
+      return { ...event, toolCallId: namespacedId(event.toolCallId) };
+    case "approval_review":
       return { ...event, toolCallId: namespacedId(event.toolCallId) };
     case "question_card_pending":
       return { ...event, toolCallId: namespacedId(event.toolCallId) };

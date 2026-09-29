@@ -141,6 +141,18 @@ export class FileFreshnessLedger {
     for (const path of writtenPathsFromResult(toolName, result)) this._mark(path, "write", toolName);
   }
 
+  /** Files changed outside any tool call — a rewind putting earlier content back. The session has
+   *  not seen the new content, so an edit built on its old copy must be warned about. */
+  recordExternalWrites(paths: readonly string[], by: string): void {
+    for (const path of paths) this._mark(path, "write", by);
+  }
+
+  /** Forget everything: after the conversation itself is rewound, reads recorded in the discarded
+   *  turns describe content the model no longer holds in context. */
+  clear(): void {
+    this._files.clear();
+  }
+
   private _mark(rawPath: string, kind: "read" | "write", toolName: string): void {
     const display = this._relative(rawPath);
     if (!display) return;

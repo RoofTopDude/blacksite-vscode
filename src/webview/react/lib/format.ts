@@ -249,6 +249,17 @@ export interface ToolChange {
   rationale?: string;
 }
 
+const COMPLETED_VERB: Record<string, string> = {
+  Editing: "Edited", Writing: "Wrote", Deleting: "Deleted", Moving: "Moved", Copying: "Copied",
+  Inserting: "Inserted", Renaming: "Renamed", Applying: "Applied", Replacing: "Replaced", Formatting: "Formatted",
+};
+
+/** The change's verb in the tense that matches its call: "Editing" while it runs or waits on
+ *  approval, "Edited" once it has landed — so a finished turn doesn't read as still in progress. */
+export function changeVerb(change: ToolChange, completed: boolean): string {
+  return completed ? COMPLETED_VERB[change.verb] ?? change.verb : change.verb;
+}
+
 function batchFileChanges(edits: unknown): ToolFileChange[] {
   if (!Array.isArray(edits)) return [];
   const byPath = new Map<string, ToolFileChange>();
@@ -615,6 +626,7 @@ export const TOOL_LABELS: Record<string, string> = {
   skill_write: "Save Skill",
   tool_output_page: "Continue Output",
   tool_output_search: "Search Output",
+  tool_search: "Load Tools",
   report_problems: "Report Problems",
   test_detect: "Detect Tests",
   test_run: "Run Tests",

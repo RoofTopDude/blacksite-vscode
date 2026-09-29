@@ -144,7 +144,7 @@ export function TicketList({
                   </div>
                 ))}
                 {group.tickets.length === 0 && (
-                  <div className="ticket-group-empty">Nothing in {group.label.toLowerCase()}</div>
+                  <div className="ticket-group-empty">No tickets</div>
                 )}
                 {slice.length < group.tickets.length && (
                   <button type="button" className="ticket-group-more" onClick={() => setLimit((value) => value + PAGE)}>

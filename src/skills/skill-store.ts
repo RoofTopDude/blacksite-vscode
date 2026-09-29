@@ -1,10 +1,18 @@
 // Discovery, precedence, and persistence for skills.
 //
-// Three origins, in precedence order when two skills share a name:
+// Four origins, in precedence order when two skills share a name:
 //
-//   workspace  .blacksite/skills/<name>/SKILL.md   committed, shared with the team
-//   user       ~/.blacksite/skills/<name>/SKILL.md private to this machine
-//   bundled    <extension>/skills/<name>/SKILL.md  first-party harness fluency
+//   workspace  .blacksite/skills, then the cross-tool folders .agents/skills, .claude/skills and
+//              .github/skills                                    committed, shared with the team
+//   user       ~/.blacksite/skills, then ~/.agents/skills, ~/.claude/skills, ~/.copilot/skills
+//                                                                private to this machine
+//   plugin     <plugin>/skills of each enabled Agent Plugin (see src/plugins/)
+//   bundled    <extension>/skills                                first-party harness fluency
+//
+// The cross-tool folders are the ones adopters of the Agent Skills standard share (Claude Code,
+// Codex, Copilot and VS Code read the same set), so a skill written for any of them works here
+// unchanged. Blacksite's own folder comes first within each origin, and it is the only one
+// Blacksite writes to or deletes from: the others belong to other tools.
 //
 // Workspace wins because a repository's own procedure should beat a personal habit and a
 // shipped default when working in that repository. The losing copies are not discarded —
@@ -27,17 +35,41 @@ import {
   type SkillIssue,
 } from "./skill-format.js";
 
-export type SkillOrigin = "workspace" | "user" | "bundled";
+export type SkillOrigin = "workspace" | "user" | "plugin" | "bundled";
 
-/** Precedence when a name exists in more than one origin. Lower index wins. */
-const ORIGIN_PRECEDENCE: readonly SkillOrigin[] = ["workspace", "user", "bundled"];
+/** Skill folders within the workspace, in precedence order. The first is Blacksite's own. */
+export const WORKSPACE_SKILL_FOLDERS: readonly string[] = [".blacksite/skills", ".agents/skills", ".claude/skills", ".github/skills"];
+/** Skill folders under the home directory, in precedence order. The first is Blacksite's own. */
+export const USER_SKILL_FOLDERS: readonly string[] = [".blacksite/skills", ".agents/skills", ".claude/skills", ".copilot/skills"];
+
+/** One place skills are read from. */
+interface SkillSource {
+  origin: SkillOrigin;
+  dir: string;
+  /** Where it is, for people: ".claude/skills", "~/.agents/skills", "plugin: tidy-tools", "built-in". */
+  location: string;
+  /** Blacksite's own writable folder, the only one it writes to or deletes from. */
+  managed: boolean;
+}
+
+/** An enabled Agent Plugin's skills folder (see src/plugins/plugin-registry.ts). */
+export interface PluginSkillSource {
+  plugin: string;
+  dir: string;
+}
 
 export interface SkillRecord extends SkillFrontmatter {
   origin: SkillOrigin;
   /** Absolute path to the skill's directory. */
   dir: string;
+  /** The folder it came from, for people (see SkillSource.location). */
+  location: string;
+  /** True only in Blacksite's own workspace folder, the one place it may delete or rewrite. */
+  managed: boolean;
   /** Origins holding a same-named copy this one outranks. */
   shadows: SkillOrigin[];
+  /** Folders holding a same-named copy this one outranks, including within its own origin. */
+  shadowedLocations: string[];
   enabled: boolean;
   /** Parse + lint problems. A record with an `error` issue is listed but not loadable. */
   issues: SkillIssue[];
@@ -53,8 +85,8 @@ export interface SkillReadResult {
 
 const SKILL_FILE = "SKILL.md";
 const STATE_FILE = ".blacksite/skills-state.json";
-const WORKSPACE_SKILLS_DIR = ".blacksite/skills";
-const USER_SKILLS_DIR = ".blacksite/skills";
+const WORKSPACE_SKILLS_DIR = WORKSPACE_SKILL_FOLDERS[0]!;
+const USER_SKILLS_DIR = USER_SKILL_FOLDERS[0]!;
 /** Subdirectories whose contents `skill_read({ file })` will serve. */
 const ASSET_DIRS = ["reference", "assets", "scripts"] as const;
 const MAX_ASSET_BYTES = 512 * 1024;
@@ -100,6 +132,8 @@ export class SkillStore {
     private readonly _bundledDir?: string,
     /** Overridable for tests; defaults to the real home directory. */
     private readonly _homeDir: string = os.homedir(),
+    /** Skills folders of enabled Agent Plugins, read on every listing so enabling one applies. */
+    private readonly _pluginSources: () => readonly PluginSkillSource[] = () => [],
   ) {}
 
   /** Drop the parse cache. Called by the file watcher and after every write. */
@@ -108,10 +142,27 @@ export class SkillStore {
   workspaceSkillsDir(): string { return path.join(this._workspaceRoot, WORKSPACE_SKILLS_DIR); }
   userSkillsDir(): string { return path.join(this._homeDir, USER_SKILLS_DIR); }
 
-  private _originDir(origin: SkillOrigin): string | undefined {
-    if (origin === "workspace") return this.workspaceSkillsDir();
-    if (origin === "user") return this.userSkillsDir();
-    return this._bundledDir;
+  /** Every folder skills are read from, highest precedence first. */
+  private _sources(): SkillSource[] {
+    const sources: SkillSource[] = [
+      ...WORKSPACE_SKILL_FOLDERS.map((folder, index) => ({
+        origin: "workspace" as const,
+        dir: path.join(this._workspaceRoot, folder),
+        location: folder,
+        managed: index === 0,
+      })),
+      ...USER_SKILL_FOLDERS.map((folder) => ({
+        origin: "user" as const,
+        dir: path.join(this._homeDir, folder),
+        location: `~/${folder}`,
+        managed: false,
+      })),
+    ];
+    for (const plugin of this._pluginSources()) {
+      sources.push({ origin: "plugin", dir: plugin.dir, location: `plugin: ${plugin.plugin}`, managed: false });
+    }
+    if (this._bundledDir) sources.push({ origin: "bundled", dir: this._bundledDir, location: "built-in", managed: false });
+    return sources;
   }
 
   private _stateFile(): string { return path.join(this._workspaceRoot, STATE_FILE); }
@@ -140,9 +191,7 @@ export class SkillStore {
     const disabled = new Set(this._readState().disabled);
     const byName = new Map<string, SkillRecord>();
 
-    for (const origin of ORIGIN_PRECEDENCE) {
-      const dir = this._originDir(origin);
-      if (!dir) continue;
+    for (const { origin, dir, location, managed } of this._sources()) {
       let entries: fs.Dirent[];
       try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
       catch { continue; }
@@ -161,8 +210,9 @@ export class SkillStore {
 
         const existing = byName.get(name);
         if (existing) {
-          // A higher-precedence origin was seen first; record this one as shadowed.
-          if (!existing.shadows.includes(origin)) existing.shadows.push(origin);
+          // A higher-precedence source was seen first; record this one as shadowed.
+          if (origin !== existing.origin && !existing.shadows.includes(origin)) existing.shadows.push(origin);
+          if (!existing.shadowedLocations.includes(location)) existing.shadowedLocations.push(location);
           continue;
         }
 
@@ -171,7 +221,10 @@ export class SkillStore {
           name,
           origin,
           dir: skillDir,
+          location,
+          managed,
           shadows: [],
+          shadowedLocations: [],
           enabled: !disabled.has(name),
           issues: allIssues,
           files: listAssetFiles(skillDir),
@@ -264,7 +317,7 @@ export class SkillStore {
     }
 
     const existing = this.find(frontmatter.name);
-    const shadowsBundled = existing?.origin === "bundled" || existing?.origin === "user";
+    const shadowsBundled = !!existing && !existing.managed;
 
     const dir = path.join(this.workspaceSkillsDir(), frontmatter.name);
     const file = path.join(dir, SKILL_FILE);
@@ -285,10 +338,11 @@ export class SkillStore {
     this.invalidate();
   }
 
-  /** Delete a workspace skill's directory. Bundled and user skills are never removed here. */
+  /** Delete a skill in Blacksite's own workspace folder. Skills anywhere else (personal, plugin,
+   *  built-in, or another tool's folder such as .claude/skills) are never removed here. */
   remove(name: string): boolean {
     const record = this.find(name);
-    if (!record || record.origin !== "workspace") return false;
+    if (!record || !record.managed) return false;
     try {
       fs.rmSync(record.dir, { recursive: true, force: true });
       this.invalidate();

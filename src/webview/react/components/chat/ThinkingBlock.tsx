@@ -76,10 +76,11 @@ export function ThinkingBlock({ turn }: { turn: Turn }) {
   const elapsed = turn.historical ? 0 : thinkingElapsedMs(turn, now);
   const ticker = thinkingTickerLine(turn);
 
+  // The "Thought" label sits right beside this, so the summary carries only the numbers.
   const summary = live
     ? formatDuration(elapsed)
     : [
-        elapsed > 0 ? `Thought for ${formatDuration(elapsed)}` : "Thought",
+        elapsed > 0 ? formatDuration(elapsed) : "",
         countLabel(steps, "step"),
         actions > 0 ? countLabel(actions, "action") : "",
       ].filter(Boolean).join(" · ");

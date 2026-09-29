@@ -105,6 +105,8 @@ interface McpConnection {
 
 interface NormalizedServer {
   target: string;
+  /** Explicit argv for a stdio server; absent means `target` is a command line to tokenize. */
+  args?: string[];
   isHttp: boolean;
   apiKey: string;
   headers: Record<string, string>;
@@ -121,6 +123,7 @@ function normalizeServer(server: McpServer): NormalizedServer {
   const target = typeof server.url === "string" ? server.url.trim() : "";
   return {
     target,
+    args: Array.isArray(server.args) ? server.args.map(String) : undefined,
     isHttp: /^https?:\/\//i.test(target),
     apiKey: typeof server.apiKey === "string" ? server.apiKey.trim() : "",
     headers: server.headers && typeof server.headers === "object" ? server.headers : {},
@@ -365,7 +368,7 @@ class StdioConnection implements McpConnection {
   }
 
   private _startChild(): void {
-    const tokens = parseCommandLine(this._server.target);
+    const tokens = this._server.args ? [this._server.target, ...this._server.args] : parseCommandLine(this._server.target);
     const command = tokens[0];
     if (!command) throw new Error("Missing MCP command.");
     const plan = planSpawn(command, tokens.slice(1));
@@ -1014,7 +1017,7 @@ let poolGeneration = 0;
  *  rather than silently reused with the old token. */
 function connectionFingerprint(server: NormalizedServer): string {
   return JSON.stringify([
-    server.target, server.apiKey, server.headers, server.env, server.cwd, server.transport,
+    server.target, server.args, server.apiKey, server.headers, server.env, server.cwd, server.transport,
     server.roots, server.timeoutMs, server.client,
   ]);
 }

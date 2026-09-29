@@ -1286,8 +1286,20 @@ function Legend({ fileCount, importCount, gitHeat, relationshipCount, servicesLe
   onOpenMapKey: () => void;
 }) {
   const activeBand = altitudeBand(zoomRatio);
+  // The controls rail above reserves this height so the two never overlap. The legend grows
+  // with the lens (services add a row per relationship kind), so a fixed reservation can't.
+  const legendRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const legend = legendRef.current;
+    if (!legend) return;
+    const observer = new ResizeObserver(() => {
+      legend.parentElement?.style.setProperty("--map-legend-height", legend.offsetHeight + "px");
+    });
+    observer.observe(legend);
+    return () => observer.disconnect();
+  }, []);
   return (
-    <div className="map-legend pointer-events-none absolute bottom-3 right-3 flex flex-col gap-0.5 px-2 py-1.5">
+    <div ref={legendRef} className="map-legend pointer-events-none absolute bottom-3 right-3 flex flex-col gap-0.5 px-2 py-1.5">
       <button
         className="pointer-events-auto mb-0.5 self-end rounded border border-border/60 px-1.5 py-0.5 text-2xs text-slate-300/85 hover:bg-white/10 hover:text-foreground"
         onClick={onOpenMapKey}
@@ -1490,7 +1502,7 @@ function DepthSection({ display }: { display: GraphDisplayOptions }) {
 function MapKeyPanel({ onClose }: { onClose: () => void }) {
   const motionNow = useMotionClock(true);
   return (
-    <div className="map-panel pointer-events-auto absolute bottom-3 right-3 z-10 flex max-h-[75vh] w-[min(320px,calc(100vw-24px))] flex-col gap-3 overflow-y-auto px-3 py-2.5">
+    <div className="map-panel pointer-events-auto absolute bottom-3 right-3 z-10 flex max-h-[75%] w-[min(320px,calc(100vw-24px))] flex-col gap-3 overflow-y-auto px-3 py-2.5">
       <div className="flex items-center justify-between">
         <div className="text-base font-semibold text-foreground">Map key</div>
         <button className="rounded border border-border/60 px-1.5 py-0.5 text-2xs text-muted-foreground hover:bg-white/10 hover:text-foreground" onClick={onClose}>

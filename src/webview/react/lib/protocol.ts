@@ -397,6 +397,15 @@ export type IncomingMessage =
   | { type: "stream_tool_result"; id: string; toolCallId?: string; toolName?: string; ok?: boolean; summary?: string; result?: any; elapsedMs?: number; laneId?: string; diffs?: ToolDiffInfo[] }
   | { type: "stream_approval_pending"; id: string; toolCallId?: string; description?: string; tier?: string; unrecognizedCommand?: boolean; laneId?: string; rationale?: string; browserProposalId?: string }
   | { type: "stream_approval_result"; id: string; toolCallId?: string; granted?: boolean; decision?: ApprovalDecision; laneId?: string }
+  /** Auto mode's decision on a gated call: "allowed" ran it, "escalated" is asking the user next. */
+  | { type: "stream_approval_review"; id: string; toolCallId?: string; verdict?: "allowed" | "escalated"; reason?: string; laneId?: string }
+  /** blacksite.permissions.approvalMode, as the host reads it (user settings only). */
+  | { type: "approval_mode"; mode?: "ask" | "auto" }
+  /** Assistant turns of the active conversation that can be rewound (see src/rewind.ts). */
+  | { type: "rewind_points"; turnIds?: string[] }
+  /** A rewind happened. `conversation`: turns from this one on were removed and `text` goes back
+   *  into the composer. Otherwise only files were restored. */
+  | { type: "rewind_applied"; turnId?: string; conversation?: boolean; text?: string; summary?: string }
   /** The project's compiled stylesheet, sent once per webview so question-card previews can be
    *  drawn with the product's real classes and tokens instead of hand-rebuilt CSS.
    *  See src/preview-assets.ts. */
@@ -462,6 +471,8 @@ export type OutgoingMessage =
   | { type: "set_reasoning_effort"; provider: ProviderName; effort: ReasoningEffort }
   | { type: "set_service_tier"; provider: ProviderName; tier: ServiceTier }
   | { type: "set_base_url"; provider: ProviderName; baseUrl: string }
+  | { type: "set_approval_mode"; mode: "ask" | "auto" }
+  | { type: "rewind_request"; turnId: string }
   | { type: "set_cache_ttl"; provider: ProviderName; ttl: "5m" | "1h" }
   | { type: "set_fast_mode"; provider: ProviderName; enabled: boolean }
   | { type: "set_task_budget"; provider: ProviderName; tokens: number }

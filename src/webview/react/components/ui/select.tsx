@@ -20,6 +20,9 @@ interface SelectProps {
   className?: string;
   /** Accessible name, when no visible <label> is wired to this control. */
   ariaLabel?: string;
+  /** Shown before the selected label in the closed trigger only ("Sort: ", "Group: "), so a
+   * toolbar select names its dimension without every option in the open list repeating it. */
+  valuePrefix?: string;
   /** Which side of the trigger the list opens toward. Defaults to "bottom"; use "top"
    * for controls anchored near the bottom of the viewport, where a downward list would
    * run off-screen. */
@@ -38,8 +41,9 @@ interface SelectProps {
  * Deliberately not a full combobox — no typeahead, no search. These are short, fixed
  * option sets, and the extra affordances would be chrome nobody asked for.
  */
-function Select({ value, options, onChange, disabled, placeholder = "Select…", className, ariaLabel, side = "bottom" }: SelectProps) {
+function Select({ value, options, onChange, disabled, placeholder = "Select…", className, ariaLabel, valuePrefix, side = "bottom" }: SelectProps) {
   const [open, setOpen] = React.useState(false);
+  const [alignEnd, setAlignEnd] = React.useState(false);
   const rootRef = React.useRef<HTMLDivElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
   const selectedIndex = options.findIndex((option) => option.value === value);
@@ -74,6 +78,15 @@ function Select({ value, options, onChange, disabled, placeholder = "Select…",
     });
     return () => cancelAnimationFrame(frame);
   }, [open, selectedIndex]);
+
+  // The list sizes to its longest option rather than to the trigger, so a narrow trigger no
+  // longer truncates every choice. That lets it outgrow the trigger — when it would run past
+  // the right edge of the panel, anchor it to the trigger's right edge instead.
+  React.useLayoutEffect(() => {
+    if (!open) { setAlignEnd(false); return; }
+    const list = listRef.current;
+    if (list && list.getBoundingClientRect().right > document.documentElement.clientWidth - 4) setAlignEnd(true);
+  }, [open]);
 
   function commit(index: number): void {
     const option = options[index];
@@ -131,7 +144,7 @@ function Select({ value, options, onChange, disabled, placeholder = "Select…",
   }
 
   return (
-    <div ref={rootRef} data-side={side} className={cn("bls-select", className)}>
+    <div ref={rootRef} data-side={side} data-align={alignEnd ? "end" : undefined} className={cn("bls-select", className)}>
       <button
         type="button"
         data-slot="select-trigger"
@@ -144,7 +157,7 @@ function Select({ value, options, onChange, disabled, placeholder = "Select…",
         className="bls-select-trigger"
       >
         <span className={cn("truncate", !selected && "text-muted-foreground")}>
-          {selected?.label ?? placeholder}
+          {selected ? `${valuePrefix ?? ""}${selected.label}` : placeholder}
         </span>
         <ChevronDown className={cn("disclosure size-3 shrink-0 text-muted-foreground", open && "rotate-180")} />
       </button>

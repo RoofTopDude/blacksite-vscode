@@ -471,6 +471,21 @@
   padding-top: 9px;
 }
 
+/* A failed run's reason. Same inset-left-accent language as .live-action, in the error tone,
+   so it reads as a status from the system rather than a line of the agent's reply. */
+.turn-error-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 4px;
+  border: 1px solid color-mix(in srgb, var(--s-err) 30%, var(--border));
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--s-err) 8%, transparent);
+  box-shadow: inset 2px 0 0 var(--s-err);
+  color: var(--s-err);
+}
+
 /* ── Reasoning block ──────────────────────────────────────────────────────
    Deliberately quieter than .narration-log. Narration is the agent talking
    *to* you and earns a rail of its own; reasoning is work you're overhearing, so

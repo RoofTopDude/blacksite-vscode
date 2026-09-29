@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { countLabel, formatDuration, shortText, toolStateText, type ToolChange, type ToolFileChange } from "@/lib/format";
+import { changeVerb, countLabel, formatDuration, shortText, toolStateText, type ToolChange, type ToolFileChange } from "@/lib/format";
 import { tokenizeJson, type JsonToken } from "@/lib/json-highlight";
 import { formatDetailValue } from "@/lib/tool-presentation";
 import { approvalBinaryOf, toolCallLiveElapsedMs, toolDiffFor, toolGroupsOf, toolStateClass, turnIsLive, type ToolCall, type Turn } from "@/lib/chat-model";
@@ -212,11 +212,24 @@ function approvalSummary(call: ToolCall): string {
   if (call.approvalState === "pending") return "Waiting for approval";
   if (call.approvalState === "denied") return "Denied by user";
   if (call.approvalState === "granted") {
-    if (call.approvalDecision === "allow_all") return "Approved for session";
+    if (call.approvalReview?.verdict === "allowed") return "Approved by auto mode";
+    if (call.approvalDecision === "allow_all") return "Approved for this turn";
     if (call.approvalDecision === "allow_always") return "Always allowed";
     return "Approved";
   }
   return "";
+}
+
+/** Auto mode's reason, on the card that is asking the user (escalated) or on a row it approved. */
+export function ReviewNote({ call }: { call: ToolCall }) {
+  const review = call.approvalReview;
+  if (!review?.reason) return null;
+  return (
+    <div className="mt-1.5 flex items-start gap-1.5">
+      <Chip tone={review.verdict === "allowed" ? "ok" : "warn"}>{review.verdict === "allowed" ? "Auto" : "Auto mode asks"}</Chip>
+      <span className="text-xs leading-snug text-foreground">{review.reason}</span>
+    </div>
+  );
 }
 
 function approvalTierLabel(call: ToolCall): string {
@@ -242,7 +255,15 @@ export function ApprovalButtons({ turnId, toolCallId, binary }: { turnId: string
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap gap-1.5">
         <Button type="button" size="xs" onClick={() => answer("allow")}>Allow</Button>
-        <Button type="button" size="xs" variant="outline" onClick={() => answer("allow_all")}>Allow All</Button>
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          title="Approve this, and further operations of the same kind and risk tier, until this turn ends. Edits and commands are approved separately."
+          onClick={() => answer("allow_all")}
+        >
+          Allow all this turn
+        </Button>
         <Button type="button" size="xs" variant="destructive" onClick={() => answer("deny")}>Deny</Button>
       </div>
       {/* The "always allow" decision is one scope choice, not two independent
@@ -324,6 +345,7 @@ function ApprovalActions({ call }: { call: ToolCall }) {
           <span className="text-xs leading-snug text-foreground">{call.approvalRationale}</span>
         </div>
       )}
+      <ReviewNote call={call} />
       <div className="mt-2 flex flex-wrap items-start justify-between gap-1.5">
         <ApprovalButtons turnId={call.parentTurnId} toolCallId={call.id} binary={approvalBinaryOf(call)} />
         <ExplainDiffButton call={call} />
@@ -382,7 +404,7 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
             <ChangeRow
               call={call}
               change={call.change}
-              prefix={<span className="eyebrow shrink-0" style={{ color: "var(--primary)" }}>{call.change.verb}</span>}
+              prefix={<span className="eyebrow shrink-0" style={{ color: "var(--primary)" }}>{changeVerb(call.change, state === "ok")}</span>}
             />
             {call.change.secondary && <div className="mt-0.5 px-1 text-xs text-muted-foreground">{call.change.secondary}</div>}
             {call.change.rationale && (
@@ -406,6 +428,10 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
             )}
           </div>
         </div>
+      )}
+
+      {call.approvalReview?.verdict === "allowed" && call.approvalState === "granted" && (
+        <div className="px-2 pb-1.5"><ReviewNote call={call} /></div>
       )}
 
       {call.mediaDataUrl && (
@@ -533,7 +559,7 @@ export function ToolLog({ turn }: { turn: Turn }) {
     : running > 0 || turn.status === "streaming" ? "Live execution"
       : failed > 0 ? "Execution finished with issues" : "Execution captured";
   const latest = calls[calls.length - 1];
-  const latestText = latest ? (latest.change ? `${latest.change.verb} · ${latest.change.path}` : (latest.preview || latest.label || latest.displayName)) : "";
+  const latestText = latest ? (latest.change ? `${changeVerb(latest.change, toolStateClass(latest) === "ok")} · ${latest.change.path}` : (latest.preview || latest.label || latest.displayName)) : "";
 
   const showGroups = !needsSummary || expanded;
 
@@ -574,7 +600,7 @@ export function ToolLog({ turn }: { turn: Turn }) {
                   key={c.id}
                   call={c}
                   change={c.change!}
-                  prefix={<span className="shrink-0 text-xs text-muted-foreground">{c.change!.verb}</span>}
+                  prefix={<span className="shrink-0 text-xs text-muted-foreground">{changeVerb(c.change!, toolStateClass(c) === "ok")}</span>}
                 />
               ))}
             </div>

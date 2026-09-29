@@ -25,7 +25,8 @@ describe("request modes", () => {
 
   it("gives planning a research, questioning, and durable-artifact contract", () => {
     const prompt = buildRequestModePrompt("plan");
-    expect(prompt).toContain("Stay read-only");
+    expect(prompt).toContain("This mode is read-only, and the harness enforces it");
+    expect(prompt).toContain("delegated lanes inherit the same limit");
     expect(prompt).toContain("question_card");
     expect(prompt).toContain("plan_doc_write");
     expect(prompt).toContain("every consequential phase");

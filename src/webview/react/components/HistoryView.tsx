@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
-import { formatRelativeTime, shortText } from "@/lib/format";
+import { countLabel, formatRelativeTime, shortText } from "@/lib/format";
 import { actions, useStore } from "@/lib/store";
-import { historyTitle } from "@/lib/history";
+import { groupHistory, historyTitle } from "@/lib/history";
+import { modelShortLabel } from "./settings/helpers";
 import { PanelHeader } from "./PanelHeader";
 import { cn } from "@/lib/utils";
 
@@ -49,46 +50,55 @@ export function HistoryView() {
             {q ? "No conversations match your search." : "No previous conversations."}
           </div>
         ) : (
-          <div className="flex flex-col gap-0.5">
-            {sessions.map((s) => {
-              const confirming = confirmingId === s.sessionId;
-              return (
-                <div key={s.sessionId} className="chat-interactive group relative flex items-center rounded-md border border-transparent hover:border-border hover:bg-white/5">
-                  <button
-                    type="button"
-                    onClick={() => { setConfirmingId(null); actions.loadSession(s.sessionId); }}
-                    className="min-w-0 flex-1 px-3 py-2 text-left"
-                  >
-                    <div className="truncate text-base text-foreground">{shortText(historyTitle(s), 80)}</div>
-                    <div className="mt-0.5 text-sm text-muted-foreground">
-                      {[s.model, formatRelativeTime(s.updatedAt || s.createdAt)].filter(Boolean).join(" · ")}
-                    </div>
-                  </button>
-                  {confirming ? (
-                    <button
-                      type="button"
-                      onClick={() => { setConfirmingId(null); actions.deleteSession(s.sessionId); }}
-                      onBlur={() => setConfirmingId(null)}
-                      className="mr-2 shrink-0 rounded-md border border-[color:var(--s-err)]/45 bg-[color:var(--s-err)]/15 px-2 py-1 text-xs font-semibold text-[color:var(--s-err)]"
-                    >
-                      Delete?
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      title={`Delete "${shortText(historyTitle(s), 40)}"`}
-                      onClick={() => setConfirmingId(s.sessionId)}
-                      className={cn(
-                        "mr-1 shrink-0 rounded p-1 text-muted-foreground transition-opacity hover:text-[color:var(--s-err)] focus-visible:opacity-100 group-hover:opacity-100",
-                        "opacity-0",
+          <div className="flex flex-col gap-2">
+            {groupHistory(sessions).map((group) => (
+              <section key={group.bucket} className="flex flex-col gap-0.5" aria-label={group.bucket}>
+                <div className="eyebrow px-3 pb-0.5 pt-1">{group.bucket}</div>
+                {group.sessions.map((s) => {
+                  const confirming = confirmingId === s.sessionId;
+                  const model = s.model ? (store.allModels.find((m) => m.id === s.model)?.name || modelShortLabel(s.model)) : "";
+                  const meta = [
+                    model,
+                    s.messageCount ? countLabel(s.messageCount, "message") : "",
+                    formatRelativeTime(s.updatedAt || s.createdAt),
+                  ].filter(Boolean).join(" · ");
+                  return (
+                    <div key={s.sessionId} className="chat-interactive group relative flex items-center rounded-md border border-transparent hover:border-border hover:bg-white/5">
+                      <button
+                        type="button"
+                        onClick={() => { setConfirmingId(null); actions.loadSession(s.sessionId); }}
+                        className="min-w-0 flex-1 px-3 py-2 text-left"
+                      >
+                        <div className="truncate text-base text-foreground">{shortText(historyTitle(s), 80)}</div>
+                        <div className="mt-0.5 truncate text-sm text-muted-foreground">{meta}</div>
+                      </button>
+                      {confirming ? (
+                        <button
+                          type="button"
+                          onClick={() => { setConfirmingId(null); actions.deleteSession(s.sessionId); }}
+                          onBlur={() => setConfirmingId(null)}
+                          className="mr-2 shrink-0 rounded-md border border-[color:var(--s-err)]/45 bg-[color:var(--s-err)]/15 px-2 py-1 text-xs font-semibold text-[color:var(--s-err)]"
+                        >
+                          Delete?
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          title={`Delete "${shortText(historyTitle(s), 40)}"`}
+                          onClick={() => setConfirmingId(s.sessionId)}
+                          className={cn(
+                            "mr-1 shrink-0 rounded p-1 text-muted-foreground transition-opacity hover:text-[color:var(--s-err)] focus-visible:opacity-100 group-hover:opacity-100",
+                            "opacity-0",
+                          )}
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
                       )}
-                    >
-                      <Trash2 className="size-3.5" />
-                    </button>
-                  )}
-                </div>
-              );
-            })}
+                    </div>
+                  );
+                })}
+              </section>
+            ))}
           </div>
         )}
       </div>

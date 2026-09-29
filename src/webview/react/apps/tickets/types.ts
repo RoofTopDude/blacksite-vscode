@@ -147,6 +147,10 @@ export const ASSIGNEE_LABEL: Record<TicketAssignee, string> = {
   unassigned: "Unassigned", user: "You", agent: "Agent",
 };
 
+export const COMPLEXITY_LABEL: Record<TicketComplexity, string> = {
+  small: "Small", medium: "Medium", large: "Large",
+};
+
 /** Status hue, shared by the icon, the group header, and the board column rail so one status
  *  reads as one colour everywhere. */
 export const STATUS_TONE: Record<TicketStatus, string> = {

@@ -32,6 +32,13 @@ const MODE_OPTIONS: ReadonlyArray<{ id: RequestMode; label: string; title: strin
   { id: "debug", label: "Debug", title: "Reproduce, isolate root cause, fix, and validate" },
 ];
 
+/** blacksite.permissions.approvalMode. Labelled as approvals so it never reads as the request
+ *  profile's own "Auto" option beside it. */
+const APPROVAL_MODE_OPTIONS: ReadonlyArray<{ id: "ask" | "auto"; label: string }> = [
+  { id: "ask", label: "Approvals: Ask" },
+  { id: "auto", label: "Approvals: Auto" },
+];
+
 function readFileAsBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -138,6 +145,13 @@ export function InputDock({ starter }: { starter: StarterPrompt | null }) {
 
   useEffect(() => { autoResize(); }, [value]);
   useEffect(() => { taRef.current?.focus(); }, [store.focusNonce]);
+  // A conversation rewind hands the rewound message back to the composer for editing.
+  useEffect(() => {
+    if (!store.composerFill) return;
+    setValue(store.composerFill.text);
+    setHistoryIndex(null);
+    taRef.current?.focus();
+  }, [store.composerFill?.nonce]);
   useEffect(() => { setSlashActive(0); }, [slashFragment]);
 
   function tokenBeforeCaret(el: HTMLTextAreaElement): { query: string; start: number } | null {
@@ -499,6 +513,13 @@ export function InputDock({ starter }: { starter: StarterPrompt | null }) {
 
       <QuickSettings>
         <Select value={store.requestMode} ariaLabel="Request mode" side="top" options={MODE_OPTIONS.map(({ id, label }) => ({ value: id, label }))} onChange={(mode) => actions.setRequestMode(mode as RequestMode)} />
+        <Select
+          value={store.approvalMode}
+          ariaLabel="Approvals"
+          side="top"
+          options={APPROVAL_MODE_OPTIONS.map(({ id, label }) => ({ value: id, label }))}
+          onChange={(mode) => actions.setApprovalMode(mode === "auto" ? "auto" : "ask")}
+        />
       </QuickSettings>
 
       <div className="flex items-end gap-1.5">

@@ -239,6 +239,10 @@ export class ExecutionLogger {
         this._write(`${p}   → ${event.granted ? "Granted" : "Denied"}  [${event.toolCallId.slice(-6)}]`);
         break;
 
+      case "approval_review":
+        this._write(`${p}   ⚖ Auto mode ${event.verdict === "allowed" ? "approved" : "escalated to you"}: ${event.reason}  [${event.toolCallId.slice(-6)}]`);
+        break;
+
       case "question_card_pending":
         this._write(`${p}?  Question${event.questions.length > 1 ? `s (${event.questions.length})` : ""}: ${event.questions.map((q) => q.question).join(" / ").slice(0, 100)}`);
         break;

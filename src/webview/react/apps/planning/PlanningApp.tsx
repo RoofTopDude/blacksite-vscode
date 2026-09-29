@@ -1,5 +1,6 @@
 import { RelatedWork } from "@/components/WorkspaceBar";
 import { useEffect, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PanelHeader } from "@/components/PanelHeader";
@@ -539,14 +540,14 @@ function PhaseCard(
       >
         <span className="plan-phase-index">{index + 1}</span>
         <span className="min-w-0 flex-1 text-left">
-          <span className="flex items-center gap-1.5">
-            <span className="truncate text-base font-semibold text-foreground">{phase.title || phase.id}</span>
-            {active && <span className="plan-phase-current">Current</span>}
+          <span className="flex items-start gap-1.5">
+            <span className="min-w-0 line-clamp-2 text-base font-semibold leading-snug text-foreground [overflow-wrap:anywhere]">{phase.title || phase.id}</span>
+            {active && <span className="plan-phase-current mt-0.5 shrink-0">Current</span>}
           </span>
           <span className="line-clamp-1 text-sm text-muted-foreground">{phase.objective || "No objective recorded."}</span>
         </span>
         <StatusBadge status={phase.status || "pending"} />
-        <span className={`plan-phase-chevron ${open ? "is-open" : ""}`} aria-hidden="true">⌄</span>
+        <ChevronDown className={`plan-phase-chevron ${open ? "is-open" : ""}`} aria-hidden="true" />
       </button>
       <div className="px-2.5 pb-2">
         <ProgressMeter value={progress.done} total={progress.total} tone={tone} />
@@ -604,9 +605,9 @@ function PlanCard(
     <article tabIndex={-1} data-plan-id={plan.id} onFocus={() => writeUiState("planning.focus", { id: plan.id })} className={`plan-card turn-in overflow-hidden rounded-xl border border-border bg-white/[0.03] ${!approved && !terminal ? "is-awaiting-approval" : ""} ${plan.status === "on_hold" ? "is-on-hold" : ""}`}>
       <div className="flex items-start justify-between gap-2 p-3">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate text-lg font-semibold text-foreground">{plan.title || plan.id}</span>
-            <StatusBadge status={plan.status || "active"} />
+          <div className="flex items-start gap-1.5">
+            <span className="min-w-0 line-clamp-2 text-lg font-semibold leading-snug text-foreground [overflow-wrap:anywhere]">{plan.title || plan.id}</span>
+            <StatusBadge status={plan.status || "active"} className="mt-1" />
           </div>
           <div className="mt-0.5 line-clamp-2 text-sm leading-snug text-muted-foreground">
             {/* A clamped teaser: the inline renderer keeps emphasis and code spans without
@@ -637,7 +638,7 @@ function PlanCard(
               onBlur={(event) => post({ type: "set_plan_budget", planId: plan.id, maxUsd: event.target.value })}
               className="h-6 w-24 text-xs"
             />
-            <span className={plan.budget?.exceeded ? "text-[color:var(--s-err)]" : plan.budget?.warned ? "text-[color:var(--s-warn)]" : "text-muted-foreground"}>
+            <span className={`whitespace-nowrap tabular-nums ${plan.budget?.exceeded ? "text-[color:var(--s-err)]" : plan.budget?.warned ? "text-[color:var(--s-warn)]" : "text-muted-foreground"}`}>
               {plan.budget?.partial ? "~" : ""}${(plan.budget?.spentUsd ?? 0).toFixed(2)}
               {plan.budget?.maxUsd ? ` / $${plan.budget.maxUsd.toFixed(2)}` : ""}
             </span>
@@ -756,7 +757,7 @@ export function PlanningApp() {
             tone: counts.activePlans || counts.activeTodos ? "ok" : "idle",
           }}
         />
-        <div className="planning-header-actions mt-2 flex items-center justify-between gap-2">
+        <div className="planning-header-actions mt-2 flex flex-wrap items-center justify-between gap-2">
           <div className="planning-stats flex flex-wrap gap-1">
             {chips.map((c) => <span key={c} className="rounded-full border border-border bg-white/[0.04] px-2 py-0.5 font-mono text-xs text-muted-foreground">{c}</span>)}
           </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { firstUserText, historyTitle } from "../../src/webview/react/lib/history.js";
+import { firstUserText, groupHistory, historyBucket, historyTitle } from "../../src/webview/react/lib/history.js";
 
 describe("firstUserText", () => {
   it("returns the first user string message", () => {
@@ -25,5 +25,40 @@ describe("historyTitle", () => {
   it("uses a generic label only when nothing else is available", () => {
     expect(historyTitle({ sessionId: "s1" })).toBe("Conversation");
     expect(historyTitle({ sessionId: "s1", firstMessage: "   " })).toBe("Conversation");
+  });
+});
+
+describe("historyBucket", () => {
+  // Local noon, so the calendar-day boundaries don't depend on the machine's timezone.
+  const now = new Date(2026, 8, 26, 12, 0, 0).getTime();
+  const at = (days: number, hour = 12) => new Date(2026, 8, 26 - days, hour).getTime();
+
+  it("buckets by calendar day, not by 24-hour distance", () => {
+    expect(historyBucket(at(0, 0), now)).toBe("Today");
+    expect(historyBucket(at(1, 23), now)).toBe("Yesterday");
+    expect(historyBucket(at(1, 0), now)).toBe("Yesterday");
+    expect(historyBucket(at(6), now)).toBe("Previous 7 days");
+    expect(historyBucket(at(7), now)).toBe("Earlier");
+  });
+  it("treats a session with no timestamp as old", () => {
+    expect(historyBucket(undefined, now)).toBe("Earlier");
+  });
+});
+
+describe("groupHistory", () => {
+  it("groups sessions under their bucket in feed order", () => {
+    const now = new Date(2026, 8, 26, 12).getTime();
+    const day = 86_400_000;
+    const groups = groupHistory([
+      { sessionId: "a", updatedAt: now - 1000 },
+      { sessionId: "b", updatedAt: now - 2000 },
+      { sessionId: "c", updatedAt: now - day },
+      { sessionId: "d", createdAt: now - 30 * day },
+    ], now);
+    expect(groups.map((g) => [g.bucket, g.sessions.map((s) => s.sessionId)])).toEqual([
+      ["Today", ["a", "b"]],
+      ["Yesterday", ["c"]],
+      ["Earlier", ["d"]],
+    ]);
   });
 });

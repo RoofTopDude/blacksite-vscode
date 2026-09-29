@@ -261,6 +261,8 @@ function ReceiptDetail({ event }: { event: PauReceiptEvent }) {
         <Meter label="Replay overhead" value={receipt.replayOverheadRatio} tone="var(--s-warn)" />
       </div>
 
+      <ToolCatalogLine inContext={receipt.toolSchemaTokens} deferred={receipt.deferredToolSchemaTokens} />
+
       <TopHogsTable hogs={receipt.topHogs} />
 
       <CachePanel cache={receipt.cache} economics={receipt.economics} />
@@ -276,6 +278,25 @@ function ReceiptDetail({ event }: { event: PauReceiptEvent }) {
       )}
 
       <div className="text-2xs text-muted-foreground">{receipt.tokenAccountingNote}</div>
+    </div>
+  );
+}
+
+/** What the tool catalog cost this turn, and — with on-demand loading — what it would have cost.
+ *  The pair is the direct measure of that setting: in-context tokens are paid every request. */
+function ToolCatalogLine({ inContext, deferred }: { inContext?: number; deferred?: number }) {
+  if (inContext === undefined) return null;
+  const total = inContext + (deferred ?? 0);
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-1.5 text-2xs text-muted-foreground">
+      <span className="eyebrow">Tool definitions</span>
+      <span><span className="font-mono text-foreground">{inContext.toLocaleString()}</span> tokens in context</span>
+      {deferred ? (
+        <span>
+          · <span className="font-mono text-foreground">{deferred.toLocaleString()}</span> deferred until loaded
+          {" "}({Math.round((deferred / total) * 100)}% of the catalog)
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -344,7 +365,11 @@ export function PauApp() {
       </div>
 
       <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-3">
-        {!s.ready ? null : !s.enabled ? (
+        {!s.ready ? (
+          <div className="flex flex-1 items-center justify-center p-6">
+            <span className="live-breathe text-xs text-muted-foreground">Loading context receipts…</span>
+          </div>
+        ) : !s.enabled ? (
           <DisabledState />
         ) : s.receipts.length === 0 ? (
           <EmptyState />

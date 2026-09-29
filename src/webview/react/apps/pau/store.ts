@@ -108,6 +108,8 @@ export interface PauReceiptSummary {
   warnings: string[];
   topHogs: PauTopHog[];
   toolSchemaTokens?: number;
+  /** Tool definitions kept out of context this turn by on-demand loading (estimated). */
+  deferredToolSchemaTokens?: number;
   cache?: PauCacheObservation;
   economics?: PauEconomics;
   plan?: PauPlan;

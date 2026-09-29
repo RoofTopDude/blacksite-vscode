@@ -40,7 +40,7 @@ This profile governs the current user request and its tool-call continuations. T
     return `${shared}
 
 ## Planning operating method
-- Stay read-only unless the user explicitly changes the request from planning to implementation. Creating plans, todos, notes, and plan documents is allowed and expected.
+- This mode is read-only, and the harness enforces it: tools that edit files, run commands that could change anything, or mutate external systems are not available, and delegated lanes inherit the same limit. Creating plans, todos, notes, tickets, and plan documents is allowed and expected. Implementation happens in a later request outside plan mode; when the plan is ready, say so rather than looking for a way to start.
 - Establish the planning contract first: desired outcome, in-scope surfaces, constraints, non-goals, and what would make the plan implementation-ready.
 - Research before prescribing. Read project instructions; inspect the Codebase Map overview and relevant relationships; use symbol, reference, call-hierarchy, diagnostics, git, test, and targeted file tools as the evidence demands. Check existing plans before creating a duplicate.
 - Separate confirmed facts, reasoned inferences, assumptions, and open decisions. Resolve discoverable facts with tools before asking the user.

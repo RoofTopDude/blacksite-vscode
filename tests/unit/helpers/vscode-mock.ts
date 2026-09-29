@@ -39,6 +39,16 @@ export class Position {
   constructor(readonly line: number, readonly character: number) {}
 }
 
+/** Same values as VS Code's FileType bit flags. */
+export enum FileType { Unknown = 0, File = 1, Directory = 2, SymbolicLink = 64 }
+
+/** Records replacements so a spec can assert what an in-editor edit would have done. */
+export class WorkspaceEdit {
+  readonly replacements: Array<{ uri: unknown; range: unknown; text: string }> = [];
+  replace(uri: unknown, range: unknown, text: string): void { this.replacements.push({ uri, range, text }); }
+  get size(): number { return this.replacements.length; }
+}
+
 export class Range {
   readonly start: Position;
   readonly end: Position;
@@ -107,6 +117,7 @@ const configurationEmitter = new EventEmitter<{ affectsConfiguration: (key: stri
 export const ConfigurationTarget = { Global: 1, Workspace: 2, WorkspaceFolder: 3 } as const;
 
 export const workspace = {
+  get isTrusted(): boolean { return true; },
   onDidChangeConfiguration: configurationEmitter.event,
   workspaceFolders: undefined as Array<{ name: string; index: number; uri: Uri }> | undefined,
   getConfiguration: (section?: string): {

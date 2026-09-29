@@ -56,8 +56,17 @@ the tool and the exact operation:
 Your options:
 
 - **Allow** — this one call.
-- **Allow All** — the rest of this run.
+- **Allow all this turn** — this call, and later operations of the *same kind and tier*, until
+  the current turn ends. The kinds are file edits, terminal commands, external service
+  mutations, and Execution Run sequences, and each tier (file-write, network, destructive) is
+  separate. So allowing all network commands does not allow a destructive one, and allowing all
+  edits never allows a command. For a command Blacksite does not recognize, the grant covers
+  repeat runs of that same executable only. Nothing carries over to your next message.
 - **Deny** — refuse; the agent gets the refusal and continues.
+
+Approval is always granted by the extension. The model cannot mark its own call as approved:
+the approval flag is set by the host after you answer, and one supplied in a tool call is
+discarded.
 
 Choosing to always allow a command persists its **binary** to `blacksite.permissions.autoApprove`,
 so it stops asking in this project. Note that this is per binary, not per command line: allowing
@@ -244,6 +253,91 @@ obligation, read your provider's terms and configure your account accordingly �
 where those controls exist.
 
 ---
+
+## Lifecycle hooks
+
+Set `blacksite.hooks.commands` in your **user** Settings JSON to run scripts at fixed
+points in the agent lifecycle. Workspace settings cannot register scripts, and hooks run
+only in trusted workspaces. They apply to normal chat, continued runs, and delegated lanes.
+
+```json
+"blacksite.hooks.commands": [
+  {
+    "event": "PreToolUse",
+    "command": "node",
+    "args": ["/absolute/path/to/check-path.mjs"],
+    "tools": ["file_write", "file_edit", "file_delete"],
+    "timeoutMs": 5000
+  },
+  {
+    "event": "PostToolUse",
+    "command": "node",
+    "args": ["/absolute/path/to/format-change.mjs"],
+    "tools": ["file_write", "file_edit"]
+  }
+]
+```
+
+Use an absolute script path appropriate for your machine (escape backslashes in Windows
+JSON paths). The command is an executable, with literal arguments; no shell expands them.
+For PowerShell scripts, use `pwsh` with `-NoProfile -File` and the script path in `args`.
+Scripts run with the workspace as their working directory and inherit the host environment.
+
+| Event | When it runs | Failure behavior |
+| --- | --- | --- |
+| `UserPromptSubmit` | Before a user submission enters the model conversation. Internal continuations and delegated task instructions do not count as user submissions. | Blocks the submission. |
+| `PreToolUse` | After tool validation, before dispatch, including parallel delegation. | Blocks the tool, even with Allow All. The model receives the reason. |
+| `PostToolUse` | After dispatch returns, including failed results, before diagnostics and edit after-snapshots. Calls rejected by validation or pre-hooks do not dispatch and do not trigger this event. | Warns in the transcript; does not undo the tool. |
+| `Stop` | Once per run when it finishes, fails, or is cancelled. | Warns in the transcript while it is open. Does not restart the agent. |
+
+Hooks execute in configuration order for each event. `tools` matches exact tool names;
+omit it to match every tool. Separate delegated lanes may run hooks concurrently.
+Each script receives one JSON object on **stdin**, followed by a newline:
+
+```json
+{
+  "version": 1,
+  "event": "PreToolUse",
+  "sessionId": "session-id",
+  "workspaceRoot": "/path/to/project",
+  "toolCallId": "call-id",
+  "toolName": "file_write",
+  "toolInput": { "path": "src/example.ts", "content": "..." }
+}
+```
+
+`UserPromptSubmit` adds `prompt`; `PostToolUse` adds `result` and `ok`; `Stop` adds
+`stopReason`. Tool input is the model's original input, without injected service credentials.
+Hook data may contain source code, prompt text, and tool output: configure scripts you trust.
+
+Exit **0** to continue. Any other exit status, launch error, or timeout fails the hook.
+For blocking events, subsequent hooks do not run. Write a reason to stderr; up to 16 KiB
+of combined output is retained for failure feedback. Successful output is ignored and
+cannot grant approval or change a tool's arguments. Hooks default to a 10-second timeout,
+configurable from 100 ms to 60 seconds, with up to 32 entries. Cancellation terminates
+active hook processes; Stop scripts still run under their own timeout.
+
+For example, `check-path.mjs` can reject edits to a protected directory:
+
+```js
+let text = "";
+for await (const chunk of process.stdin) text += chunk;
+const event = JSON.parse(text);
+const path = String(event.toolInput?.path ?? "").replaceAll("\\", "/");
+if (path.split("/").includes("secrets")) {
+  console.error("The secrets directory is protected.");
+  process.exitCode = 2;
+}
+```
+
+This example checks the `path` field of the selected tools; a policy covering batch edits,
+renames, or shell commands must also check those tools and their arguments. A formatter
+should check `ok` before editing. Post-tool changes to files already tracked by the edit
+journal are included in the after-snapshot. Changes to other files, or changes made by
+prompt/pre/stop hooks, are not automatically journaled.
+
+Hooks are user-authorized programs with your user rights, including during plan mode.
+They do not provide an OS sandbox or replace existing tool approvals.
 
 ## Practical advice
 

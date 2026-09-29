@@ -8,7 +8,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../../src/agent-session.js";
 import { loadCheckpoint } from "../../src/checkpoint.js";
-import { ALL_TOOLS, LOOP_TOOLS, TICKET_TOOLS } from "../../src/tools/definitions.js";
+import { ALL_TOOLS, LOOP_TOOLS, TICKET_TOOLS, TOOL_LOADING_TOOLS } from "../../src/tools/definitions.js";
 
 function createFakeContext() {
   const store = new Map<string, unknown>();
@@ -73,6 +73,15 @@ function fullyWiredOverrides(): Partial<Opts> {
 describe("AgentSession tool advertisement", () => {
   it("advertises every tool in the catalog when all providers are wired", () => {
     const advertised = new Set(advertisedNames(createSession(fullyWiredOverrides())));
+    // The on-demand loader exists only when on-demand loading is on (next test).
+    const loaderNames = new Set(TOOL_LOADING_TOOLS.map((tool) => tool.name));
+    const missing = ALL_TOOLS.map((tool) => tool.name).filter((name) => !advertised.has(name) && !loaderNames.has(name));
+    expect(missing).toEqual([]);
+    expect([...loaderNames].some((name) => advertised.has(name))).toBe(false);
+  });
+
+  it("makes every catalog tool available, loader included, with on-demand loading on", () => {
+    const advertised = new Set(advertisedNames(createSession({ ...fullyWiredOverrides(), toolLoading: () => "on_demand" })));
     const missing = ALL_TOOLS.map((tool) => tool.name).filter((name) => !advertised.has(name));
     expect(missing).toEqual([]);
   });

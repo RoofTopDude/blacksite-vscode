@@ -841,6 +841,7 @@ export function toolIntentPhrase(toolName: string, input: any): { verb: string; 
     case "mcp_list_tools": return { verb: "Listing", target: hostLabel(data.server?.url) };
     case "tool_output_page": return { verb: "Continuing", target: "output" };
     case "tool_output_search": return { verb: "Searching", target: shortText(data.pattern, 32) };
+    case "tool_search": return { verb: "Loading tools", target: shortText(Array.isArray(data.names) ? data.names.join(", ") : data.query, 40) };
     case "question_card": return { verb: "Asking", target: "" };
     default: {
       const preview = toolInputPreview(toolName, data);

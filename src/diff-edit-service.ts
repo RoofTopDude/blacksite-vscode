@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import type { EditApprovalProvider, WorkspaceEditApplier } from "./workspace-edit-applier.js";
+import { editRouting, type EditRouting, type WorkspaceEditApplier } from "./workspace-edit-applier.js";
 import { captureDiagnosticBaseline, collectForUris } from "./post-edit-diagnostics.js";
 import type { ChangedDiagnostics } from "./post-edit-diagnostics.js";
 import { applyJsonOperation, detectIndent, serializeJson, type JsonOperation, type JsonValue } from "./json-pointer.js";
@@ -67,11 +67,9 @@ export type MoveResult =
   | { ok: true; source: string; destination: string; diagnostics?: ChangedDiagnostics; notice?: string }
   | { ok: false; error: string };
 
-export interface EditProviderOptions {
+/** Routing (approver, preview policy, pre-apply hook) travels with the call to the applier. */
+export interface EditProviderOptions extends EditRouting {
   autoApprove: boolean;
-  /** Request-local approval route used by unattended loop lanes. */
-  approvalProvider?: EditApprovalProvider;
-  showPreview?: boolean;
 }
 
 export interface EditProvider {
@@ -136,8 +134,7 @@ export class DiffEditService implements EditProvider {
       summary: `${replacements} edit(s) in ${rel}`,
       autoApprove: opts.autoApprove,
       expectedVersions: new Map([[uri.toString(), doc.version]]),
-      approvalProvider: opts.approvalProvider,
-      showPreview: opts.showPreview,
+      ...editRouting(opts),
       rationale: input.rationale,
     });
     if (!res.applied) return { ok: false, error: editFailure(res.reason) };
@@ -224,8 +221,7 @@ export class DiffEditService implements EditProvider {
       summary: `${totalReplacements} edit(s) across ${fileResults.length} file(s)`,
       autoApprove: opts.autoApprove,
       expectedVersions,
-      approvalProvider: opts.approvalProvider,
-      showPreview: opts.showPreview,
+      ...editRouting(opts),
       rationale: input.rationale,
     });
     if (!res.applied) return { ok: false, error: editFailure(res.reason) };
@@ -286,8 +282,7 @@ export class DiffEditService implements EditProvider {
     const res = await this._applier.apply(edit, {
       summary: `Move ${source} → ${destination}`,
       autoApprove: opts.autoApprove,
-      approvalProvider: opts.approvalProvider,
-      showPreview: opts.showPreview,
+      ...editRouting(opts),
     });
     if (!res.applied) return { ok: false, error: editFailure(res.reason) };
 
@@ -365,8 +360,7 @@ export class DiffEditService implements EditProvider {
       summary: `${operations.length} JSON operation(s) in ${rel}`,
       autoApprove: opts.autoApprove,
       expectedVersions: new Map([[uri.toString(), doc.version]]),
-      approvalProvider: opts.approvalProvider,
-      showPreview: opts.showPreview,
+      ...editRouting(opts),
       rationale: input.rationale,
     });
     if (!res.applied) return { ok: false, error: editFailure(res.reason) };

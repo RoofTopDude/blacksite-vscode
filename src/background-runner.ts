@@ -11,6 +11,8 @@ export interface RunOptions {
   requestMode?: RequestMode;
   /** Checkpoint continuation keeps the profile that was active when the run paused. */
   preserveRequestMode?: boolean;
+  /** What the user actually typed, when this run answers a user message. See AgentSession.send. */
+  userText?: string;
 }
 
 export class BackgroundRunner {
@@ -80,6 +82,7 @@ export class BackgroundRunner {
             images: options.images,
             requestMode: options.requestMode,
             preserveRequestMode: options.preserveRequestMode,
+            userText: options.userText,
           })) {
             onEvent(event);
 

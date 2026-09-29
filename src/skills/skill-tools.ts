@@ -157,7 +157,7 @@ export class SkillToolProvider {
     if (existing?.origin === "user") {
       return {
         ok: false,
-        error: `'${name}' is one of the user's personal skills (~/.blacksite/skills). Those are theirs to edit — pick a different name, or ask them to change it.`,
+        error: `'${name}' is one of the user's personal skills (${existing.location}). Those are theirs to edit — pick a different name, or ask them to change it.`,
       };
     }
 
@@ -184,7 +184,7 @@ export class SkillToolProvider {
         path: written.path,
         origin: "workspace",
         ...(written.shadowsBundled
-          ? { note: `A ${existing?.origin} skill named '${name}' already existed. This workspace copy shadows it rather than editing it in place; the original is unchanged.` }
+          ? { note: `A skill named '${name}' already existed in ${existing?.location ?? "another folder"}. This copy in .blacksite/skills shadows it rather than editing it in place; the original is unchanged.` }
           : {}),
         ...(warnings.length ? { warnings } : {}),
       };

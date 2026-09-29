@@ -156,9 +156,10 @@ Two gates stand between the agent and your machine:
 full preview.
 
 **Sensitive commands.** Anything classified as file-write, network, or destructive raises a modal
-prompt with the tool name and the exact operation. You can **Allow** once, **Allow All** for the
-rest of this run, or **Deny**. Choosing "always allow" for a command persists its binary to
-`blacksite.permissions.autoApprove` so it stops asking in this project.
+prompt with the tool name and the exact operation. You can **Allow** once, **Allow all this turn**
+for operations of the same kind and tier until the turn ends, or **Deny**. Choosing "always allow"
+for a command persists its binary to `blacksite.permissions.autoApprove` so it stops asking in this
+project.
 
 [Approvals & Safety](approvals-and-safety.html) covers the classification rules and the allow/deny
 lists in full.

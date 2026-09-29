@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { isInsideToolchainRoot } from "@blacksite/local-runtime";
-import type { EditApprovalProvider, WorkspaceEditApplier } from "./workspace-edit-applier.js";
+import { editRouting, type EditRouting, type WorkspaceEditApplier } from "./workspace-edit-applier.js";
 import { captureDiagnosticBaseline, collectDiagnosticSnapshot, collectForUris } from "./post-edit-diagnostics.js";
 import { formatActiveSignature } from "./lsp-signature-format.js";
 import { missingExtensionFor } from "./graph/language-support.js";
@@ -27,13 +27,11 @@ import { WorkspaceIdentity } from "./lsp/workspace-identity.js";
 
 // ── Public surface (keeps vscode types out of AgentSession) ──────────────────
 
-export interface LspContext {
+/** Routing (approver, preview policy, pre-apply hook) travels with the call to the applier. */
+export interface LspContext extends EditRouting {
   autoApprove: boolean;
   signal?: AbortSignal;
   transactionId?: string;
-  /** Request-local reviewer for unattended mutations. */
-  approvalProvider?: EditApprovalProvider;
-  showPreview?: boolean;
 }
 
 export interface SymbolRef {
@@ -639,8 +637,7 @@ export class LspService implements LspProvider {
       summary: `Rename '${label}' to '${newName}'`,
       autoApprove: ctx.autoApprove,
       expectedVersions: expectedVersion(resolved.uri, resolved.documentVersion),
-      approvalProvider: ctx.approvalProvider,
-      showPreview: ctx.showPreview,
+      ...editRouting(ctx),
     });
     if (!res.applied) return { ok: false, error: applyFailure("rename", res.reason), mutationStatus: res.reason };
 
@@ -755,8 +752,7 @@ export class LspService implements LspProvider {
           summary: `Code action: ${chosen.title}`,
           autoApprove: ctx.autoApprove,
           expectedVersions: expectedVersion(uri, doc.version),
-          approvalProvider: ctx.approvalProvider,
-          showPreview: ctx.showPreview,
+          ...editRouting(ctx),
         });
         if (!res.applied) return { ok: false, error: applyFailure("code action", res.reason), mutationStatus: res.reason };
         applied = true;
@@ -895,8 +891,7 @@ export class LspService implements LspProvider {
       summary: `Format ${identity.value.path}`,
       autoApprove: ctx.autoApprove,
       expectedVersions: expectedVersion(uri, doc.version),
-      approvalProvider: ctx.approvalProvider,
-      showPreview: ctx.showPreview,
+      ...editRouting(ctx),
     });
     if (!res.applied) return { ok: false, error: applyFailure("formatting", res.reason), mutationStatus: res.reason };
     const diagnostics = await collectForUris([uri], this._workspaceRoot, { baseline, signal: ctx.signal });
@@ -994,8 +989,7 @@ export class LspService implements LspProvider {
       summary: `Insert code ${positionMode} ${label}`,
       autoApprove: ctx.autoApprove,
       expectedVersions: expectedVersion(resolved.uri, resolved.documentVersion),
-      approvalProvider: ctx.approvalProvider,
-      showPreview: ctx.showPreview,
+      ...editRouting(ctx),
     });
     if (!res.applied) return { ok: false, error: applyFailure("insertion", res.reason), mutationStatus: res.reason };
 
@@ -1066,8 +1060,7 @@ export class LspService implements LspProvider {
       summary: `Replace ${resolved.label}`,
       autoApprove: ctx.autoApprove,
       expectedVersions: expectedVersion(resolved.uri, resolved.documentVersion),
-      approvalProvider: ctx.approvalProvider,
-      showPreview: ctx.showPreview,
+      ...editRouting(ctx),
     });
     if (!res.applied) return { ok: false, error: applyFailure("replacement", res.reason), mutationStatus: res.reason };
 
@@ -1119,8 +1112,7 @@ export class LspService implements LspProvider {
       summary: `Replace ${resolvedEdits.length} symbol(s) across ${fileCount} file(s)`,
       autoApprove: ctx.autoApprove,
       expectedVersions: new Map(resolvedEdits.map((entry) => [entry.uri.toString(), entry.documentVersion])),
-      approvalProvider: ctx.approvalProvider,
-      showPreview: ctx.showPreview,
+      ...editRouting(ctx),
     });
     if (!res.applied) return { ok: false, error: applyFailure("batch replacement", res.reason), mutationStatus: res.reason };
 

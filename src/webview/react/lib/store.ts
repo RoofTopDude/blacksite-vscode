@@ -22,7 +22,7 @@ function post(message: OutgoingMessage): void {
 }
 import {
   addQuestionCard, answerQuestionCard, appendText, appendThinking, applyApprovalPending, declineQuestionCard,
-  applyApprovalResult, applyDiagnostic, applyProviderActivity, applyToolResult, chooseApprovalDecision, createChatState, createUserTurn,
+  applyApprovalResult, applyApprovalReview, truncateTurnsFrom, applyDiagnostic, applyProviderActivity, applyToolResult, chooseApprovalDecision, createChatState, createUserTurn,
   checkpointLiveResponse, currentRoundHasText, ensureLaneTurn, ensureParentLiveTurn, ensureToolCall,
   expireApproval, expireOpenGates, expireQuestionCard, finalizeThinking, finalizeTurn, lastUserRequest,
   resetConversation, resetLiveResponse, resolveStreamTurn, restoreConversation, setQuestionDraft, type ChatState,
@@ -84,6 +84,12 @@ export interface Store {
   queuedRequestMode: RequestMode | null;
   /** Profile selected for the next request; Auto resolves conservatively in the host. */
   requestMode: RequestMode;
+  /** blacksite.permissions.approvalMode as the host last reported it. */
+  approvalMode: "ask" | "auto";
+  /** Assistant turns the host can rewind to (before). */
+  rewindableTurnIds: string[];
+  /** Text to put in the composer, applied once per nonce (after a conversation rewind). */
+  composerFill: { text: string; nonce: number } | null;
   /** Whether the slash-command help panel is pinned open. */
   slashHelpOpen: boolean;
   /** Aggregate token usage accumulated from provider usage events this session. */
@@ -135,6 +141,9 @@ export const store: Store = {
   queuedMessage: null,
   queuedRequestMode: null,
   requestMode: "auto",
+  approvalMode: "ask",
+  rewindableTurnIds: [],
+  composerFill: null,
   slashHelpOpen: false,
   sessionUsage: emptyUsage(),
   sessionCost: emptyCost(),
@@ -337,6 +346,33 @@ function handleIncoming(msg: IncomingMessage): void {
       break;
     }
 
+    case "stream_approval_review": {
+      const turn = readStr(msg.laneId) ? ensureLaneTurn(chat, msg) : store.chat.byId.get(chat.currentLiveTurnId || "") || null;
+      if (turn && msg.toolCallId && (msg.verdict === "allowed" || msg.verdict === "escalated")) {
+        applyApprovalReview(chat, turn, msg.toolCallId, msg.verdict, String(msg.reason || ""));
+      }
+      break;
+    }
+
+    case "rewind_points": {
+      store.rewindableTurnIds = Array.isArray(msg.turnIds) ? msg.turnIds.map(String) : [];
+      break;
+    }
+
+    case "rewind_applied": {
+      if (msg.conversation && msg.turnId) {
+        const typed = truncateTurnsFrom(chat, msg.turnId);
+        const text = typeof msg.text === "string" ? msg.text : typed ?? "";
+        store.composerFill = { text, nonce: (store.composerFill?.nonce ?? 0) + 1 };
+      }
+      break;
+    }
+
+    case "approval_mode": {
+      store.approvalMode = msg.mode === "auto" ? "auto" : "ask";
+      break;
+    }
+
     case "preview_assets": {
       store.previewProjectCss = String(msg.projectCss ?? "");
       break;
@@ -420,8 +456,9 @@ function handleIncoming(msg: IncomingMessage): void {
         const turn = ensureLaneTurn(chat, msg);
         if (turn) {
           finalizeThinking(turn);
+          // Rendered as its own callout under the turn (see ErrorCallout in Turn.tsx), not
+          // appended to the reply as markdown, so it can't be mistaken for the agent's words.
           turn.errorMessage = String(msg.message || "Unknown error");
-          appendText(turn, `\n\n**Error:** ${String(msg.message || "Unknown error")}`);
           expireOpenGates(turn, "The run failed before this was answered.");
           finalizeTurn(turn, { status: "error" });
         }
@@ -431,7 +468,6 @@ function handleIncoming(msg: IncomingMessage): void {
         if (live) {
           finalizeThinking(live);
           live.errorMessage = chat.lastConversationError;
-          appendText(live, `\n\n**Error:** ${chat.lastConversationError}`);
           expireOpenGates(live, "The run failed before this was answered.");
           finalizeTurn(live, { status: "error" });
           chat.currentLiveTurnId = null;
@@ -591,6 +627,10 @@ export const actions = {
     post({ type: "send_message", payload: { content: trimmed, context: ctx, mentions, attachments, requestMode } });
   },
   setRequestMode(requestMode: RequestMode): void { store.requestMode = requestMode; bump(); },
+  /** Ask the host to rewind to before this assistant turn; the host confirms what will change. */
+  rewindTo(turnId: string): void { post({ type: "rewind_request", turnId }); },
+  /** Optimistic: the host confirms (or corrects) with approval_mode once the setting is written. */
+  setApprovalMode(mode: "ask" | "auto"): void { store.approvalMode = mode; bump(); post({ type: "set_approval_mode", mode }); },
   cancel(): void { post({ type: "cancel_current" }); },
   newChat(): void { post({ type: "new_chat" }); },
   compact(): void { post({ type: "compact_conversation" }); },

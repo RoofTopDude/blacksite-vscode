@@ -56,8 +56,9 @@ export class SkillsProvider implements vscode.WebviewViewProvider, vscode.Dispos
     // git. Watching them keeps the panel honest without a refresh button being the only
     // way to see reality.
     try {
+      // Every workspace skill folder (Blacksite's and the cross-tool ones), plus workspace plugins.
       this._watcher = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(this._store.workspaceSkillsDir(), "**/*.md"),
+        new vscode.RelativePattern(this._workspaceRoot, "{.blacksite,.agents,.claude,.github}/{skills,plugins}/**/*.{md,json}"),
       );
       const onChange = () => { this._store.invalidate(); this._postState(); };
       this._watcher.onDidChange(onChange);
@@ -161,8 +162,8 @@ export class SkillsProvider implements vscode.WebviewViewProvider, vscode.Dispos
       descriptionMax: MAX_DESCRIPTION_CHARS,
       // Warn before the save, not after: "you are about to shadow the bundled skill of the
       // same name" is a decision, and finding out afterwards reads as the edit having failed.
-      shadowWarning: existing && existing.origin !== "workspace"
-        ? `A ${existing.origin} skill named '${frontmatter.name}' already exists. Saving creates a workspace copy that shadows it; the original is left unchanged.`
+      shadowWarning: existing && !existing.managed
+        ? `A skill named '${frontmatter.name}' already exists in ${existing.location}. Saving creates a copy in .blacksite/skills that shadows it; the original is left unchanged.`
         : undefined,
     });
   }
@@ -207,9 +208,9 @@ export class SkillsProvider implements vscode.WebviewViewProvider, vscode.Dispos
   private async _deleteSkill(name: string): Promise<void> {
     const record = this._store.find(name);
     if (!record) return;
-    if (record.origin !== "workspace") {
+    if (!record.managed) {
       vscode.window.showWarningMessage(
-        `Blacksite: '${name}' is a ${record.origin} skill and cannot be deleted here. Disable it instead.`,
+        `Blacksite: '${name}' lives in ${record.location}, which Blacksite does not manage, so it cannot be deleted here. Disable it instead.`,
       );
       return;
     }
@@ -268,6 +269,8 @@ export class SkillsProvider implements vscode.WebviewViewProvider, vscode.Dispos
         name: record.name,
         description: record.description,
         origin: record.origin,
+        location: record.location,
+        managed: record.managed,
         enabled: record.enabled,
         available,
         unavailableReason: reason,
@@ -295,7 +298,7 @@ export class SkillsProvider implements vscode.WebviewViewProvider, vscode.Dispos
   /** Open a workspace copy of a bundled/user skill for editing. */
   async copyToWorkspace(name: string): Promise<void> {
     const record = this._store.find(name);
-    if (!record || record.origin === "workspace") return;
+    if (!record || record.managed) return;
     try {
       const raw = fs.readFileSync(path.join(record.dir, SKILL_FILE), "utf8");
       const parsed = parseSkillFile(raw, record.name);
