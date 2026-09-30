@@ -13,6 +13,8 @@
      call          impulse           quiet, then a fast dart with a comet trail
      reference     stream (slow)     passive use: barely moving, low contrast
      supertype     ascend            child → parent, decelerating into place, then still
+     project_ref   settle            a declared dependency: one slow drift, then stillness
+     cochange      echo              both ends pulse inward and meet — they change together
 
    Pure in (signature, seed, now): no DOM, no pixi, no mutable accumulators, so
    the whole vocabulary is unit-testable and resumable after the view was hidden.
@@ -30,7 +32,10 @@ export type FlowMotion =
   | "impulse"
   | "ascend"
   /** A dependency starts to move, stalls before the blocker, then dissipates. */
-  | "gate";
+  | "gate"
+  /** Both ends pulse toward the middle at once and meet: no direction, just
+      "these move together" (git co-change). */
+  | "echo";
 
 export interface FlowSignature {
   motion: FlowMotion;
@@ -68,6 +73,8 @@ const EDGE_SIGNATURES: Partial<Record<EdgeKind, FlowSignature>> = {
   ticket_scope: { motion: "stream",        periodMs: 4200, particles: 1, radius: 1.25, intensity: 0.42 },
   ticket_blocked: { motion: "gate",        periodMs: 3600, particles: 1, radius: 1.7, intensity: 0.84 },
   ticket_overlap: { motion: "exchange",    periodMs: 4400, particles: 1, radius: 1.35, intensity: 0.68 },
+  project_ref: { motion: "settle",         periodMs: 7200, particles: 1, radius: 1.5, intensity: 0.5 },
+  cochange:    { motion: "echo",           periodMs: 5200, particles: 2, radius: 1.35, intensity: 0.6 },
 };
 
 const SYMBOL_SIGNATURES: Record<SymbolRelation, FlowSignature> = {
@@ -103,6 +110,7 @@ export const MOTION_DESCRIPTIONS: Record<FlowMotion, string> = {
   "impulse": "quiet, then a fast dart — a discrete call",
   "ascend": "rising into place and holding — inheritance, child to parent",
   "gate": "a flow that stalls before its dependency — blocked work",
+  "echo": "both ends pulse inward and meet — files that change together",
 };
 
 /** Fade a particle in and out near the arc's ends so it never pops into
@@ -256,6 +264,19 @@ function computeParticles(signature: FlowSignature, seed: number, now: number): 
         return [{ t: REACH, alpha: intensity * 0.72 * fade, radius: radius * (0.9 + fade * 0.1), reverse: false }];
       }
       return [];
+    }
+
+    case "echo": {
+      /* Co-change has no direction. Two particles leave the ends together,
+         meet in the middle, and fade there; then a quiet half-cycle. */
+      const ACTIVE = 0.5;
+      if (phase >= ACTIVE) return [];
+      const local = easeOutQuad(phase / ACTIVE);
+      const alpha = intensity * (0.35 + local * 0.65) * (1 - Math.max(0, local - 0.85) / 0.15);
+      return [
+        { t: local * 0.5, alpha, radius, reverse: false },
+        { t: 1 - local * 0.5, alpha, radius, reverse: true },
+      ];
     }
 
     case "stream":

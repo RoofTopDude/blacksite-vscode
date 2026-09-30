@@ -24,6 +24,11 @@
                                                            dependency; carried as an
                                                            undirected hint and only
                                                            when the caller opts in.
+   - co-change edges (history layer)                     → UNDIRECTED. Two files that
+                                                           keep changing together
+                                                           assert coupling, not a
+                                                           direction; registered both
+                                                           ways, opt-in like notes.
 
    Collapsing that inconsistency here — rather than in each caller — is the whole
    point of the module: a traversal that mixes layers must not silently walk half
@@ -32,9 +37,9 @@
 import type { EdgeKind, GraphEdge, GraphNode } from "./graph-model.js";
 
 /** Which indexed relationship layer a link came from. */
-export type MapLayer = "import" | "service" | "symbol" | "note";
+export type MapLayer = "import" | "service" | "symbol" | "note" | "history";
 
-export const MAP_LAYERS: readonly MapLayer[] = ["import", "service", "symbol", "note"];
+export const MAP_LAYERS: readonly MapLayer[] = ["import", "service", "symbol", "note", "history"];
 
 /** One directed dependency link between two files, already normalized so the
     owning adjacency bucket means "depends on" / "depended on by". */
@@ -62,6 +67,8 @@ export interface AdjacencyInput {
   symbolEdges?: readonly GraphEdge[];
   /** Edge-scoped map notes, as {from,to} pairs. */
   noteEdges?: readonly { from: string; to?: string; kind?: string; title?: string }[];
+  /** Git co-change edges (graph/cochange.ts); undirected. */
+  cochangeEdges?: readonly GraphEdge[];
   /** Layers to include; defaults to import + service + symbol (notes off — they
       are human annotations, not mechanical dependencies). */
   layers?: readonly MapLayer[];
@@ -122,6 +129,13 @@ export function buildAdjacency(input: AdjacencyInput): MapAdjacency {
          direction the note never established. */
       link(note.from, note.to, "ai", "note", note.title);
       link(note.to, note.from, "ai", "note", note.title);
+    }
+  }
+
+  if (layers.has("history")) {
+    for (const edge of input.cochangeEdges ?? []) {
+      link(edge.from, edge.to, "cochange", "history", edge.label, edge.confidence);
+      link(edge.to, edge.from, "cochange", "history", edge.label, edge.confidence);
     }
   }
 
@@ -405,6 +419,9 @@ export interface NodeFilter {
   glob?: string;
   /** Keep files in any of these language buckets. */
   langs?: readonly string[];
+  /** Keep only files in this codebase: its root path (node.codebase) or the
+      label the overview shows for it (the last meaningful path segment). */
+  codebase?: string;
   minDegree?: number;
   /** Keep only files touched by at least this many commits in the git window. */
   minChurn?: number;
@@ -415,6 +432,7 @@ export interface NodeFilter {
 export interface NodeHit {
   path: string;
   area: string;
+  codebase?: string;
   lang: string;
   dependents: number;
   dependencies: number;
@@ -441,12 +459,19 @@ export function findNodes(nodes: readonly GraphNode[], filter: NodeFilter): Node
   const langs = filter.langs && filter.langs.length > 0 ? new Set(filter.langs.map((l) => l.toLowerCase())) : null;
   const minDegree = Math.max(0, Math.floor(filter.minDegree ?? 0));
   const minChurn = Math.max(0, Math.floor(filter.minChurn ?? 0));
+  const codebase = filter.codebase?.trim().replace(/\/+$/, "").toLowerCase() ?? "";
+  const inCodebase = (node: GraphNode): boolean => {
+    const key = (node.codebase ?? node.neighborhood ?? "").toLowerCase();
+    if (!key) return false;
+    return key === codebase || key.endsWith(`/${codebase}`);
+  };
 
   const matches = nodes.filter((node) => {
     if (area && !(node.id === area || node.id.startsWith(`${area}/`))) return false;
     if (contains && !node.id.toLowerCase().includes(contains)) return false;
     if (globRe && !globRe.test(node.id)) return false;
     if (langs && !langs.has((node.lang ?? "").toLowerCase())) return false;
+    if (codebase && !inCodebase(node)) return false;
     if (node.inDegree + node.outDegree < minDegree) return false;
     if (minChurn > 0 && (node.churn ?? 0) < minChurn) return false;
     return true;
@@ -459,6 +484,7 @@ export function findNodes(nodes: readonly GraphNode[], filter: NodeFilter): Node
     files: sorted.slice(0, limit).map((node) => ({
       path: node.id,
       area: node.neighborhood ?? node.dir,
+      ...(node.codebase ? { codebase: node.codebase } : {}),
       lang: node.lang,
       dependents: node.inDegree,
       dependencies: node.outDegree,

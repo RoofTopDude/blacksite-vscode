@@ -42,7 +42,7 @@ or ambiguous work blocks only its ticket so the rest of the queue keeps moving.
 
 ## Requirements
 
-- VS Code 1.85 or newer
+- VS Code 1.139 or newer
 - An API key for at least one supported provider: Anthropic, OpenAI, OpenRouter, or AWS Bedrock
 
 ## Install

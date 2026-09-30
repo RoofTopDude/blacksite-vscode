@@ -2,13 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { rmSync } from "node:fs";
 import { dirname } from "node:path";
+import { strToU8, zipSync } from "fflate";
 import {
   compareVersions,
   describeGitHubHttpError,
+  engineFloorLabel,
+  engineSatisfied,
   ExtensionUpdater,
   extractVersionFromVsixName,
   normalizeGithubRepositorySlug,
   parseReleaseManifest,
+  readVsixEngineRange,
   selectVsixAsset,
   UPDATE_CHECK_INTERVAL_MS,
   validateReleaseAssetMetadata,
@@ -453,5 +457,117 @@ describe("ExtensionUpdater update source", () => {
     await updater.checkForUpdates({ manual: false });
 
     expect(urls).toEqual(["https://api.github.com/repos/RoofTopDude/blacksite-vscode/releases?per_page=10"]);
+  });
+});
+
+/**
+ * A release that needs a newer VS Code than the running one must never reach "Update Now": VS
+ * Code refuses the VSIX, and the user sees an opaque install failure every three hours. The
+ * manifest publishes the engine range up front; the GitHub API path does not, so the verified
+ * VSIX is read before install as well.
+ */
+describe("VS Code engine gate", () => {
+  it("treats ^, >= and bare floors as minimums and ignores prerelease tags on the host", () => {
+    expect(engineSatisfied("^1.139.0", "1.139.0")).toBe(true);
+    expect(engineSatisfied("^1.139.0", "1.139.1")).toBe(true);
+    expect(engineSatisfied("^1.139.0", "1.140.0-insider")).toBe(true);
+    expect(engineSatisfied("^1.139.0", "1.138.2")).toBe(false);
+    expect(engineSatisfied(">=1.139.0", "1.105.0")).toBe(false);
+    expect(engineSatisfied("1.139.0", "1.2.0")).toBe(false);
+  });
+
+  it("never blocks on a missing or unparseable range", () => {
+    expect(engineSatisfied(undefined, "1.0.0")).toBe(true);
+    expect(engineSatisfied("", "1.0.0")).toBe(true);
+    expect(engineSatisfied("~1.139 || 2", "1.0.0")).toBe(true);
+    expect(engineFloorLabel("^1.139.0")).toBe("1.139.0");
+  });
+
+  it("reads minimumVscodeVersion from the published manifest", () => {
+    const info = parseReleaseManifest({
+      version: "2.0.0",
+      downloadUrl: "https://github.com/o/r/releases/download/v2.0.0/blacksite-vscode-2.0.0.vsix",
+      digest: `sha256:${"a".repeat(64)}`,
+      minimumVscodeVersion: "^1.139.0",
+    });
+    expect(info?.minimumVscodeVersion).toBe("^1.139.0");
+  });
+
+  it("reads engines.vscode from a VSIX and tolerates garbage", () => {
+    const vsix = zipSync({ "extension/package.json": strToU8(JSON.stringify({ engines: { vscode: "^1.139.0" } })) });
+    expect(readVsixEngineRange(vsix)).toBe("^1.139.0");
+    expect(readVsixEngineRange(zipSync({ "other.txt": strToU8("x") }))).toBeNull();
+    expect(readVsixEngineRange(Buffer.from("not a zip"))).toBeNull();
+  });
+
+  function manifestUpdater(runningVersion: string) {
+    const globalStore = new Map<string, unknown>();
+    const fetcher = vi.fn(async () => ({
+      ok: true,
+      headers: { get: () => "application/json" },
+      json: async () => ({
+        version: "2.0.0",
+        downloadUrl: "https://github.com/o/r/releases/download/v2.0.0/blacksite-vscode-2.0.0.vsix",
+        digest: `sha256:${"a".repeat(64)}`,
+        minimumVscodeVersion: "^1.139.0",
+      }),
+    }));
+    const context = {
+      extensionMode: vscodeMock.ExtensionMode.Production,
+      extension: { packageJSON: { name: "blacksite-vscode", version: "1.0.0" } },
+      globalState: {
+        get: <T>(key: string): T | undefined => globalStore.get(key) as T | undefined,
+        update: async (key: string, value: unknown): Promise<void> => { globalStore.set(key, value); },
+      },
+    };
+    const updater = new ExtensionUpdater(context as never, fetcher as never, undefined, undefined, runningVersion);
+    return { updater, globalStore };
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("explains the VS Code requirement instead of offering Update Now", async () => {
+    const shown: string[][] = [];
+    vi.spyOn(vscodeMock.window, "showInformationMessage").mockImplementation(async (...args: unknown[]) => {
+      shown.push(args.map(String));
+      return undefined;
+    });
+    const { updater, globalStore } = manifestUpdater("1.105.0");
+
+    await updater.checkForUpdates({ manual: false });
+
+    expect(shown).toHaveLength(1);
+    expect(shown[0]![0]).toMatch(/needs VS Code 1\.139\.0 or newer \(you have 1\.105\.0\)/);
+    expect(shown[0]).not.toContain("Update Now");
+    // Automatic checks remember the notice so it does not return every three hours.
+    expect(globalStore.get("blacksite.updates.dismissedVersion")).toBe("2.0.0");
+  });
+
+  it("offers the update normally on a new enough VS Code", async () => {
+    const shown: string[][] = [];
+    vi.spyOn(vscodeMock.window, "showInformationMessage").mockImplementation(async (...args: unknown[]) => {
+      shown.push(args.map(String));
+      return undefined;
+    });
+    const { updater } = manifestUpdater("1.139.1");
+
+    await updater.checkForUpdates({ manual: true });
+
+    expect(shown[0]).toContain("Update Now");
+  });
+
+  it("refuses a downloaded VSIX whose engine the running VS Code cannot satisfy", async () => {
+    const vsix = Buffer.from(zipSync({ "extension/package.json": strToU8(JSON.stringify({ engines: { vscode: "^1.139.0" } })) }));
+    const digest = createHash("sha256").update(vsix).digest("hex");
+    const fetcher = vi.fn(async () => ({ ok: true, arrayBuffer: async () => vsix.buffer.slice(vsix.byteOffset, vsix.byteOffset + vsix.byteLength) }));
+    const updater = new ExtensionUpdater({} as never, fetcher as never, undefined, undefined, "1.120.0");
+    const asset = {
+      name: "blacksite-vscode-2.0.0-pre.1.vsix",
+      browser_download_url: "https://github.com/o/r/releases/download/v2.0.0-pre.1/blacksite-vscode-2.0.0-pre.1.vsix",
+      digest: `sha256:${digest}`,
+    };
+
+    await expect((updater as unknown as { downloadVsix(a: typeof asset, v: string): Promise<string> })
+      .downloadVsix(asset, "2.0.0-pre.1")).rejects.toThrow(/needs VS Code 1\.139\.0/);
   });
 });

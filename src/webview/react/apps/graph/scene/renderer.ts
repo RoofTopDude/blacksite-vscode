@@ -165,7 +165,7 @@ const VIEWPORT_CULL_ZOOM_RATIO = 1.2;
 const LARGE_GRAPH_MOTION_THRESHOLD = 8_000;
 const AMBIENT_TWINKLE_NODE_LIMIT = 5_000;
 const DETAILED_BADGE_NODE_LIMIT = 12_000;
-const RELATIONSHIP_KINDS = new Set(["api", "event", "data", "config", "call", "reference", "supertype", "ticket_scope", "ticket_blocked", "ticket_overlap"]);
+const RELATIONSHIP_KINDS = new Set(["api", "event", "data", "config", "call", "reference", "supertype", "ticket_scope", "ticket_blocked", "ticket_overlap", "project_ref", "cochange"]);
 /* Activity shimmer: subtle pulses that flow outward along a recently-touched
    file's import edges, in the activity color, so "the agent just read/edited
    this" reads at a glance without a hard flash. */
@@ -687,6 +687,22 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   /** True once a real (non-degenerate) auto-fit has landed; reset on resize
       so a legitimate viewport-size change re-fits an untouched camera. */
   let hasValidFit = false;
+  /** Systems has only a few large nodes. Keep them in the open canvas between
+      the outline and controls instead of fitting them underneath those panels. */
+  function fitDisplayNodes(nodes: readonly { x: number; y: number }[], vp: Viewport): Camera {
+    if (view?.scopeMode !== "systems" || vp.width < 900) return zoomToFit(nodes, vp);
+    const left = 370;
+    const right = 320;
+    const top = 100;
+    const bottom = 90;
+    const inner = { width: Math.max(1, vp.width - left - right), height: Math.max(1, vp.height - top - bottom) };
+    const fit = zoomToFit(nodes, inner);
+    return {
+      cx: fit.cx + (vp.width / 2 - (left + inner.width / 2)) / fit.zoom,
+      cy: fit.cy + (vp.height / 2 - (top + inner.height / 2)) / fit.zoom,
+      zoom: fit.zoom,
+    };
+  }
 
   /** Re-fit the camera to the current node cloud, but only if the user
       hasn't touched it yet. Critical fix: a webview host element can report
@@ -702,7 +718,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const vp = viewport();
     if (vp.width <= 0 || vp.height <= 0) return; /* still not laid out; retry next frame */
     recomputeZoomBounds();
-    camera = zoomToFit(view.displayNodes, vp);
+    camera = fitDisplayNodes(view.displayNodes, vp);
     cameraDirty = true;
     hasValidFit = true;
   }
@@ -1343,7 +1359,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const deferredRelationships: GraphEdge[] = [];
       const importBands: Array<Array<{ from: XY; to: XY }>> = [[], [], []];
       for (const edge of view.displayEdges) {
-        if (!edgeVisible(edge.kind)) continue;
+        /* Hidden coupling between groups shows regardless of the file-level co-change toggle. */
+        if (!edgeVisible(edge.kind) && !edge.unexplained) continue;
         if (showSelectedOnly && edge.from !== view.selectedNodeId && edge.to !== view.selectedNodeId) continue;
         /* Don't wire ghosts: an edge into a filtered-out star only re-clutters
            what the filter just cleared. */
@@ -1351,7 +1368,8 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         const from = nodeById.get(edge.from);
         const to = nodeById.get(edge.to);
         if (!from || !to) continue;
-        if (isRelationshipEdge(edge)) {
+        /* Group-level edges (grp:…) carry counts, so they are stroked individually like relationships. */
+        if (isRelationshipEdge(edge) || edge.id.startsWith("grp:")) {
           deferredRelationships.push(edge);
           continue;
         }
@@ -1392,9 +1410,20 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       const fromPos = resolvedPosOf(from);
       const toPos = resolvedPosOf(to);
       if (!fromPos || !toPos) continue;
-      traceEdgeArc(edgeGfx, fromPos, toPos);
       const focused = edge.from === focusNodeId() || edge.to === focusNodeId();
-      edgeGfx.stroke(relationshipStroke(edge, focused));
+      const stroke = relationshipStroke(edge, focused);
+      /* Group-level edges carry how many file relationships they stand for;
+         weight that in (log-scaled) so a 400-import dependency between two
+         codebases outweighs a single stray one. */
+      if ((edge.occurrenceCount ?? 1) > 1) stroke.width += Math.min(3, Math.log10(edge.occurrenceCount!) * 1.2);
+      if (edge.unexplained) {
+        /* Hidden coupling: co-change nothing structural explains. Dashed, like
+           notes — a relationship the code itself doesn't state. */
+        drawDashedLine(edgeGfx, fromPos.x, fromPos.y, toPos.x, toPos.y, 8, 6);
+      } else {
+        traceEdgeArc(edgeGfx, fromPos, toPos);
+      }
+      edgeGfx.stroke(stroke);
     }
     /* Both endpoints resolved and actually stroked — exactly the set the flow
        pass may animate, so it never pulses an edge that isn't on screen. */
@@ -2332,7 +2361,16 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   function animateTraces(now: number): boolean {
     if (!view) return false;
     const fadeMs = view.config.traceFadeSeconds * 1000;
-    const events = runPlaybackEvents(view);
+    /* A file folded into a group (Systems view, focus budget) heats that
+       group's star instead, so the overview still shows where work happens. */
+    const folds = view.displayFoldOf;
+    const rawEvents = runPlaybackEvents(view);
+    const events = folds.size === 0
+      ? rawEvents
+      : rawEvents.map((event) => {
+        const group = folds.get(event.path);
+        return group ? { ...event, path: group } : event;
+      });
     traceGfx.clear();
 
     /* Node heat + pulse — only paths with events are touched. */
@@ -2409,7 +2447,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     const zoom = Math.max(camera.zoom, 1e-6);
     const pulse = reducedMotion ? 0 : (Math.sin(now / 260) + 1) / 2; // 0..1
     for (const live of view.liveActivity) {
-      const node = nodeById.get(live.path);
+      const node = nodeById.get(live.path) ?? nodeById.get(view.displayFoldOf.get(live.path) ?? "");
       if (!node) continue;
       const p = resolvedPosOf(node);
       if (!p) continue;
@@ -2448,7 +2486,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
         /* Content moved out from under an already-positioned camera (e.g. a
            big re-index reshaped the layout) — fly back rather than leave the
            user looking at empty space. */
-        animateTo(zoomToFit(view.displayNodes, viewport()));
+        animateTo(fitDisplayNodes(view.displayNodes, viewport()));
       }
     }
     /* Cheap and idempotent once fitted (camerasClose-style no-op via the
@@ -2670,7 +2708,7 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (!view || previousEvents !== nextEvents) traceEdges = deriveTraceEdges(nextEvents);
       view = next;
       if (structureChanged) stateDirty = true;
-      if (emphasisChanged && !structureChanged) {
+      if (ready && emphasisChanged && !structureChanged) {
         /* Emphasis-only path: hover, search, and selection all resolve through overlays,
            not a full rebuild — this is what makes the spotlight track the pointer/typing. */
         applyEmphasis();
@@ -2686,16 +2724,16 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
       if (hadNoNodes && next.displayNodes.length > 0) {
         hasValidFit = false; /* fresh data: (re)fit once, same as first load */
         if (cameraTouched && !cameraSeesNodes(next.displayNodes)) cameraTouched = false;
-        autoFitIfUntouched();
+        if (ready) autoFitIfUntouched();
       }
       requestRender();
     },
     zoomToFitAll(): void {
-      if (!view || view.displayNodes.length === 0) return;
+      if (!ready || !view || view.displayNodes.length === 0) return;
       const points = view.symbolsEnabled
         ? [...view.displayNodes, ...positionedSymbols(view.displayNodes, view.symbolsByPath)]
         : view.displayNodes;
-      const fit = zoomToFit(points, viewport());
+      const fit = fitDisplayNodes(points, viewport());
       minZoom = Math.min(minZoom, fit.zoom * 0.5);
       animateTo(fit);
     },

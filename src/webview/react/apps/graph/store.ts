@@ -19,6 +19,8 @@ import {
   seekRunPlayback,
   selectRunPlayback,
   setClusterCollapsed,
+  setScope,
+  groupIndexFor,
   withDisplayGraph,
   type GraphDisplayOptions,
   type GraphFilter,
@@ -26,6 +28,8 @@ import {
   type SavedView,
 } from "@/lib/graph/view-model";
 import { isClusterNodeId } from "@/lib/graph/view-model";
+import { groupChain, isHierarchyGroupId, owningCodebase, scopeFor, type ScopeMode } from "@/lib/graph/scope";
+import type { GroupLevel } from "@/lib/graph/protocol";
 import { isGraphHostMessage, type GraphWebviewMessage } from "@/lib/graph/protocol";
 import type { Camera } from "@/lib/graph/camera";
 
@@ -56,8 +60,18 @@ function readDisplayPrefs(): Partial<GraphViewState> {
   try {
     const raw = window.localStorage.getItem(PREF_KEY);
     if (!raw) return {};
-    const parsed = JSON.parse(raw) as Partial<Pick<GraphViewState, "display" | "symbolsEnabled" | "collapsedClusters" | "filter">>;
+    const parsed = JSON.parse(raw) as Partial<Pick<GraphViewState, "display" | "symbolsEnabled" | "collapsedClusters" | "filter" | "scope" | "scopeMode">>;
+    const scopeMode: ScopeMode | undefined = parsed.scopeMode === "systems" || parsed.scopeMode === "focus" || parsed.scopeMode === "all"
+      ? parsed.scopeMode
+      : undefined;
     return {
+      /* A restored scope is the user's own choice; the landing rule only
+         applies to a session with no remembered scope. */
+      ...(scopeMode ? {
+        scopeMode,
+        scope: Array.isArray(parsed.scope) ? parsed.scope.filter((id): id is string => typeof id === "string") : [],
+        landingApplied: true,
+      } : {}),
       symbolsEnabled: parsed.symbolsEnabled === true,
       display: normalizeDisplayOptions({
         ...DEFAULT_DISPLAY_OPTIONS,
@@ -84,6 +98,7 @@ function persistDisplayPrefs(): void {
       display: state.view.display,
       collapsedClusters: state.view.collapsedClusters,
       filter: state.view.filter,
+      ...(state.view.landingApplied ? { scope: state.view.scope, scopeMode: state.view.scopeMode } : {}),
     }));
   } catch {
     /* Persistence is best-effort inside VS Code webviews. */
@@ -230,8 +245,46 @@ function ensureRunPlaybackWindow(): void {
   send({ type: "request_run_window", runId, ...desired, requestId });
 }
 
+/** Fetch the files of the scoped group that the global render sample dropped,
+    once per group per index generation. */
+function ensureScopeDetail(): void {
+  const view = state.view;
+  const target = view.scope[view.scope.length - 1];
+  if (!target || !view.hierarchy || view.display.lens !== "files") return;
+  if (view.detailGroups.includes(target)) return;
+  const group = groupIndexFor(view.hierarchy).byId.get(target);
+  if (!group || group.renderedCount >= group.fileCount) return;
+  state.view = { ...view, detailGroups: [...view.detailGroups, target] };
+  send({ type: "request_scope_detail", groupId: target, level: group.level, key: group.key });
+}
+
+let contextRequestSeq = 0;
+let contextTimer: ReturnType<typeof setTimeout> | undefined;
+/** Runs and references for the selection (inspector Activity/References). */
+function scheduleContext(): void {
+  if (contextTimer) clearTimeout(contextTimer);
+  contextTimer = setTimeout(() => {
+    contextTimer = undefined;
+    const id = state.view.selectedNodeId;
+    if (!id || id.startsWith("ticket:") || id.startsWith("svc:")) return;
+    const requestId = ++contextRequestSeq;
+    if (isHierarchyGroupId(id)) {
+      const group = groupIndexFor(state.view.hierarchy).byId.get(id);
+      const level: GroupLevel = group?.level ?? "area";
+      send({ type: "request_context", requestId, level, key: group?.key ?? id.slice(1) });
+    } else {
+      send({ type: "request_context", requestId, path: id });
+    }
+  }, 180);
+}
+
+let searchRequestSeq = 0;
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
+
 onMessage((msg) => {
   if (!isGraphHostMessage(msg)) return;
+  if (msg.type === "context_state" && msg.requestId !== contextRequestSeq) return;
+  if (msg.type === "search_results" && msg.requestId !== searchRequestSeq) return;
   if (msg.type === "focus_node") {
     /* Navigation, not view-model state: hand the target to GraphApp's focus
        effect (the camera is renderer-owned, so the reducer can't fly there). */
@@ -250,6 +303,14 @@ onMessage((msg) => {
   state.view = applyMessage(state.view, msg, Date.now());
   if (msg.type === "symbols_state" && state.pendingSymbolPath === msg.path) {
     state.pendingSymbolPath = null;
+  }
+  if (state.view.needsRefresh) {
+    state.view = { ...state.view, needsRefresh: false };
+    send({ type: "refresh" });
+  }
+  if (msg.type === "graph_state" || msg.type === "graph_hierarchy") {
+    ensureScopeDetail();
+    if (msg.type === "graph_hierarchy") persistDisplayPrefs();
   }
   bump();
   if (msg.type === "run_playback_state" || msg.type === "run_playback_summary") ensureRunPlaybackWindow();
@@ -295,9 +356,97 @@ export const actions = {
   openFullMap(): void {
     send({ type: "open_full_map" });
   },
-  /** Open the Map Notes timeline editor tab. */
-  openNotesTimeline(): void {
-    send({ type: "open_notes_timeline" });
+  /** Open the Map Notes timeline editor tab, optionally focused on one file
+      or folder prefix ("Open in timeline" from the inspector). */
+  openNotesTimeline(filter?: { prefix: string; label: string }): void {
+    send({ type: "open_notes_timeline", ...(filter ? { filter } : {}) });
+  },
+  /** Scope into a hierarchy group (codebase, project, area, root). */
+  enterGroup(groupId: string): void {
+    const scope = scopeFor(groupId, groupIndexFor(state.view.hierarchy));
+    if (scope.length === 0) return;
+    state.view = setScope(state.view, scope, "focus");
+    persistDisplayPrefs();
+    ensureScopeDetail();
+    bump();
+  },
+  /** Jump to a breadcrumb entry; null = the whole workspace (Systems when the
+      workspace qualifies, otherwise every file). */
+  setScopeTo(groupId: string | null): void {
+    if (groupId === null) {
+      const systems = state.view.hierarchy && state.view.hierarchy.groups.some((g) => g.level === "codebase" || g.level === "root");
+      state.view = setScope(state.view, [], systems ? "systems" : "all");
+    } else {
+      state.view = setScope(state.view, scopeFor(groupId, groupIndexFor(state.view.hierarchy)), "focus");
+      ensureScopeDetail();
+    }
+    persistDisplayPrefs();
+    bump();
+  },
+  /** One level up the breadcrumb. */
+  scopeUp(): void {
+    const scope = state.view.scope;
+    if (scope.length === 0) {
+      if (state.view.scopeMode !== "systems") actions.setScopeTo(null);
+      return;
+    }
+    actions.setScopeTo(scope.length > 1 ? scope[scope.length - 2]! : null);
+  },
+  showAllFiles(): void {
+    state.view = setScope(state.view, [], "all");
+    persistDisplayPrefs();
+    bump();
+  },
+  setScopeMode(mode: ScopeMode): void {
+    state.view = setScope(state.view, mode === "systems" ? [] : state.view.scope, mode);
+    persistDisplayPrefs();
+    bump();
+  },
+  /** Scope so a file becomes visible (search pick, reveal, follow-agent). */
+  revealInScope(fileId: string): void {
+    const view = state.view;
+    if (!view.hierarchy || view.displayNodes.some((candidate) => candidate.id === fileId)) return;
+    const node = view.nodes.find((candidate) => candidate.id === fileId);
+    if (!node) return;
+    const index = groupIndexFor(view.hierarchy);
+    /* Step into the file's codebase; if the focus budget still folds it, into
+       its area — the smallest scope that is guaranteed to draw it. */
+    const codebase = owningCodebase(node, index);
+    if (codebase) actions.enterGroup(codebase);
+    if (!state.view.displayNodes.some((candidate) => candidate.id === fileId)) {
+      const chain = groupChain(node, index);
+      const area = chain[chain.length - 1];
+      if (area) actions.enterGroup(area);
+    }
+  },
+  /** Host-side search over every indexed file (the render sample may not hold
+      the match). Debounced; results land in view.corpusSearch. */
+  searchCorpus(query: string): void {
+    if (searchTimer) clearTimeout(searchTimer);
+    const q = query.trim();
+    if (q.length < 2) return;
+    searchTimer = setTimeout(() => {
+      searchTimer = undefined;
+      searchRequestSeq += 1;
+      send({ type: "search_corpus", query: q, requestId: searchRequestSeq });
+    }, 220);
+  },
+  /** Fetch one off-sample file (a corpus search pick) by scoping to its group. */
+  revealCorpusFile(fileId: string, dir: string, codebase?: string): void {
+    const index = groupIndexFor(state.view.hierarchy);
+    const groupId = codebase && index.byId.has(`◈${codebase}`) ? `◈${codebase}` : index.byId.has(`▤${dir}`) ? `▤${dir}` : null;
+    state.pendingFocusPath = fileId;
+    if (groupId) actions.enterGroup(groupId);
+    bump();
+  },
+  fileTicketForArea(title: string, areas: string[], files: string[] = []): void {
+    send({ type: "file_ticket_for_area", title, areas, files });
+  },
+  openRun(runId: string): void {
+    send({ type: "open_run", runId });
+  },
+  setRespectGitignore(enabled: boolean): void {
+    send({ type: "set_respect_gitignore", enabled });
   },
   openTickets(): void {
     send({ type: "open_tickets" });
@@ -319,6 +468,18 @@ export const actions = {
   /** Double-click / "open" gesture on a node: expand a collapsed cluster's
       super-node in place, or open a real file. */
   activateNode(id: string): void {
+    /* A folder the user collapsed by hand expands in place, as before. */
+    if (isClusterNodeId(id) && state.view.collapsedClusters.includes(id.slice(1))) {
+      state.view = setClusterCollapsed(state.view, id.slice(1), false);
+      persistDisplayPrefs();
+      bump();
+      return;
+    }
+    /* A group folded by the scope or the focus budget: step into it. */
+    if (isHierarchyGroupId(id) && state.view.hierarchy && groupIndexFor(state.view.hierarchy).byId.has(id)) {
+      actions.enterGroup(id);
+      return;
+    }
     if (isClusterNodeId(id)) {
       state.view = setClusterCollapsed(state.view, id.slice(1), false);
       persistDisplayPrefs();
@@ -376,9 +537,10 @@ export const actions = {
        the map doesn't stay mysteriously filtered with nothing selected. */
     const clearIsolate = !nodeId && state.view.filter.isolateDepth > 0;
     const filter = clearIsolate ? { ...state.view.filter, isolateDepth: 0 } : state.view.filter;
-    state.view = { ...state.view, selectedNodeId: nodeId, filter };
+    state.view = { ...state.view, selectedNodeId: nodeId, filter, context: nodeId === state.view.selectedNodeId ? state.view.context : null };
     if (clearIsolate) persistDisplayPrefs();
     bump();
+    scheduleContext();
   },
   hover(nodeId: string | null): void {
     if (state.view.hoveredNodeId === nodeId) return;
@@ -499,6 +661,8 @@ export const actions = {
       display: state.view.display,
       filter: state.view.filter,
       collapsedClusters: state.view.collapsedClusters,
+      scope: state.view.scope,
+      scopeMode: state.view.scopeMode,
     };
     state.savedViews = [...state.savedViews, view];
     persistSavedViews();

@@ -10,6 +10,9 @@ export interface GraphNode {
       segment). Present only when the host laid the map out as neighborhoods;
       drives territory hulls/labels. Absent on a flat layout. */
   neighborhood?: string;
+  /** Codebase this file belongs to — always set by the host (unlike
+      `neighborhood`, which only appears when the layout is territorial). */
+  codebase?: string;
   lang: string;
   sizeBytes: number;
   inDegree: number;
@@ -23,6 +26,10 @@ export interface GraphNode {
   kind?: "file" | "cluster" | "service" | "ticket";
   /** Number of files a collapsed cluster super-node stands in for. */
   fileCount?: number;
+  /** For a folded hierarchy group (kind "cluster"): its level and display
+      name. Absent on the plain folder clusters the user collapses by hand. */
+  groupLevel?: GroupLevel;
+  groupLabel?: string;
   /** Commits in the recent git window touching this file (git heat layer);
       a collapsed cluster super-node carries the sum across its members. */
   churn?: number;
@@ -54,7 +61,11 @@ export type EdgeKind =
      file's symbols, and type inheritance. Mirrors graph/graph-model.ts. */
   | "call" | "reference" | "supertype"
   /** Work lens: territory, explicit blockers, and derived overlap. */
-  | "ticket_scope" | "ticket_blocked" | "ticket_overlap";
+  | "ticket_scope" | "ticket_blocked" | "ticket_overlap"
+  /** Manifest-declared dependency between two projects. */
+  | "project_ref"
+  /** Files (or groups) that keep changing in the same commits. Undirected. */
+  | "cochange";
 
 export interface GraphEdge {
   id: string;
@@ -81,6 +92,87 @@ export interface GraphEdge {
   targetOccurrenceCount?: number;
   ambiguityGroup?: string;
   ambiguousCandidateCount?: number;
+  provenance?: "import" | "service" | "symbol" | "topology" | "history";
+  /** Group-level edges: co-change no import, route, or declared reference
+      explains ("hidden coupling"). */
+  unexplained?: boolean;
+}
+
+export type GroupLevel = "root" | "codebase" | "project" | "area";
+
+/** One node of the host's workspace hierarchy (graph/hierarchy.ts). */
+export interface MapGroup {
+  id: string;
+  level: GroupLevel;
+  key: string;
+  label: string;
+  parent: string | null;
+  /** Indexed files in the group — the true count, not the render sample. */
+  fileCount: number;
+  renderedCount: number;
+  langs: Array<[string, number]>;
+  churn: number;
+  lastCommitAt: number;
+  x: number;
+  y: number;
+  radius: number;
+  projectKind?: string;
+}
+
+export interface MapGroupEdge {
+  id: string;
+  /** "systems" edges join what the Systems overview draws (codebases, else
+      workspace folders), which can be groups of different levels. */
+  level: GroupLevel | "systems";
+  from: string;
+  to: string;
+  kind: "import" | "api" | "event" | "data" | "config" | "cochange" | "project_ref";
+  count: number;
+  confidence?: number;
+  unexplained?: boolean;
+  evidence?: string[];
+}
+
+export interface DependencyFinding {
+  fromProject: string;
+  toProject: string;
+  fromName: string;
+  toName: string;
+  kind: string;
+  imports: number;
+}
+
+export interface MapHierarchy {
+  groups: MapGroup[];
+  edges: MapGroupEdge[];
+  roots: string[];
+  declaredUnused: DependencyFinding[];
+  usedUndeclared: DependencyFinding[];
+  fileCount: number;
+}
+
+/** A retained Execution Run that touched the selection (inspector Activity tab). */
+export interface MapRunTouch {
+  runId: string;
+  title: string;
+  status: string;
+  startedAt?: string;
+  endedAt?: string;
+  files: Array<{ path: string; count: number; kinds: string[] }>;
+  firstAt: number;
+  events: number;
+}
+
+/** An attached reference document that names code in the selection. */
+export interface MapReferenceLink {
+  id: string;
+  name: string;
+  session: string;
+  workspacePath: string;
+  kind: "attachment" | "context";
+  targets: Array<{ path: string; via: "path" | "name" | "route"; evidence: string; confidence: number }>;
+  /** The attachment as a Map file id (folder-qualified in multi-root), for open_file. */
+  openPath?: string;
 }
 
 /** A prior note's text, displaced by a map_note_update merge — bounded trail
@@ -241,6 +333,10 @@ export interface GraphConfig {
       Gates the "N files hidden" note — see graph/exclusions.ts. */
   excludeDotDirectories?: boolean;
   dotDirectoryAllowlist?: readonly string[];
+  /** Discovery honours .gitignore (default true). */
+  respectGitignore?: boolean;
+  /** What the map opens on: Systems overview, files, or decide by size. */
+  landingView?: "auto" | "systems" | "files";
 }
 
 export interface LanguageSupportStatus {
@@ -254,8 +350,14 @@ export interface LanguageSupportStatus {
 export type GraphHostMessage =
   | {
       type: "graph_state";
+      /** Host index generation; graph_delta patches apply only on top of it. */
+      seq?: number;
       nodes: GraphNode[];
       edges: GraphEdge[];
+      /** Git co-change edges between rendered files (off by default on the canvas). */
+      cochangeEdges?: GraphEdge[];
+      /** Discovery honoured .gitignore for at least one root. */
+      gitignoreApplied?: boolean;
       relationshipEdges?: GraphEdge[];
       /** Background LSP symbol sweep's call/reference/supertype edges — merged
           into the file-lens edge set on arrival (see applyMessage). */
@@ -290,7 +392,45 @@ export type GraphHostMessage =
       /** Edge ids that are the sole connection into a pocket subgraph. */
       bridgeEdgeIds?: string[];
     }
-  | { type: "graph_indexing"; indexing: boolean }
+  | { type: "graph_indexing"; indexing: boolean; phase?: "discover" | "scan" | "resolve" | "layout"; progress?: number }
+  /** An incremental index pass as a patch over generation `baseSeq`. A
+      surface holding any other generation ignores it and asks for a refresh. */
+  | {
+      type: "graph_delta";
+      seq: number;
+      baseSeq: number;
+      upsertNodes: GraphNode[];
+      removeNodeIds: string[];
+      addEdges: GraphEdge[];
+      removeEdgeIds: string[];
+      indexedFileCount?: number;
+      renderedNodeCount?: number;
+      indexedImportEdgeCount?: number;
+      renderedImportEdgeCount?: number;
+      indexedAt?: string;
+    }
+  | {
+      type: "relationships_state";
+      relationshipEdges: GraphEdge[];
+      relationshipTruncated?: boolean;
+      relationshipIndexing?: boolean;
+      relationshipEdgeCount?: number;
+      relationshipTotalEdgeCount?: number;
+    }
+  | {
+      type: "structure_state";
+      cyclicNeighborhoodPairs?: [string, string][];
+      orphanNodeIds?: string[];
+      pocketNodeIds?: string[];
+      bridgeEdgeIds?: string[];
+    }
+  | { type: "symbol_edges"; edges: GraphEdge[] }
+  | { type: "lsp_support"; lspSupport: LanguageSupportStatus[] }
+  | { type: "graph_hierarchy"; hierarchy: MapHierarchy }
+  /** Files of one hierarchy group the global render sample dropped. */
+  | { type: "scope_detail"; groupId: string; seq: number; nodes: GraphNode[]; edges: GraphEdge[]; truncated?: boolean }
+  | { type: "search_results"; query: string; requestId: number; results: Array<{ id: string; dir: string; codebase?: string }> }
+  | { type: "context_state"; requestId: number; runs: MapRunTouch[]; references: MapReferenceLink[] }
   | { type: "annotations_changed"; annotations: GraphAnnotation[] }
   /** Open-ticket weight per file id — priority-weighted, resolved on the host from each
       ticket's declared files and areas so the webview never has to expand an area itself. */
@@ -323,7 +463,14 @@ export type GraphWebviewMessage =
   | { type: "open_full_map" }
   /** Open the Map Notes timeline in an editor tab (scrollable note history
       with revision trails and per-file git history). */
-  | { type: "open_notes_timeline" }
+  | { type: "open_notes_timeline"; filter?: { prefix: string; label: string } }
+  | { type: "request_scope_detail"; groupId: string; level: GroupLevel; key: string }
+  | { type: "search_corpus"; query: string; requestId: number }
+  /** Runs and references for a file (`path`) or a group (`level` + `key`). */
+  | { type: "request_context"; requestId: number; path?: string; level?: GroupLevel; key?: string }
+  | { type: "set_respect_gitignore"; enabled: boolean }
+  | { type: "file_ticket_for_area"; title: string; areas?: string[]; files?: string[] }
+  | { type: "open_run"; runId: string }
   | { type: "open_tickets" }
   /** Set the neighborhood-territory layout mode; the host persists it and
       rebuilds the map. */

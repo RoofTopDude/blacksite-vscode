@@ -12,6 +12,10 @@ export interface GraphNode {
       layout + labels; absent when territorialization is off. See
       graph/neighborhoods.ts. */
   neighborhood?: string;
+  /** Codebase this file belongs to (the same assignment as `neighborhood`, but
+      always present — the Systems overview and the hierarchy group by it even
+      when the layout is flat). */
+  codebase?: string;
   /** Language bucket derived from the file extension (e.g. "ts", "py", "css"). */
   lang: string;
   sizeBytes: number;
@@ -34,12 +38,18 @@ export type EdgeKind =
   | "import" | "ai" | "user" | "api" | "event" | "data" | "config"
   /* Symbol-layer edges (background LSP sweep): who calls whom, who references a
      file's symbols, and type inheritance. See graph/symbol-pass.ts. */
-  | "call" | "reference" | "supertype";
+  | "call" | "reference" | "supertype"
+  /** Manifest-declared dependency between two projects (package.json deps,
+      ProjectReference, Cargo path deps, …) — graph/hierarchy.ts. */
+  | "project_ref"
+  /** Logical coupling: the two files keep changing in the same commits
+      (graph/cochange.ts). Undirected. */
+  | "cochange";
 
 /** Where an edge came from — lets the corpus keep one edge type across the
     import, service-relationship, symbol, and topology layers while still
     filtering by source at derive time. */
-export type EdgeProvenance = "import" | "service" | "symbol" | "topology";
+export type EdgeProvenance = "import" | "service" | "symbol" | "topology" | "history";
 
 export interface GraphEdge {
   /** Import edges: `imp:${from}->${to}`. Annotation edges reuse the annotation id. */
@@ -96,6 +106,22 @@ export interface GraphSnapshot {
       never-indexed literals). Surfaced so removing a large slice of a
       workspace is never silent — see graph/exclusions.ts. */
   hiddenByPolicyCount?: number;
+  /** True when discovery honoured .gitignore for at least one root. */
+  gitignoreApplied?: boolean;
+  /** Monotonic generation; bumps on every rebuild and incremental pass. */
+  seq?: number;
+  /** Present when this snapshot is an incremental update of `delta.baseSeq`,
+      so a Map surface that already holds that generation can patch instead of
+      replacing everything (GraphProvider → graph_delta). */
+  delta?: GraphDelta;
+}
+
+export interface GraphDelta {
+  baseSeq: number;
+  upsertNodes: GraphNode[];
+  removeNodeIds: string[];
+  addEdges: GraphEdge[];
+  removeEdgeIds: string[];
 }
 
 export function normalizeGraphPath(value: string): string {

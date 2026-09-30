@@ -88,10 +88,16 @@ export class NotesTimelineProvider implements vscode.Disposable {
     for (const sub of this._subscriptions) sub.dispose();
   }
 
-  /** Open (or reveal) the timeline tab. */
-  open(): void {
+  /** File or folder prefix the timeline was opened for from the Map inspector
+      ("Open in timeline"); null shows every note. */
+  private _focus: { prefix: string; label: string } | null = null;
+
+  /** Open (or reveal) the timeline tab, optionally focused on one file or area. */
+  open(focus?: { prefix: string; label: string }): void {
+    this._focus = focus && focus.prefix ? { prefix: focus.prefix.replace(/#\d+$/, ""), label: focus.label || focus.prefix } : null;
     if (this._panel) {
       this._panel.reveal(this._panel.viewColumn, false);
+      this._postNotes();
       return;
     }
     const panel = vscode.window.createWebviewPanel(
@@ -192,6 +198,7 @@ export class NotesTimelineProvider implements vscode.Disposable {
       type: "notes_state",
       notes: this._annotations.read().annotations,
       workspaceName: path.basename(roots[0]?.path ?? "") || "workspace",
+      focus: this._focus,
     });
   }
 

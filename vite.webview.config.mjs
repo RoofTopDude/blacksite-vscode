@@ -72,7 +72,7 @@ export default defineConfig(({ mode }) => ({
     emptyOutDir: true,
     sourcemap: mode === "development",
     minify: "esbuild",
-    target: "es2022",
+    target: "es2024",
     rollupOptions: {
       // One React entry per webview surface. Each provider loads its own bundle
       // via renderWebviewHtml (src/webview-html.ts).

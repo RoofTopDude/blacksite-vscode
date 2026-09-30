@@ -63,6 +63,19 @@ export function extractPyReExports(content: string): PyReExport[] {
 export function buildPyReExportIndex(
   initFiles: readonly { path: string; content: string }[],
   fileSet: ReadonlySet<string>,
+  pythonIndex?: ReadonlyMap<string, ReadonlySet<string>>,
+): Map<string, Map<string, string[]>> {
+  return buildPyReExportIndexFromEntries(
+    initFiles.map((file) => ({ path: file.path, reexports: extractPyReExports(file.content) })),
+    fileSet,
+    pythonIndex,
+  );
+}
+
+/** Same index from already-extracted re-exports (graph/file-facts.ts). */
+export function buildPyReExportIndexFromEntries(
+  initFiles: readonly { path: string; reexports: readonly PyReExport[] }[],
+  fileSet: ReadonlySet<string>,
   /** Pre-built module-name index (see python-index.ts's buildPythonNameIndex)
       used to resolve star re-exports. Omit when the caller has no need for
       `from .sub import *` support (it simply resolves to no names, same as
@@ -71,9 +84,9 @@ export function buildPyReExportIndex(
 ): Map<string, Map<string, string[]>> {
   const index = new Map<string, Map<string, string[]>>();
   const nameIndex: ReadonlyMap<string, ReadonlySet<string>> = pythonIndex ?? new Map();
-  for (const { path, content } of initFiles) {
+  for (const { path, reexports } of initFiles) {
     const pkgDir = dirOf(path);
-    for (const entry of extractPyReExports(content)) {
+    for (const entry of reexports) {
       const target = resolveSpecifier(path, entry.module, fileSet);
       if (!target || target === path) continue;
       const names = entry.star

@@ -12,8 +12,10 @@ Symptoms, likely causes, and what to try. Where a fix is a setting, the setting 
 The extension didn't activate. Reload the window (**Developer: Reload Window**). If it still isn't
 there, check **Extensions** for Blacksite and confirm it is enabled and not showing an error.
 
-Blacksite requires **VS Code 1.85 or newer** — check **Help → About**. An older version installs the
-VSIX happily and then fails to activate.
+Blacksite requires **VS Code 1.139 or newer** — check **Help → About**. An older VS Code refuses to
+install the VSIX, and the built-in updater tells you which VS Code version a release needs instead of
+offering it. Forks built on an older VS Code base (Cursor was on 1.105 in mid-2026) cannot install
+Blacksite 1.30 or later.
 
 ### "No API key configured"
 

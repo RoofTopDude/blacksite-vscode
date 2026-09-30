@@ -1,7 +1,13 @@
-/* Host-side indexer for the Codebase Map: enumerates workspace files, scans
-   imports, runs the seeded force layout in chunks, caches the result at
-   .blacksite/graph-cache.json, and watches the workspace for incremental
-   updates. Derived data only — annotations live in graph-annotation-store. */
+/* Host-side indexer for the Codebase Map: discovers workspace files, runs the
+   full rebuild as a background job (graph/index-job.ts, in the worker when one
+   is available), caches the result at .blacksite/graph-cache.json, and watches
+   the workspace for incremental updates. Derived data only — annotations live
+   in graph-annotation-store.
+
+   What stays on this (extension host) thread is what needs the VS Code API or
+   is cheap: discovery, git, the watcher, small incremental passes over cached
+   per-file facts, and the render projection. Reading, extracting, resolving,
+   and laying out tens of thousands of files happens in the worker. */
 
 import * as fs from "fs";
 import * as path from "path";
@@ -10,7 +16,6 @@ import * as path from "path";
 import { readJsonFile } from "../shared/durable-file.js";
 import * as vscode from "vscode";
 import {
-  assignClusters,
   clusterDir,
   depthFromDegree,
   importEdgeId,
@@ -18,23 +23,14 @@ import {
   langOf,
   normalizeGraphPath,
   sampleAcrossClusters,
+  type GraphDelta,
   type GraphEdge,
   type GraphNode,
   type GraphSnapshot,
 } from "./graph-model.js";
-import { extractImports } from "./import-scan.js";
-import { buildBasenameIndex, resolveSpecifierTargets, type ResolveContext } from "./resolve-imports.js";
-import { buildAliasTable, mergeExtendsChain, parseTsconfig, resolveExtends, type TsAliasConfig } from "./tsconfig-paths.js";
-import { buildGoDirIndex, parseGoMod, type GoModule } from "./go-modules.js";
-import { buildCSharpIndex, referencedTypeNames } from "./csharp-index.js";
-import { buildPhpIndex, phpReferencedTypeNames } from "./php-index.js";
-import { buildPythonNameIndex } from "./python-index.js";
-import { buildPyReExportIndex } from "./python-reexports.js";
-import { buildProjectTopology, type ProjectTopology } from "./project-topology.js";
-import { assignNeighborhoods, shouldTerritorialize } from "./neighborhoods.js";
-import { docReferences } from "./doc-links.js";
-import { createLayout, placeNearCluster } from "./layout.js";
-import { collectGitStats, normalizeAbsPath, type GitFileStat } from "./git-log.js";
+import type { ResolveContext } from "./resolve-imports.js";
+import { placeNearCluster } from "./layout.js";
+import { collectGitHistory, normalizeAbsPath, type GitFileStat } from "./git-log.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./workspace-roots.js";
 import { PROFILE_CAPS, type GraphConfig, type GraphPerformanceProfile } from "./config.js";
 import { CORPUS_SCHEMA_VERSION } from "./corpus.js";
@@ -46,9 +42,19 @@ import {
   hasExcludedSegment,
   type ExclusionPolicy,
 } from "./exclusions.js";
+import type { ProjectTopology } from "./project-topology.js";
+import { gitToplevel, groupRootsByRepo, ignoredPaths, listRepoFiles } from "./git-discovery.js";
+import { GraphWorkerClient, JobCancelledError, type RunningJob } from "./graph-worker-client.js";
+import { isTopologyManifest, MAX_IMPORT_FILE_BYTES, type IndexJobResult, type IndexPhase } from "./index-job.js";
+import type { RelationshipJobResult } from "./relationship-job.js";
+import { declaredTypeNames, extractFileFacts, finalizeRefs, type FileFacts } from "./file-facts.js";
+import { buildResolveContextFromFacts, isResolverManifest, resolveTargetsFromFacts } from "./scan-pipeline.js";
+import { cochangeEdges, cochangePairs } from "./cochange.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const CACHE_FILE = "graph-cache.json";
+const FACTS_FILE = "graph-facts.json";
+const RELATIONSHIP_CACHE_FILE = "graph-relationships.json";
 /* The canonical corpus manifest — the full file set + true counts, persisted
    separately from the render cache so the render cache stays a cheap derived
    artifact. See graph/corpus.ts. */
@@ -96,8 +102,12 @@ const CORPUS_FILE = "corpus.json";
    bump alone can't catch a user *changing* the policy, and a cache built under
    a different one describes a file set that no longer exists. */
 /* v14: keep cross-folder springs at the folder level and separate the final
-   occupied folder bounds, including room for their visible outlines. */
-const CACHE_SCHEMA_VERSION = 14;
+   occupied folder bounds, including room for their visible outlines.
+   v15: discovery honours .gitignore (git ls-files), bare specifiers resolve to
+   workspace packages across roots, the layout covers every indexed file (not
+   just the rendered sample), and nodes carry `codebase`. A v14 cache describes
+   a different corpus with sparser cross-project edges. */
+const CACHE_SCHEMA_VERSION = 15;
 /* How far back the git heat layer looks. Bounded so `git log` stays fast and
    its output fits maxBuffer on very active repos. */
 const GIT_MAX_COMMITS = 4000;
@@ -107,24 +117,6 @@ const GIT_MAX_COMMITS = 4000;
    truncation from a small raw cap instead of the true count is what starves
    deeply-nested folders off the map on large projects. */
 const RAW_SCAN_CAP = 200_000;
-const READ_BATCH = 50;
-const TICK_CHUNK = 20;
-const MAX_FILE_BYTES = 512_000;
-/* The import scanner reads large files too (they're windowed, not truncated —
-   see import-scan.ts), so a generated 3 MB client still contributes its edges.
-   Bounded well above any hand-written source so a pathological huge blob can't
-   stall a rebuild. */
-const MAX_IMPORT_FILE_BYTES = 8_000_000;
-/* Hard ceiling on outgoing edges from one `.cs` file. Even after type-precise
-   resolution, a hub file can reference many types; this is a safety valve so no
-   single file can spray a hairball back onto the map. Normal files stay well
-   under it. */
-const CSHARP_MAX_EDGES_PER_FILE = 64;
-
-function isTopologyManifest(rel: string): boolean {
-  const name = rel.slice(rel.lastIndexOf("/") + 1).toLowerCase();
-  return TOPOLOGY_MANIFEST_NAMES.has(name) || TOPOLOGY_MANIFEST_EXT_RE.test(name);
-}
 
 /** When the user hasn't explicitly picked a capacity profile (still on the
     "balanced" default), a workspace bigger than "balanced" was tuned for —
@@ -155,57 +147,41 @@ export function renderedImportProjection(
   }
   return projected;
 }
-/* Manifests that affect host-side project topology. The wider corpus discovery
-   policy (including service-only manifests and contracts) lives in
-   file-discovery.ts. */
-const TOPOLOGY_MANIFEST_NAMES = new Set([
-  "package.json",
-  "pom.xml",
-  "settings.gradle",
-  "settings.gradle.kts",
-  "build.gradle",
-  "build.gradle.kts",
-  "go.mod",
-  "go.work",
-  /* JS/TS monorepo roots that carry no `workspaces` field of their own. */
-  "pnpm-workspace.yaml",
-  "pnpm-workspace.yml",
-  "lerna.json",
-  "nx.json",
-  "turbo.json",
-  "rush.json",
-  /* Rust, Python, Bazel. */
-  "cargo.toml",
-  "pyproject.toml",
-  "setup.cfg",
-  "setup.py",
-  "workspace",
-  "workspace.bazel",
-  "module.bazel",
-]);
-const TOPOLOGY_MANIFEST_EXT_RE = /\.(?:csproj|sln)$/i;
-const TOPOLOGY_GLOBS: ReadonlyArray<{ pattern: string; limit: number }> = [
-  { pattern: "**/package.json", limit: 4000 },
-  { pattern: "**/*.csproj", limit: 2000 },
-  { pattern: "**/*.sln", limit: 500 },
-  { pattern: "**/pom.xml", limit: 2000 },
-  { pattern: "**/settings.gradle", limit: 1000 },
-  { pattern: "**/settings.gradle.kts", limit: 1000 },
-  { pattern: "**/build.gradle", limit: 2000 },
-  { pattern: "**/build.gradle.kts", limit: 2000 },
-  { pattern: "**/go.mod", limit: 2000 },
-  { pattern: "**/go.work", limit: 500 },
-  { pattern: "**/pnpm-workspace.{yaml,yml}", limit: 500 },
-  { pattern: "**/lerna.json", limit: 500 },
-  { pattern: "**/nx.json", limit: 500 },
-  { pattern: "**/turbo.json", limit: 500 },
-  { pattern: "**/rush.json", limit: 200 },
-  { pattern: "**/Cargo.toml", limit: 4000 },
-  { pattern: "**/pyproject.toml", limit: 4000 },
-  { pattern: "**/setup.cfg", limit: 2000 },
-  { pattern: "**/setup.py", limit: 2000 },
-  { pattern: "**/{WORKSPACE,WORKSPACE.bazel,MODULE.bazel}", limit: 500 },
-];
+
+/** Diff two rendered projections into a patch the webview can apply. Pure. */
+export function diffSnapshots(
+  base: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[] },
+  next: { nodes: readonly GraphNode[]; edges: readonly GraphEdge[] },
+  baseSeq: number,
+): GraphDelta {
+  const before = new Map(base.nodes.map((node) => [node.id, node]));
+  const upsertNodes: GraphNode[] = [];
+  const seen = new Set<string>();
+  for (const node of next.nodes) {
+    seen.add(node.id);
+    const prior = before.get(node.id);
+    if (!prior
+      || prior.inDegree !== node.inDegree
+      || prior.outDegree !== node.outDegree
+      || prior.sizeBytes !== node.sizeBytes
+      || prior.z !== node.z
+      || prior.x !== node.x
+      || prior.y !== node.y
+      || prior.dir !== node.dir) {
+      upsertNodes.push(node);
+    }
+  }
+  const removeNodeIds = base.nodes.filter((node) => !seen.has(node.id)).map((node) => node.id);
+  const beforeEdges = new Set(base.edges.map((edge) => edge.id));
+  const afterEdges = new Set(next.edges.map((edge) => edge.id));
+  return {
+    baseSeq,
+    upsertNodes,
+    removeNodeIds,
+    addEdges: next.edges.filter((edge) => !beforeEdges.has(edge.id)),
+    removeEdgeIds: base.edges.filter((edge) => !afterEdges.has(edge.id)).map((edge) => edge.id),
+  };
+}
 
 interface CacheDocument {
   schemaVersion: number;
@@ -222,12 +198,12 @@ interface CacheDocument {
   renderedNodeCount?: number;
   indexedImportEdgeCount?: number;
   renderedImportEdgeCount?: number;
+  gitignoreApplied?: boolean;
   nodes: GraphNode[];
   importEdges: GraphEdge[];
-}
-
-function yieldToLoop(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve));
+  /** Positions for indexed files outside the render sample (id, x, y), so a
+      scope can show them before the first background rebuild finishes. */
+  offMapPositions?: Array<[string, number, number]>;
 }
 
 /** Read a persisted cache, rejecting anything that no longer describes this
@@ -255,9 +231,21 @@ export function normalizeCache(value: unknown, expectedPolicyKey?: string): Cach
     renderedNodeCount: typeof record.renderedNodeCount === "number" ? record.renderedNodeCount : undefined,
     indexedImportEdgeCount: typeof record.indexedImportEdgeCount === "number" ? record.indexedImportEdgeCount : undefined,
     renderedImportEdgeCount: typeof record.renderedImportEdgeCount === "number" ? record.renderedImportEdgeCount : undefined,
+    gitignoreApplied: record.gitignoreApplied === true,
     nodes: record.nodes as GraphNode[],
     importEdges: record.importEdges as GraphEdge[],
+    offMapPositions: Array.isArray(record.offMapPositions) ? record.offMapPositions as Array<[string, number, number]> : undefined,
   };
+}
+
+export interface GraphIndexerOptions {
+  /** Absolute path of out/graph-worker.js. Null/absent runs jobs inline. */
+  workerScript?: string | null;
+}
+
+export interface IndexingProgress {
+  phase: "discover" | IndexPhase;
+  fraction: number;
 }
 
 export class GraphIndexer implements vscode.Disposable {
@@ -267,8 +255,12 @@ export class GraphIndexer implements vscode.Disposable {
   private readonly _indexingEmitter = new vscode.EventEmitter<boolean>();
   readonly onIndexingChanged = this._indexingEmitter.event;
 
+  private readonly _progressEmitter = new vscode.EventEmitter<IndexingProgress>();
+  readonly onProgress = this._progressEmitter.event;
+
   private _snapshot: GraphSnapshot | null = null;
   private _seed = 1;
+  private _seq = 0;
   private _watcher: vscode.Disposable | null = null;
   private _debounce: ReturnType<typeof setTimeout> | undefined;
   private _rebuilding = false;
@@ -288,12 +280,18 @@ export class GraphIndexer implements vscode.Disposable {
       indexing and the persisted corpus read from this, so "all relationships"
       means all of the workspace, not just the rendered slice. */
   private _corpusFiles: string[] = [];
-  /** tsconfig-alias/go-module/C# namespace context from the last full rebuild. Incremental
-      passes reuse it (see `_resolveContextForDirty`) instead of re-parsing
-      every config file on every debounced edit. */
-  private _cachedResolveCtx: ResolveContext | null = null;
+  /** Every indexed file as a laid-out node (the render snapshot is a sample of
+      these). Scope fill-in, the hierarchy, and agent queries read this. */
+  private _indexNodes = new Map<string, GraphNode>();
+  /** Per-file facts from the last job, kept current by the incremental pass. */
+  private _facts = new Map<string, FileFacts>();
+  private _resolveCtx: ResolveContext | null = null;
   /** Host-only project/workspace topology from the last full rebuild. */
   private _cachedTopology: ProjectTopology | null = null;
+  private _cochange: GraphEdge[] = [];
+  /** Repo toplevel per root path (null = not a repo), from the last discovery. */
+  private _toplevels = new Map<string, string | null>();
+  private _gitignoreApplied = false;
   /** The maxRenderedStars actually used to build `_snapshot`, which can be
       higher than `this._config().maxRenderedStars` when autoEscalatedProfile()
       raised it for this workspace (see `_enumerate`). `_applyDirty` must
@@ -306,25 +304,37 @@ export class GraphIndexer implements vscode.Disposable {
   /** Indexable files the exclusion policy dropped on the last enumerate.
       Reported on the snapshot so the map can say what it is not showing. */
   private _hiddenByPolicyCount = 0;
+  private _runningJob: RunningJob<IndexJobResult> | null = null;
+  private readonly _worker: GraphWorkerClient;
 
   private _foldersWatcher: vscode.Disposable | null = null;
 
   constructor(
     private readonly _roots: () => WorkspaceRoot[],
     private readonly _config: () => GraphConfig,
-  ) {}
+    options: GraphIndexerOptions = {},
+  ) {
+    this._worker = new GraphWorkerClient(options.workerScript ?? null);
+  }
 
   dispose(): void {
     this._disposed = true;
+    this._runningJob?.cancel();
     this._watcher?.dispose();
     this._foldersWatcher?.dispose();
     if (this._debounce) clearTimeout(this._debounce);
     this._emitter.dispose();
     this._indexingEmitter.dispose();
+    this._progressEmitter.dispose();
   }
 
   isIndexing(): boolean {
     return this._rebuilding;
+  }
+
+  /** Whether heavy passes run in the background worker (vs. inline). */
+  usesWorker(): boolean {
+    return this._worker.usesWorker;
   }
 
   snapshot(): GraphSnapshot | null {
@@ -336,6 +346,8 @@ export class GraphIndexer implements vscode.Disposable {
     if (cached) {
       this._seed = cached.seed;
       this._hiddenByPolicyCount = cached.hiddenByPolicyCount ?? 0;
+      this._gitignoreApplied = cached.gitignoreApplied === true;
+      this._seq += 1;
       this._snapshot = {
         nodes: cached.nodes,
         edges: cached.importEdges,
@@ -348,8 +360,15 @@ export class GraphIndexer implements vscode.Disposable {
         indexedImportEdgeCount: cached.indexedImportEdgeCount ?? cached.importEdges.length,
         renderedImportEdgeCount: cached.renderedImportEdgeCount ?? cached.importEdges.length,
         hiddenByPolicyCount: cached.hiddenByPolicyCount,
+        gitignoreApplied: cached.gitignoreApplied,
+        seq: this._seq,
       };
       this._indexedFiles = cached.nodes.map((node) => node.id);
+      for (const node of cached.nodes) this._indexNodes.set(node.id, node);
+      for (const [id, x, y] of cached.offMapPositions ?? []) {
+        if (this._indexNodes.has(id)) continue;
+        this._indexNodes.set(id, { id, dir: clusterDir(id), lang: langOf(id), sizeBytes: 0, inDegree: 0, outDegree: 0, x, y, z: 0.15 });
+      }
     }
     return this._snapshot;
   }
@@ -375,8 +394,36 @@ export class GraphIndexer implements vscode.Disposable {
     return this.indexedFiles();
   }
 
+  /** Every indexed file as a node (positions, degrees, area, codebase, git) —
+      a superset of the rendered snapshot whenever the render cap truncates.
+      Before the first rebuild it is whatever the cache held. */
+  nodeIndex(): GraphNode[] {
+    if (!this._snapshot) this.snapshot();
+    return [...this._indexNodes.values()];
+  }
+
+  indexNode(id: string): GraphNode | undefined {
+    if (!this._snapshot) this.snapshot();
+    return this._indexNodes.get(id);
+  }
+
   topology(): ProjectTopology | null {
     return this._cachedTopology;
+  }
+
+  /** Logical-coupling edges from git history (graph/cochange.ts), over indexed files. */
+  cochangeEdges(): GraphEdge[] {
+    return this._cochange;
+  }
+
+  /** Run the service-relationship pass through the same worker/inline runner
+      the rebuild uses, cached at .blacksite/graph-relationships.json. */
+  runRelationshipJob(files: readonly string[], topology: ProjectTopology | null): RunningJob<RelationshipJobResult> {
+    const root = this._roots()[0];
+    return this._worker.run("relationships", { files, topology }, {
+      roots: this._roots(),
+      cachePath: root ? path.join(root.path, BLACKSITE_DIR, RELATIONSHIP_CACHE_FILE) : null,
+    });
   }
 
   start(): void {
@@ -392,7 +439,8 @@ export class GraphIndexer implements vscode.Disposable {
     /* A cached snapshot paints the view instantly, but it may be stale in
        ways the watcher never saw (files changed while the editor was closed,
        an older extension version wrote it). Always reconcile in the
-       background — prevPositions pinning keeps the map visually stable. */
+       background — prevPositions pinning keeps the map visually stable, and
+       the facts cache makes an unchanged workspace a stat-only pass. */
     void this.rebuild();
   }
 
@@ -422,8 +470,13 @@ export class GraphIndexer implements vscode.Disposable {
     this._indexingEmitter.fire(true);
     try {
       await this._rebuildOnce();
+    } catch (error) {
+      if (!(error instanceof JobCancelledError) && !this._disposed) {
+        console.error("Blacksite: Codebase Map rebuild failed", error);
+      }
     } finally {
       this._rebuilding = false;
+      this._runningJob = null;
       this._indexingEmitter.fire(false);
       if (this._rebuildQueued && !this._disposed) {
         this._rebuildQueued = false;
@@ -434,9 +487,9 @@ export class GraphIndexer implements vscode.Disposable {
 
   /** Cache lives under the first workspace folder; derived data, so it's fine
       if that choice shifts across sessions when folders are reordered. */
-  private _cachePath(): string | null {
+  private _cachePath(file = CACHE_FILE): string | null {
     const root = this._roots()[0];
-    return root ? path.join(root.path, BLACKSITE_DIR, CACHE_FILE) : null;
+    return root ? path.join(root.path, BLACKSITE_DIR, file) : null;
   }
 
   /** The exclusion policy in force. Resolved per call rather than cached: a
@@ -453,16 +506,70 @@ export class GraphIndexer implements vscode.Disposable {
        corpus the full scan deliberately left out. */
     if (!rel || hasExcludedSegment(rel, this._exclusions())) return;
     const normalized = normalizeGraphPath(rel);
-    if (isTopologyManifest(normalized) || isGraphManifestPath(normalized)) {
-      this._dirty.add(normalized);
-      if (this._debounce) clearTimeout(this._debounce);
-      this._debounce = setTimeout(() => void this._applyDirty(), 2000);
-      return;
-    }
-    if (!isGraphIndexablePath(rel)) return;
+    if (!isTopologyManifest(normalized) && !isGraphManifestPath(normalized) && !isGraphIndexablePath(rel)) return;
     this._dirty.add(normalized);
     if (this._debounce) clearTimeout(this._debounce);
     this._debounce = setTimeout(() => void this._applyDirty(), 2000);
+  }
+
+  /** Discovery: `git ls-files` per repository when .gitignore is honoured,
+      findFiles otherwise (and for roots that are not in a repo). Returns
+      node ids that pass the corpus and exclusion policy. */
+  private async _discover(): Promise<Set<string>> {
+    const roots = this._roots();
+    const policy = this._exclusions();
+    const seen = new Set<string>();
+    let hiddenByPolicy = 0;
+    const admit = (absolute: string): void => {
+      const rel = toNodeId(roots, absolute);
+      if (!rel || !isGraphIndexablePath(rel)) return;
+      /* The dot rule can't live in the findFiles exclude glob — VS Code's
+         pattern has no way to express "any segment starting with a dot" — so
+         it is enforced here, after enumeration, for both discovery paths. */
+      if (hasExcludedSegment(rel, policy)) {
+        hiddenByPolicy += 1;
+        return;
+      }
+      seen.add(normalizeGraphPath(rel));
+    };
+
+    const viaFindFiles: string[] = [];
+    this._toplevels = new Map();
+    this._gitignoreApplied = false;
+    if (policy.respectGitignore) {
+      await Promise.all(roots.map(async (root) => {
+        this._toplevels.set(root.path, await gitToplevel(root.path));
+      }));
+      const { groups, ungrouped } = groupRootsByRepo(roots.map((root) => root.path), this._toplevels);
+      viaFindFiles.push(...ungrouped);
+      for (const group of groups) {
+        if (this._disposed) break;
+        const files = await listRepoFiles(group);
+        if (!files) {
+          viaFindFiles.push(...group.roots);
+          continue;
+        }
+        this._gitignoreApplied = true;
+        for (const abs of files) admit(abs);
+      }
+    } else {
+      viaFindFiles.push(...roots.map((root) => root.path));
+    }
+
+    const config = this._config();
+    for (const rootPath of viaFindFiles) {
+      if (this._disposed) break;
+      const uris = await vscode.workspace.findFiles(
+        new vscode.RelativePattern(rootPath, "**/*"),
+        buildExcludeGlob(policy),
+        Math.max(RAW_SCAN_CAP, Math.max(100, config.maxIndexedFiles)),
+      );
+      for (const uri of uris) admit(uri.fsPath);
+    }
+    /* Reported to the map so removing a large slice of a workspace is never
+       silent — see GraphSnapshot.hiddenByPolicyCount. */
+    this._hiddenByPolicyCount = hiddenByPolicy;
+    return seen;
   }
 
   /** Scan every open workspace folder and merge into one node-id set — ids are
@@ -473,35 +580,7 @@ export class GraphIndexer implements vscode.Disposable {
   private async _enumerate(): Promise<{ indexedFiles: string[]; files: string[]; truncated: boolean; indexedTruncated: boolean; renderedTruncated: boolean }> {
     const config = this._config();
     const configuredMaxIndexedFiles = Math.max(100, config.maxIndexedFiles);
-    const roots = this._roots();
-    const policy = this._exclusions();
-    const seen = new Set<string>();
-    let hiddenByPolicy = 0;
-    for (const root of roots) {
-      const uris = await vscode.workspace.findFiles(
-        new vscode.RelativePattern(root.path, "**/*"),
-        buildExcludeGlob(policy),
-        Math.max(RAW_SCAN_CAP, configuredMaxIndexedFiles),
-      );
-      for (const uri of uris) {
-        const rel = toNodeId(roots, uri.fsPath);
-        if (!rel) continue;
-        if (!isGraphIndexablePath(rel)) continue;
-        /* The dot rule can't live in the exclude glob — VS Code's pattern has
-           no way to express "any segment starting with a dot" — so it is
-           enforced here, after enumeration. buildExcludeGlob() names the
-           high-volume directories it can, which is scan-time optimization
-           only; this is what makes the policy correct. */
-        if (hasExcludedSegment(rel, policy)) {
-          hiddenByPolicy += 1;
-          continue;
-        }
-        seen.add(normalizeGraphPath(rel));
-      }
-    }
-    /* Reported to the map so removing a large slice of a workspace is never
-       silent — see GraphSnapshot.hiddenByPolicyCount. */
-    this._hiddenByPolicyCount = hiddenByPolicy;
+    const seen = await this._discover();
 
     /* Auto-escalate the implicit "balanced" default once the true file count
        (now known) shows it's a bigger workspace than that tier was tuned
@@ -526,463 +605,95 @@ export class GraphIndexer implements vscode.Disposable {
     return { indexedFiles, files, truncated: indexedTruncated || renderedTruncated, indexedTruncated, renderedTruncated };
   }
 
-  private async _scanImports(files: string[], fileSet: ReadonlySet<string>, resolveCtx: ResolveContext): Promise<Map<string, string[]>> {
-    const edges = new Map<string, string[]>();
-    for (let i = 0; i < files.length; i += READ_BATCH) {
-      const batch = files.slice(i, i + READ_BATCH);
-      for (const rel of batch) {
-        const absolute = fromNodeId(this._roots(), rel);
-        if (!absolute) continue;
-        let content: string;
-        try {
-          const stat = fs.statSync(absolute);
-          if (!stat.isFile() || stat.size > MAX_IMPORT_FILE_BYTES) continue;
-          content = fs.readFileSync(absolute, "utf8");
-        } catch {
-          continue;
-        }
-        const targets = this._resolveFileTargets(rel, content, fileSet, resolveCtx);
-        if (targets.size > 0) edges.set(rel, [...targets]);
-      }
-      await yieldToLoop();
-    }
-    return edges;
-  }
-
-  /** Resolve one file's outgoing import/reference targets (self excluded).
-      Markdown links resolve to the code the doc references. For `.cs`, resolution
-      is type-precise — a `using` on a large namespace links only to files whose
-      declared type the file actually references (see resolveCSharpTargets) — and
-      the whole file is capped so no single `.cs` file can spray a hairball.
-      Shared by the full scan and the incremental pass so both apply the same
-      precision + cap. */
-  private _resolveFileTargets(rel: string, content: string, fileSet: ReadonlySet<string>, resolveCtx: ResolveContext): Set<string> {
-    const targets = new Set<string>();
-    if (langOf(rel) === "md") {
-      /* Docs link to the code they describe: relate the doc to the files it
-         references, so it clusters near what it documents. */
-      for (const target of docReferences(rel, content, fileSet, resolveCtx.byBasename)) {
-        if (target !== rel) targets.add(target);
-      }
-      return targets;
-    }
-    const isCsharp = langOf(rel) === "cs";
-    const csharpRefs = isCsharp ? referencedTypeNames(content) : undefined;
-    const isPhp = langOf(rel) === "php";
-    const phpRefs = isPhp ? phpReferencedTypeNames(content) : undefined;
-    for (const spec of extractImports(rel, content)) {
-      for (const resolved of resolveSpecifierTargets(rel, spec, fileSet, resolveCtx, csharpRefs, phpRefs)) {
-        if (resolved !== rel) targets.add(resolved);
-      }
-    }
-    if (isCsharp && targets.size > CSHARP_MAX_EDGES_PER_FILE) {
-      const trimmed = [...targets].sort().slice(0, CSHARP_MAX_EDGES_PER_FILE);
-      targets.clear();
-      for (const target of trimmed) targets.add(target);
-    }
-    return targets;
-  }
-
-  /** Assemble the resolution context reused across a whole scan: the basename
-      index (Razor/Java name lookups), tsconfig/jsconfig path aliases, the
-      workspace's go.mod module prefixes, a directory→files index for Go, and
-      a C# namespace/type index for resolving `using` references back to files
-      package fan-out. Built once per full rebuild — resolving one specifier
-      must be cheap because it runs for every import in the tree — and cached
-      so an incremental pass can reuse it (see `_resolveContextForDirty`)
-      instead of re-parsing every config file on every debounced edit. */
-  private async _buildResolveContext(fileSet: ReadonlySet<string>): Promise<ResolveContext> {
-    const pythonIndex = this._loadPythonIndex(fileSet);
-    const ctx: ResolveContext = {
-      byBasename: buildBasenameIndex(fileSet),
-      aliases: this._loadTsAliases(fileSet),
-      goModules: await this._loadGoModules(),
-      goDirIndex: buildGoDirIndex(fileSet),
-      csharp: this._loadCSharpIndex(fileSet),
-      php: this._loadPhpIndex(fileSet),
-      pythonIndex,
-      pyReExports: this._loadPyReExports(fileSet, pythonIndex),
-    };
-    this._cachedResolveCtx = ctx;
-    return ctx;
-  }
-
-  /** Incremental-pass counterpart to `_buildResolveContext`: config files
-      (tsconfig/jsconfig, go.mod) and the C# namespace index essentially never
-      need a full refresh on the ~2s
-      save-triggered debounce cadence `_applyDirty` runs on, so re-parsing every
-      one of them on every keystroke-driven edit is pure waste. Reuse the last
-      full rebuild's aliases/go-modules, refreshing only what a genuinely
-      *inexpensive*, always-fresh check can justify: the basename index (cheap,
-      in-memory, and fileSet changes every pass) and the alias table when the
-      dirty batch itself touches a tsconfig/jsconfig (so editing paths/baseUrl
-      takes effect on the very next pass, not just the next full rebuild),
-      plus the C# namespace index when the dirty set includes a `.cs` file, the
-      PHP namespace index when it includes a `.php` file, and the Python
-      name/re-export indexes when it includes any `.py` file — a star
-      re-export (`from .sub import *`) depends on whichever submodule it
-      names, not just __init__.py, so a plain sibling edit can change what a
-      package re-exports even though no __init__.py itself changed.
-      go.mod isn't watched (it has no node-eligible extension — see
-      the old extension-only discovery rule), so manifest edits now take the
-      full rebuild path rather than leaving resolver context stale. */
-  private _resolveContextForDirty(dirty: readonly string[], fileSet: ReadonlySet<string>): ResolveContext {
-    const cached = this._cachedResolveCtx;
-    const touchesTsconfig = dirty.some((rel) => {
-      const base = rel.slice(rel.lastIndexOf("/") + 1).toLowerCase();
-      return base === "tsconfig.json" || base === "jsconfig.json";
-    });
-    const touchesCSharp = dirty.some((rel) => rel.toLowerCase().endsWith(".cs"));
-    const touchesPhp = dirty.some((rel) => rel.toLowerCase().endsWith(".php"));
-    const touchesPy = dirty.some((rel) => rel.toLowerCase().endsWith(".py"));
-    const pythonIndex = cached?.pythonIndex && !touchesPy ? cached.pythonIndex : this._loadPythonIndex(fileSet);
-    return {
-      byBasename: buildBasenameIndex(fileSet),
-      aliases: cached && !touchesTsconfig ? cached.aliases : this._loadTsAliases(fileSet),
-      goModules: cached?.goModules ?? [],
-      goDirIndex: buildGoDirIndex(fileSet),
-      csharp: cached && !touchesCSharp ? cached.csharp : this._loadCSharpIndex(fileSet),
-      php: cached?.php && !touchesPhp ? cached.php : this._loadPhpIndex(fileSet),
-      pythonIndex,
-      pyReExports: cached && !touchesPy ? cached.pyReExports : this._loadPyReExports(fileSet, pythonIndex),
-    };
-  }
-
-  /** Parse every tsconfig.json / jsconfig.json already in the indexed set into
-      an alias table, following each one's `extends` chain (bounded, cycle-safe)
-      so a shared base config — e.g. an Nx/Turborepo `tsconfig.base.json` that
-      declares every path alias, extended by every package's own tsconfig.json
-      with none of its own — actually contributes its paths/baseUrl instead of
-      leaving the alias table empty for the common monorepo layout. */
-  private _loadTsAliases(fileSet: ReadonlySet<string>): ReturnType<typeof buildAliasTable> {
-    const configs: TsAliasConfig[] = [];
-    for (const rel of fileSet) {
-      const slash = rel.lastIndexOf("/");
-      const base = rel.slice(slash + 1).toLowerCase();
-      if (base !== "tsconfig.json" && base !== "jsconfig.json") continue;
-      const cfg = this._readTsconfigChain(rel, slash === -1 ? "" : rel.slice(0, slash), fileSet);
-      if (cfg) configs.push(cfg);
-    }
-    return buildAliasTable(configs);
-  }
-
-  /** Read one tsconfig/jsconfig and follow its `extends` chain, merging into
-      one effective config (root-most first). Bounded to 8 hops and guarded
-      against cycles; either just stops and merges whatever was read so far —
-      a partial chain is still useful, not a reason to discard everything. */
-  private _readTsconfigChain(rel: string, dir: string, fileSet: ReadonlySet<string>): TsAliasConfig | null {
-    const chain: TsAliasConfig[] = [];
-    const visited = new Set<string>();
-    let currentRel: string | null = rel;
-    let currentDir = dir;
-    for (let hops = 0; currentRel !== null && hops < 8; hops += 1) {
-      if (visited.has(currentRel)) break;
-      visited.add(currentRel);
-      const absolute = fromNodeId(this._roots(), currentRel);
-      if (!absolute) break;
-      let content: string;
-      try {
-        const stat = fs.statSync(absolute);
-        if (!stat.isFile() || stat.size > MAX_FILE_BYTES) break;
-        content = fs.readFileSync(absolute, "utf8");
-      } catch {
-        break;
-      }
-      const cfg = parseTsconfig(currentDir, content);
-      if (!cfg) break;
-      chain.unshift(cfg);
-      if (!cfg.extends) break;
-      const next = resolveExtends(currentDir, cfg.extends, fileSet);
-      if (!next) break;
-      currentRel = next;
-      const nextSlash = next.lastIndexOf("/");
-      currentDir = nextSlash === -1 ? "" : next.slice(0, nextSlash);
-    }
-    return chain.length > 0 ? mergeExtendsChain(chain) : null;
-  }
-
-  /** Locate and parse go.mod files across every root (in parallel — each
-      root's glob+read is independent I/O). go.mod carries no code extension
-      so it isn't an indexed node; find it directly. Best-effort. */
-  private async _loadGoModules(): Promise<GoModule[]> {
+  /** Git churn/recency and per-commit file sets, one `git log` per repository
+      (roots sharing a repo share it). Best-effort: a root that isn't a repo
+      contributes nothing. */
+  private async _collectGit(indexedFiles: readonly string[]): Promise<{ byId: Record<string, [number, number]>; cochange: GraphEdge[] }> {
     const roots = this._roots();
-    const perRoot = await Promise.all(roots.map(async (root): Promise<GoModule[]> => {
-      if (this._disposed) return [];
-      let uris: vscode.Uri[];
-      try {
-        uris = await vscode.workspace.findFiles(new vscode.RelativePattern(root.path, "**/go.mod"), buildExcludeGlob(this._exclusions()), 500);
-      } catch {
-        return [];
-      }
-      const mods: GoModule[] = [];
-      for (const uri of uris) {
-        const relId = toNodeId(roots, uri.fsPath);
-        if (!relId) continue;
-        let content: string;
-        try {
-          content = fs.readFileSync(uri.fsPath, "utf8");
-        } catch {
-          continue;
-        }
-        const slash = relId.lastIndexOf("/");
-        const mod = parseGoMod(slash === -1 ? "" : relId.slice(0, slash), content);
-        if (mod) mods.push(mod);
-      }
-      return mods;
-    }));
-    return perRoot.flat();
-  }
-
-  /** Build a best-effort namespace/type index across the rendered `.cs` files
-      so plain `using Foo.Bar;` imports can resolve back into workspace files. */
-  private _loadCSharpIndex(fileSet: ReadonlySet<string>): ReturnType<typeof buildCSharpIndex> {
-    const sources: Array<{ path: string; content: string }> = [];
-    for (const rel of fileSet) {
-      if (!rel.toLowerCase().endsWith(".cs")) continue;
-      const absolute = fromNodeId(this._roots(), rel);
-      if (!absolute) continue;
-      try {
-        const stat = fs.statSync(absolute);
-        if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
-        sources.push({ path: rel, content: fs.readFileSync(absolute, "utf8") });
-      } catch {
-        /* unreadable C# file -> just omit it from the namespace index */
-      }
-    }
-    return buildCSharpIndex(sources);
-  }
-
-  /** Build a best-effort namespace/type index across the rendered `.php` files
-      so PSR-4 `use Foo\Bar;` imports can resolve back into workspace files. */
-  private _loadPhpIndex(fileSet: ReadonlySet<string>): ReturnType<typeof buildPhpIndex> {
-    const sources: Array<{ path: string; content: string }> = [];
-    for (const rel of fileSet) {
-      if (!rel.toLowerCase().endsWith(".php")) continue;
-      const absolute = fromNodeId(this._roots(), rel);
-      if (!absolute) continue;
-      try {
-        const stat = fs.statSync(absolute);
-        if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
-        sources.push({ path: rel, content: fs.readFileSync(absolute, "utf8") });
-      } catch {
-        /* unreadable PHP file -> just omit it from the namespace index */
-      }
-    }
-    return buildPhpIndex(sources);
-  }
-
-  /** Build a whole-codebase index of every `.py` file's module-level def/class
-      names (see graph/python-index.ts) — the "what does this module actually
-      declare" lookup a star re-export (`from .sub import *`) resolves through,
-      the same building block csharp-index.ts uses for `using` fan-out. */
-  private _loadPythonIndex(fileSet: ReadonlySet<string>): ReturnType<typeof buildPythonNameIndex> {
-    const sources: Array<{ path: string; content: string }> = [];
-    for (const rel of fileSet) {
-      if (!rel.toLowerCase().endsWith(".py")) continue;
-      const absolute = fromNodeId(this._roots(), rel);
-      if (!absolute) continue;
-      try {
-        const stat = fs.statSync(absolute);
-        if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
-        sources.push({ path: rel, content: fs.readFileSync(absolute, "utf8") });
-      } catch {
-        /* unreadable Python file -> just omit it from the name index */
-      }
-    }
-    return buildPythonNameIndex(sources);
-  }
-
-  /** Read every package initializer (__init__.py) and index its re-exports so
-      `from pkg import Name` resolves to the concrete submodule declaring Name,
-      not just pkg/__init__.py (see graph/python-reexports.ts). Best-effort —
-      an unreadable initializer is simply omitted from the index. */
-  private _loadPyReExports(
-    fileSet: ReadonlySet<string>,
-    pythonIndex: ReadonlyMap<string, ReadonlySet<string>>,
-  ): ReturnType<typeof buildPyReExportIndex> {
-    const initFiles: Array<{ path: string; content: string }> = [];
-    for (const rel of fileSet) {
-      const lower = rel.toLowerCase();
-      if (lower !== "__init__.py" && !lower.endsWith("/__init__.py")) continue;
-      const absolute = fromNodeId(this._roots(), rel);
-      if (!absolute) continue;
-      try {
-        const stat = fs.statSync(absolute);
-        if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
-        initFiles.push({ path: rel, content: fs.readFileSync(absolute, "utf8") });
-      } catch {
-        /* unreadable initializer -> omit from the re-export index */
-      }
-    }
-    return buildPyReExportIndex(initFiles, fileSet, pythonIndex);
-  }
-
-  /** Manifest-driven project topology stays host-only: it improves layout and
-      relationship scoring without adding a new graph layer or webview message.
-      Build it from manifests whether or not those files render as stars. */
-  private async _loadProjectTopology(): Promise<ProjectTopology> {
-    const roots = this._roots();
-    const manifests = new Map<string, string>();
+    const toplevels = new Map<string, string>();
     for (const root of roots) {
       if (this._disposed) break;
-      for (const query of TOPOLOGY_GLOBS) {
-        let uris: vscode.Uri[];
-        try {
-          uris = await vscode.workspace.findFiles(new vscode.RelativePattern(root.path, query.pattern), buildExcludeGlob(this._exclusions()), query.limit);
-        } catch {
-          continue;
-        }
-        for (const uri of uris) {
-          const rel = toNodeId(roots, uri.fsPath);
-          if (!rel) continue;
-          const normalized = normalizeGraphPath(rel);
-          if (manifests.has(normalized)) continue;
-          try {
-            const stat = fs.statSync(uri.fsPath);
-            if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
-            manifests.set(normalized, fs.readFileSync(uri.fsPath, "utf8"));
-          } catch {
-            /* unreadable manifest -> just omit it from topology */
-          }
-        }
-      }
+      const known = this._toplevels.get(root.path);
+      const top = known === undefined ? await gitToplevel(root.path) : known;
+      if (top) toplevels.set(top.toLowerCase(), root.path);
     }
-    const topology = buildProjectTopology([...manifests.entries()].map(([path, content]) => ({ path, content })));
-    this._cachedTopology = topology;
-    return topology;
-  }
-
-  /** Merge git churn/recency across every root (a root may be its own repo or
-      nested in a shared one), keyed by normalized absolute path. Best-effort:
-      any root that isn't a repo contributes nothing. */
-  private async _collectGit(): Promise<Map<string, GitFileStat>> {
-    const merged = new Map<string, GitFileStat>();
-    for (const root of this._roots()) {
+    const stats = new Map<string, GitFileStat>();
+    const commits: string[][] = [];
+    for (const rootPath of toplevels.values()) {
       if (this._disposed) break;
       try {
-        const stats = await collectGitStats(root.path, GIT_MAX_COMMITS);
-        for (const [abs, stat] of stats) merged.set(abs, stat);
-      } catch { /* git unavailable / not a repo — skip this root */ }
+        const history = await collectGitHistory(rootPath, GIT_MAX_COMMITS);
+        if (!history) continue;
+        for (const [abs, stat] of history.stats) stats.set(abs, stat);
+        commits.push(...history.commits);
+      } catch { /* git unavailable / not a repo — skip */ }
     }
-    return merged;
+    const idByAbs = new Map<string, string>();
+    const byId: Record<string, [number, number]> = {};
+    for (const rel of indexedFiles) {
+      const absolute = fromNodeId(roots, rel);
+      if (!absolute) continue;
+      const key = normalizeAbsPath(absolute);
+      idByAbs.set(key, rel);
+      const stat = stats.get(key);
+      if (stat) byId[rel] = [stat.churn, stat.lastAt];
+    }
+    const mapped = commits
+      .map((files) => files.map((abs) => idByAbs.get(abs)).filter((id): id is string => Boolean(id)))
+      .filter((files) => files.length > 1);
+    return { byId, cochange: cochangeEdges(cochangePairs(mapped)) };
   }
 
   private async _rebuildOnce(): Promise<void> {
+    this._progressEmitter.fire({ phase: "discover", fraction: 0 });
     const { indexedFiles, files, truncated, indexedTruncated, renderedTruncated } = await this._enumerate();
-    this._indexedFiles = indexedFiles;
-    /* Resolve and scan against the indexed corpus, never the smaller render
-       projection. Otherwise a visible file cannot resolve an import merely
-       because its target happened to fall beyond maxRenderedStars. */
-    const indexedFileSet = new Set(indexedFiles);
-    const [resolveCtx, topology, gitByAbs] = await Promise.all([
-      this._buildResolveContext(indexedFileSet),
-      this._loadProjectTopology(),
-      this._collectGit(),
-    ]);
-    const indexedImportsByFile = await this._scanImports(indexedFiles, indexedFileSet, resolveCtx);
+    if (this._disposed) return;
+    const git = await this._collectGit(indexedFiles);
+    const roots = this._roots();
+
+    /* Keep the map stable across rebuilds: previous positions seed the layout. */
+    const prevPositions: Array<[string, number, number]> = [];
+    for (const node of this._indexNodes.values()) prevPositions.push([node.id, node.x, node.y]);
+
+    const job = this._worker.run("index", {
+      corpusFiles: this._corpusFiles,
+      indexedFiles,
+      renderedFiles: files,
+      rootNames: roots.length > 1 ? roots.map((root) => root.name) : [],
+      seed: this._seed,
+      prevPositions,
+      neighborhoods: this._config().neighborhoods,
+      git: git.byId,
+    }, {
+      roots,
+      cachePath: this._cachePath(FACTS_FILE),
+      onProgress: (phase, fraction) => this._progressEmitter.fire({ phase, fraction }),
+    });
+    this._runningJob = job;
+    const result = await job.promise;
+    if (this._disposed) return;
+
+    this._facts = new Map(result.facts);
+    this._resolveCtx = result.resolveContext;
+    this._cachedTopology = result.topology;
+    this._indexNodes = new Map(result.indexNodes.map((node) => [node.id, node]));
+    this._indexedFiles = result.indexNodes.map((node) => node.id);
     const indexedImportEdges: GraphEdge[] = [];
-    for (const [from, targets] of indexedImportsByFile) {
-      for (const to of targets) {
-        indexedImportEdges.push({ id: importEdgeId(from, to), from, to, kind: "import", provenance: "import" });
-      }
+    for (const [from, targets] of result.imports) {
+      for (const to of targets) indexedImportEdges.push({ id: importEdgeId(from, to), from, to, kind: "import", provenance: "import" });
     }
     this._indexedImportEdges = indexedImportEdges;
+    this._cochange = git.cochange;
 
     /* The webview is a bounded projection. Keep only relationships it can
        actually draw, while retaining corpus-wide degrees on each rendered
        node so hubs do not look unimportant simply because many peers are off
        screen. */
-    const renderedFileSet = new Set(files);
-    const importsByFile = renderedImportProjection(indexedImportsByFile, renderedFileSet);
+    const nodes = files.map((rel) => this._indexNodes.get(rel)).filter((node): node is GraphNode => Boolean(node));
+    const renderedSet = new Set(nodes.map((node) => node.id));
+    const edges = indexedImportEdges.filter((edge) => renderedSet.has(edge.from) && renderedSet.has(edge.to));
 
-    const inDegree = new Map<string, number>();
-    const outDegree = new Map<string, number>();
-    for (const [from, targets] of indexedImportsByFile) {
-      outDegree.set(from, targets.length);
-      for (const to of targets) inDegree.set(to, (inDegree.get(to) ?? 0) + 1);
-    }
-    let maxDegree = 0;
-    for (const rel of files) {
-      maxDegree = Math.max(maxDegree, (inDegree.get(rel) ?? 0) + (outDegree.get(rel) ?? 0));
-    }
-
-    /* Adaptive clustering: a top-level package with thousands of files across
-       dozens of subdirectories gets split into finer clusters one level at a
-       time, instead of rendering as one giant same-color blob. Passing the
-       just-scanned import graph lets a flat oversized folder (no deeper path
-       segment to split by) fall back to import-community grouping instead of
-       staying one blob — see assignClusters/splitByImportCommunity. */
-    const clusters = assignClusters(files, undefined, undefined, importsByFile);
-
-    const nodes: GraphNode[] = files.map((rel) => {
-      const absolute = fromNodeId(this._roots(), rel);
-      let sizeBytes = 0;
-      try {
-        if (absolute) sizeBytes = fs.statSync(absolute).size;
-      } catch { /* deleted mid-scan */ }
-      const git = absolute ? gitByAbs.get(normalizeAbsPath(absolute)) : undefined;
-      const nIn = inDegree.get(rel) ?? 0;
-      const nOut = outDegree.get(rel) ?? 0;
-      return {
-        id: rel,
-        dir: clusters.get(rel) ?? clusterDir(rel),
-        lang: langOf(rel),
-        sizeBytes,
-        inDegree: nIn,
-        outDegree: nOut,
-        x: 0,
-        y: 0,
-        z: depthFromDegree(nIn, nOut, maxDegree),
-        churn: git?.churn,
-        lastCommitAt: git?.lastAt,
-      };
-    });
-
-    const edges: GraphEdge[] = [];
-    for (const [from, targets] of importsByFile) {
-      for (const to of targets) {
-        edges.push({ id: importEdgeId(from, to), from, to, kind: "import", provenance: "import" });
-      }
-    }
-
-    /* Neighborhood territories: separate distinct codebases into their own
-       regions when the workspace is large/multi-codebase (or the user forced it
-       on). node.neighborhood is set only when territorializing, so the renderer
-       draws territory hulls/labels only for a map that's actually laid out that
-       way. */
-    const neighborhoods = assignNeighborhoods(files, topology, importsByFile);
-    const mode = this._config().neighborhoods;
-    const territorialize = mode !== "off" && (mode === "on" || shouldTerritorialize(neighborhoods, nodes.length));
-    if (territorialize) {
-      for (const node of nodes) {
-        const nb = neighborhoods.get(node.id);
-        if (nb) node.neighborhood = nb;
-      }
-    }
-
-    /* Keep the map stable across rebuilds: previous positions seed the layout. */
-    const prevPositions = new Map<string, { x: number; y: number }>();
-    for (const node of this._snapshot?.nodes ?? []) prevPositions.set(node.id, { x: node.x, y: node.y });
-
-    const layout = createLayout(nodes, edges, {
-      seed: this._seed,
-      prevPositions,
-      topology,
-      neighborhoods: territorialize ? neighborhoods : undefined,
-    });
-    while (layout.tick(TICK_CHUNK)) {
-      if (this._disposed) return;
-      await yieldToLoop();
-    }
-    const positions = layout.positions();
-    for (const node of nodes) {
-      const pos = positions.get(node.id);
-      if (pos) {
-        node.x = Math.round(pos.x * 100) / 100;
-        node.y = Math.round(pos.y * 100) / 100;
-      }
-    }
-
+    this._seq += 1;
     const snapshot: GraphSnapshot = {
       nodes,
       edges,
@@ -995,6 +706,8 @@ export class GraphIndexer implements vscode.Disposable {
       indexedImportEdgeCount: indexedImportEdges.length,
       renderedImportEdgeCount: edges.length,
       hiddenByPolicyCount: this._hiddenByPolicyCount,
+      gitignoreApplied: this._gitignoreApplied,
+      seq: this._seq,
     };
     this._snapshot = snapshot;
     this._changedSinceLayout = 0;
@@ -1023,19 +736,52 @@ export class GraphIndexer implements vscode.Disposable {
     } catch { /* corpus manifest is best-effort */ }
   }
 
-  /** Incremental pass: rescan only dirty files; full rebuild past 10% churn. */
+  /** Drop dirty paths git ignores. Only files new to the corpus need the
+      check (a tracked or already-admitted file is by definition not ignored),
+      and one `git check-ignore` runs per repository per batch. */
+  private async _dropIgnored(dirty: string[]): Promise<string[]> {
+    if (!this._exclusions().respectGitignore || !this._gitignoreApplied) return dirty;
+    const corpus = new Set(this._corpusFiles);
+    const roots = this._roots();
+    const candidates = new Map<string, string[]>();
+    for (const rel of dirty) {
+      if (corpus.has(rel)) continue;
+      const abs = fromNodeId(roots, rel);
+      if (!abs) continue;
+      const root = roots.find((r) => abs.toLowerCase().startsWith(`${r.path.toLowerCase()}/`));
+      const top = root ? this._toplevels.get(root.path) : null;
+      if (!top) continue;
+      const list = candidates.get(top) ?? [];
+      list.push(abs.replace(/\\/g, "/"));
+      candidates.set(top, list);
+    }
+    if (candidates.size === 0) return dirty;
+    const ignored = new Set<string>();
+    for (const [top, abs] of candidates) {
+      for (const hit of await ignoredPaths(top, abs)) ignored.add(hit);
+    }
+    if (ignored.size === 0) return dirty;
+    return dirty.filter((rel) => {
+      const abs = fromNodeId(roots, rel);
+      return !abs || !ignored.has(abs.replace(/\\/g, "/").toLowerCase());
+    });
+  }
+
+  /** Incremental pass: re-extract facts for dirty files only, re-resolve them
+      against the cached context, and patch both the node index and the render
+      projection. Past ~10% churn, or when a manifest changes, a full rebuild. */
   private async _applyDirty(): Promise<void> {
     if (this._disposed || this._dirty.size === 0) return;
     const snapshot = this._snapshot;
-    if (!snapshot || this._rebuilding) {
+    if (!snapshot || this._rebuilding || !this._resolveCtx) {
       this._dirty.clear();
       void this.rebuild();
       return;
     }
 
-    const dirty = [...this._dirty];
+    let dirty = [...this._dirty];
     this._dirty.clear();
-    if (dirty.some((rel) => isTopologyManifest(rel) || isGraphManifestPath(rel))) {
+    if (dirty.some((rel) => isTopologyManifest(rel) || isGraphManifestPath(rel) || isResolverManifest(rel))) {
       void this.rebuild();
       return;
     }
@@ -1044,176 +790,148 @@ export class GraphIndexer implements vscode.Disposable {
       void this.rebuild();
       return;
     }
+    dirty = await this._dropIgnored(dirty);
+    if (dirty.length === 0) return;
 
-    /* Must match the cap the current snapshot was actually built with, not a
-       fresh config read — a raw config read here would be the un-escalated
-       "balanced" default even after autoEscalatedProfile() raised the real
-       cap for this workspace, making nodesById.size >= maxNodes true on
-       essentially every edit once escalated (see _effectiveMaxRenderedStars). */
-    const maxNodes = Math.max(100, this._effectiveMaxRenderedStars);
-    const dirtySet = new Set(dirty);
-    const fileInfo = new Map<string, { absolute: string | null; exists: boolean; sizeBytes: number }>();
-    for (const rel of dirty) {
-      const absolute = fromNodeId(this._roots(), rel);
-      let exists = false;
-      let sizeBytes = 0;
-      if (absolute) {
-        try {
-          const stat = fs.statSync(absolute);
-          exists = stat.isFile();
-          sizeBytes = stat.size;
-        } catch { /* deleted during the debounce window */ }
-      }
-      fileInfo.set(rel, { absolute, exists, sizeBytes });
-    }
+    const roots = this._roots();
+    const maxRendered = Math.max(100, this._effectiveMaxRenderedStars);
+    const indexedSet = new Set(this._indexedFiles);
+    const corpus = new Set(this._corpusFiles);
+    const renderedIds = new Set(snapshot.nodes.map((node) => node.id));
+    let contextChanged = false;
+    const touched: string[] = [];
 
-    /* Maintain indexed adjacency even for files outside the rendered star
-       projection. At an active index cap, newly-created files wait for the
-       next fair full re-sample; existing indexed files still update here. */
-    const indexedFileSet = new Set(this._indexedFiles);
-    let corpusMutated = false;
     for (const rel of dirty) {
-      const info = fileInfo.get(rel)!;
-      if (!info.exists) {
-        if (indexedFileSet.delete(rel)) corpusMutated = true;
-        const corpusIndex = this._corpusFiles.indexOf(rel);
-        if (corpusIndex >= 0) this._corpusFiles.splice(corpusIndex, 1);
-      } else {
-        if (!this._corpusFiles.includes(rel)) this._corpusFiles.push(rel);
-        if (!indexedFileSet.has(rel) && snapshot.indexedTruncated !== true) {
-          indexedFileSet.add(rel);
-          corpusMutated = true;
-        }
-      }
-    }
-    this._corpusFiles.sort();
-    const previousIndexedEdgeCount = this._indexedImportEdges.length;
-    const indexedEdges = this._indexedImportEdges.filter((edge) => !dirtySet.has(edge.from) && indexedFileSet.has(edge.from) && indexedFileSet.has(edge.to));
-    const indexedResolveCtx = this._resolveContextForDirty(dirty, indexedFileSet);
-    const indexedContent = new Map<string, string>();
-    for (const rel of dirty) {
-      const info = fileInfo.get(rel)!;
-      if (!info.exists || !info.absolute || !indexedFileSet.has(rel) || info.sizeBytes > MAX_IMPORT_FILE_BYTES) continue;
-      let content = "";
+      const absolute = fromNodeId(roots, rel);
+      let stat: fs.Stats | null = null;
       try {
-        content = fs.readFileSync(info.absolute, "utf8");
-      } catch { /* unreadable */ }
-      indexedContent.set(rel, content);
-      const targets = this._resolveFileTargets(rel, content, indexedFileSet, indexedResolveCtx);
-      for (const to of targets) {
-        indexedEdges.push({ id: importEdgeId(rel, to), from: rel, to, kind: "import", provenance: "import" });
-      }
-    }
-    if (indexedEdges.length !== previousIndexedEdgeCount || dirty.some((rel) => indexedFileSet.has(rel))) corpusMutated = true;
-    this._indexedImportEdges = indexedEdges;
-    this._indexedFiles = [...indexedFileSet].sort();
-
-    const nodesById = new Map(snapshot.nodes.map((node) => [node.id, node]));
-    const fileSet = new Set(nodesById.keys());
-    let mutated = false;
-
-    /* Drop edges originating from dirty files; they get rescanned below. */
-    let edges = snapshot.edges.filter((edge) => !dirtySet.has(edge.from));
-    if (edges.length !== snapshot.edges.length) mutated = true;
-
-    /* Resolution context reused for the whole dirty pass (a file added mid-pass
-       just isn't a name-resolution target yet) — see _resolveContextForDirty
-       for why this is cheap rather than a full config re-parse. */
-    const resolveCtx = this._resolveContextForDirty(dirty, fileSet);
-    const positions = new Map<string, { x: number; y: number }>();
-    for (const node of snapshot.nodes) positions.set(node.id, { x: node.x, y: node.y });
-    const nodesByDir = new Map<string, string[]>();
-    for (const node of snapshot.nodes) {
-      const list = nodesByDir.get(node.dir) ?? [];
-      list.push(node.id);
-      nodesByDir.set(node.dir, list);
-    }
-
-    for (const rel of dirty) {
-      const { absolute, exists, sizeBytes } = fileInfo.get(rel)!;
-
-      if (!absolute || !exists) {
-        if (nodesById.delete(rel)) {
-          fileSet.delete(rel);
-          edges = edges.filter((edge) => edge.from !== rel && edge.to !== rel);
-          mutated = true;
-        }
+        stat = absolute ? fs.statSync(absolute) : null;
+      } catch { /* deleted during the debounce window */ }
+      if (!stat || !stat.isFile()) {
+        corpus.delete(rel);
+        if (indexedSet.delete(rel)) contextChanged = true;
+        this._facts.delete(rel);
+        this._indexNodes.delete(rel);
+        renderedIds.delete(rel);
         continue;
       }
+      corpus.add(rel);
+      if (!indexedSet.has(rel)) {
+        /* At an active index cap, a new file waits for the next fair full
+           re-sample rather than growing the index past it. */
+        if (snapshot.indexedTruncated === true) continue;
+        indexedSet.add(rel);
+        contextChanged = true;
+      }
+      let content = "";
+      if (stat.size <= MAX_IMPORT_FILE_BYTES) {
+        try { content = fs.readFileSync(absolute!, "utf8"); } catch { /* unreadable */ }
+      }
+      const previous = this._facts.get(rel);
+      const facts = extractFileFacts(rel, content, Math.trunc(stat.mtimeMs), stat.size);
+      if (declarationsChanged(previous, facts)) contextChanged = true;
+      this._facts.set(rel, facts);
+      touched.push(rel);
 
-      let node = nodesById.get(rel);
+      let node = this._indexNodes.get(rel);
       if (!node) {
-        /* Already at the display cap: adding another node needs a fair
-           re-sample across clusters, not an uncapped incremental append —
-           let a full rebuild handle it instead of growing past maxNodes. */
-        if (nodesById.size >= maxNodes) {
-          continue;
-        }
+        const nodesByDir = new Map<string, string[]>();
         const dirCounts = new Map<string, number>();
-        for (const [cluster, ids] of nodesByDir) dirCounts.set(cluster, ids.length);
+        const positions = new Map<string, { x: number; y: number }>();
+        for (const existing of this._indexNodes.values()) {
+          (nodesByDir.get(existing.dir) ?? nodesByDir.set(existing.dir, []).get(existing.dir)!).push(existing.id);
+          dirCounts.set(existing.dir, (dirCounts.get(existing.dir) ?? 0) + 1);
+          positions.set(existing.id, { x: existing.x, y: existing.y });
+        }
         const dir = incrementalClusterDir(rel, dirCounts);
-        const pos = placeNearCluster(dir, positions, nodesByDir, this._seed + nodesById.size);
+        const pos = placeNearCluster(dir, positions, nodesByDir, this._seed + this._indexNodes.size);
+        const sibling = nodesByDir.get(dir)?.[0];
+        const codebase = sibling ? this._indexNodes.get(sibling)?.codebase : undefined;
+        const neighborhood = sibling ? this._indexNodes.get(sibling)?.neighborhood : undefined;
         node = {
-          id: rel, dir, lang: langOf(rel), sizeBytes,
+          id: rel, dir, lang: langOf(rel), sizeBytes: stat.size,
           inDegree: 0, outDegree: 0,
           x: Math.round(pos.x * 100) / 100, y: Math.round(pos.y * 100) / 100, z: 0.15,
+          ...(codebase ? { codebase } : {}),
+          ...(neighborhood ? { neighborhood } : {}),
         };
-        nodesById.set(rel, node);
-        fileSet.add(rel);
-        mutated = true;
-      } else {
-        node.sizeBytes = sizeBytes;
-      }
-
-      if (sizeBytes <= MAX_IMPORT_FILE_BYTES) {
-        let content = indexedContent.get(rel) ?? "";
-        if (!indexedContent.has(rel)) {
-          try {
-            content = fs.readFileSync(absolute, "utf8");
-          } catch { /* unreadable */ }
-        }
-        const targets = this._resolveFileTargets(rel, content, fileSet, resolveCtx);
-        for (const to of targets) {
-          edges.push({ id: importEdgeId(rel, to), from: rel, to, kind: "import", provenance: "import" });
-        }
-        if (targets.size > 0) mutated = true;
+        this._indexNodes.set(rel, node);
+        if (renderedIds.size < maxRendered) renderedIds.add(rel);
+      } else if (node.sizeBytes !== stat.size) {
+        /* Copy-on-write, so the previous snapshot still holds the old size and
+           the delta below reports the change. */
+        this._indexNodes.set(rel, { ...node, sizeBytes: stat.size });
       }
       await yieldToLoop();
     }
 
-    if (corpusMutated) mutated = true;
-    if (!mutated) return;
+    finalizeRefs(this._facts, declaredTypeNames(this._facts));
+    if (contextChanged) {
+      this._resolveCtx = buildResolveContextFromFacts(this._facts, indexedSet, roots.length > 1 ? roots.map((r) => r.name) : []);
+    }
+    const touchedSet = new Set(touched);
+    const indexedEdges = this._indexedImportEdges.filter((edge) =>
+      !touchedSet.has(edge.from) && indexedSet.has(edge.from) && indexedSet.has(edge.to));
+    for (const rel of touched) {
+      for (const to of resolveTargetsFromFacts(rel, this._facts.get(rel), indexedSet, this._resolveCtx!)) {
+        indexedEdges.push({ id: importEdgeId(rel, to), from: rel, to, kind: "import", provenance: "import" });
+      }
+    }
+    this._indexedImportEdges = indexedEdges;
+    this._indexedFiles = [...indexedSet].sort();
+    this._corpusFiles = [...corpus].sort();
 
-    /* Recompute degrees + depth cues from the updated edge set. */
+    /* Recompute degrees + depth cues over the index from the updated edges. */
     const inDegree = new Map<string, number>();
     const outDegree = new Map<string, number>();
-    for (const edge of this._indexedImportEdges) {
+    for (const edge of indexedEdges) {
       outDegree.set(edge.from, (outDegree.get(edge.from) ?? 0) + 1);
       inDegree.set(edge.to, (inDegree.get(edge.to) ?? 0) + 1);
     }
-    const nodes = [...nodesById.values()];
     let maxDegree = 0;
-    for (const node of nodes) {
-      node.inDegree = inDegree.get(node.id) ?? 0;
-      node.outDegree = outDegree.get(node.id) ?? 0;
-      maxDegree = Math.max(maxDegree, node.inDegree + node.outDegree);
+    const renderedNodes: GraphNode[] = [];
+    const nextIndex = new Map<string, GraphNode>();
+    for (const [id, node] of this._indexNodes) {
+      const nIn = inDegree.get(id) ?? 0;
+      const nOut = outDegree.get(id) ?? 0;
+      maxDegree = Math.max(maxDegree, nIn + nOut);
+      /* Copy-on-write: the previous snapshot's node objects must keep their
+         old values so the delta below can see what changed. */
+      nextIndex.set(id, nIn === node.inDegree && nOut === node.outDegree ? node : { ...node, inDegree: nIn, outDegree: nOut });
     }
-    for (const node of nodes) node.z = depthFromDegree(node.inDegree, node.outDegree, maxDegree);
+    for (const [id, node] of nextIndex) {
+      const z = depthFromDegree(node.inDegree, node.outDegree, maxDegree);
+      const current = z === node.z ? node : { ...node, z };
+      nextIndex.set(id, current);
+      if (renderedIds.has(id)) renderedNodes.push(current);
+    }
+    this._indexNodes = nextIndex;
+    renderedNodes.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const renderedSet = new Set(renderedNodes.map((node) => node.id));
+    const edges = indexedEdges.filter((edge) => renderedSet.has(edge.from) && renderedSet.has(edge.to));
 
+    const delta = diffSnapshots(snapshot, { nodes: renderedNodes, edges }, snapshot.seq ?? 0);
+    if (delta.upsertNodes.length === 0 && delta.removeNodeIds.length === 0 && delta.addEdges.length === 0 && delta.removeEdgeIds.length === 0) {
+      return;
+    }
+    this._seq += 1;
     const next: GraphSnapshot = {
-      nodes,
+      nodes: renderedNodes,
       edges,
       indexedAt: new Date().toISOString(),
       truncated: snapshot.truncated,
       indexedTruncated: snapshot.indexedTruncated,
       renderedTruncated: snapshot.renderedTruncated,
       relationshipTruncated: snapshot.relationshipTruncated,
-      indexedFileCount: snapshot.indexedFileCount,
-      renderedNodeCount: nodes.length,
+      indexedFileCount: this._indexedFiles.length,
+      renderedNodeCount: renderedNodes.length,
       relationshipEdgeCount: snapshot.relationshipEdgeCount,
-      indexedImportEdgeCount: this._indexedImportEdges.length || snapshot.indexedImportEdgeCount,
-      renderedImportEdgeCount: edges.filter((edge) => edge.kind === "import").length,
+      indexedImportEdgeCount: indexedEdges.length,
+      renderedImportEdgeCount: edges.length,
       hiddenByPolicyCount: this._hiddenByPolicyCount,
+      gitignoreApplied: this._gitignoreApplied,
+      seq: this._seq,
+      delta,
     };
     this._snapshot = next;
     this._writeCache(next);
@@ -1221,6 +939,11 @@ export class GraphIndexer implements vscode.Disposable {
   }
 
   private _writeCache(snapshot: GraphSnapshot): void {
+    const rendered = new Set(snapshot.nodes.map((node) => node.id));
+    const offMapPositions: Array<[string, number, number]> = [];
+    for (const node of this._indexNodes.values()) {
+      if (!rendered.has(node.id)) offMapPositions.push([node.id, node.x, node.y]);
+    }
     const document: CacheDocument = {
       schemaVersion: CACHE_SCHEMA_VERSION,
       policyKey: exclusionPolicyKey(this._exclusions()),
@@ -1234,8 +957,10 @@ export class GraphIndexer implements vscode.Disposable {
       renderedNodeCount: snapshot.renderedNodeCount,
       indexedImportEdgeCount: snapshot.indexedImportEdgeCount,
       renderedImportEdgeCount: snapshot.renderedImportEdgeCount,
+      gitignoreApplied: snapshot.gitignoreApplied,
       nodes: snapshot.nodes,
       importEdges: snapshot.edges.filter((edge) => edge.kind === "import"),
+      ...(offMapPositions.length > 0 ? { offMapPositions } : {}),
     };
     const cachePath = this._cachePath();
     if (!cachePath) return;
@@ -1245,4 +970,16 @@ export class GraphIndexer implements vscode.Disposable {
       fs.writeFileSync(cachePath, JSON.stringify(document), "utf8");
     } catch { /* cache is best-effort; unwritable workspaces still get a live map */ }
   }
+}
+
+function yieldToLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** Whether a fact change can alter how *other* files resolve (declarations,
+    re-exports, module names) — the cue to rebuild the resolve context. */
+function declarationsChanged(previous: FileFacts | undefined, next: FileFacts): boolean {
+  if (!previous) return true;
+  return JSON.stringify([previous.cs, previous.php, previous.py, previous.pyRe])
+    !== JSON.stringify([next.cs, next.php, next.py, next.pyRe]);
 }

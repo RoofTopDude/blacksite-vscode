@@ -7,7 +7,11 @@ import { bindWorkspaceUi } from "./workspace-ui-host.js";
 import * as vscode from "vscode";
 import { renderWebviewHtml } from "./webview-html.js";
 import type { GraphIndexer } from "./graph/graph-indexer.js";
-import type { GraphEdge } from "./graph/graph-model.js";
+import type { GraphEdge, GraphNode, GraphSnapshot } from "./graph/graph-model.js";
+import type { HierarchySnapshot } from "./graph/hierarchy-snapshot.js";
+import { runsTouching, type RunFootprintIndex } from "./graph/run-footprints.js";
+import { routeProvidersFromEdges, type ReferenceLinkIndex } from "./graph/reference-links.js";
+import { buildBasenameIndex } from "./graph/resolve-imports.js";
 import { activityIntent, activityToTraces, type TraceKind } from "./graph/trace-extract.js";
 import { LiveActivityTracker } from "./graph/live-activity.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
@@ -43,6 +47,11 @@ const MAX_EDGES_PER_SYMBOL = 8;
 const MAX_RUN_PLAYBACK_WINDOW_MS = 5 * 60 * 1000;
 const MAX_RUN_PLAYBACK_EVENTS = 2000;
 const MAX_RUN_PLAYBACK_SUMMARIES = 100;
+/** Corpus search results returned per request (the webview merges them with
+    its own local matches). */
+const MAX_CORPUS_SEARCH_RESULTS = 50;
+/** Ceiling on files one scope fill-in sends, on top of the render sample. */
+const MAX_SCOPE_DETAIL_NODES = 20_000;
 /* Symbol kinds worth showing as orbit nodes (vscode.SymbolKind values). */
 const SYMBOL_KINDS = new Set<vscode.SymbolKind>([
   vscode.SymbolKind.Class,
@@ -100,6 +109,14 @@ export interface MapRunEvent {
 /** Structural adapter over the canonical run store. Keeping this seam small
     lets GraphProvider remain independent of run persistence/composition and
     keeps existing construction sites source-compatible. */
+/** Optional collaborators added in 1.30 (hierarchy, run footprints, reference
+    links). Grouped so existing construction sites stay source-compatible. */
+export interface GraphProviderExtras {
+  hierarchy?: HierarchySnapshot;
+  runFootprints?: RunFootprintIndex;
+  referenceLinks?: ReferenceLinkIndex;
+}
+
 export interface RunPlaybackProvider {
   listRunSummaries(limit: number): readonly MapRunSummary[] | Promise<readonly MapRunSummary[]>;
   /** Random-access window in run-relative elapsed milliseconds. */
@@ -163,7 +180,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   private _lspInspecting = false;
   /** Wired by extension.ts to NotesTimelineProvider.open() — avoids a
       construction-order cycle between the two providers. */
-  private _openNotesTimeline: (() => void) | null = null;
+  private _openNotesTimeline: ((filter?: { prefix: string; label: string }) => void) | null = null;
   /** Focus target queued while no Map webview is resolved yet (revealNote can
       race the sidebar view's first resolve); flushed on the next state post. */
   private _pendingFocusPath: string | null = null;
@@ -175,6 +192,13 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
   private _runWindowRequestSeq = 0;
   private _runSummaryRefreshSeq = 0;
   private _runSelectionSeq = 0;
+  /** Generation of the last full graph_state or graph_delta posted, so an
+      incremental snapshot can be sent as a patch when every surface already
+      holds its base. Null until the first post. */
+  private _lastPostedSeq: number | null = null;
+  /** Language-server inspection runs once per index shape, not on every post
+      (it used to re-run after each post, and each run re-posted everything). */
+  private _lspKey = "";
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -198,10 +222,11 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     /** Optional structural run-store adapter. Existing hosts/tests may omit it;
         the Map then remains entirely live and shows no run selector. */
     private readonly _runPlayback?: RunPlaybackProvider,
+    private readonly _extras: GraphProviderExtras = {},
   ) {
     this._subscriptions.push(
-      this._indexer.onDidChange(() => this._postState()),
-      this._relationships.onDidChange(() => this._postState()),
+      this._indexer.onDidChange((snapshot) => this._onSnapshot(snapshot)),
+      this._relationships.onDidChange(() => this._postRelationships()),
       this._indexer.onIndexingChanged((indexing) => {
         this._post({ type: "graph_indexing", indexing });
       }),
@@ -212,6 +237,11 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
         }
       }),
     );
+    if (typeof this._indexer.onProgress === "function") {
+      this._subscriptions.push(this._indexer.onProgress((progress) => {
+        this._post({ type: "graph_indexing", indexing: true, phase: progress.phase, progress: progress.fraction });
+      }));
+    }
     if (activityBus) {
       this._subscriptions.push(activityBus.onActivity((activity) => this._onActivity(activity)));
     }
@@ -377,7 +407,7 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     void this._indexer.rebuild();
   }
 
-  setNotesTimelineOpener(open: () => void): void {
+  setNotesTimelineOpener(open: (filter?: { prefix: string; label: string }) => void): void {
     this._openNotesTimeline = open;
   }
 
@@ -405,7 +435,163 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       edges for another file — the sweep has no corpus-shape change to trigger the
       indexer's own onDidChange, so it needs its own nudge. */
   notifySymbolEdgesChanged(): void {
-    this._postState();
+    this._post({ type: "symbol_edges", edges: this._symbolEdges?.() ?? [] });
+  }
+
+  /** An incremental index pass arrives as a snapshot carrying `delta`. When
+      every Map surface already holds the delta's base generation, send only
+      the patch; otherwise (first post, a missed generation) send everything. */
+  private _onSnapshot(snapshot: GraphSnapshot): void {
+    if (!this._hasWebviewTargets()) return;
+    const delta = snapshot.delta;
+    if (!delta || this._lastPostedSeq === null || delta.baseSeq !== this._lastPostedSeq || snapshot.seq === undefined) {
+      this._postState();
+      return;
+    }
+    this._post({
+      type: "graph_delta",
+      seq: snapshot.seq,
+      baseSeq: delta.baseSeq,
+      upsertNodes: delta.upsertNodes,
+      removeNodeIds: delta.removeNodeIds,
+      addEdges: delta.addEdges,
+      removeEdgeIds: delta.removeEdgeIds,
+      indexedFileCount: snapshot.indexedFileCount,
+      renderedNodeCount: snapshot.renderedNodeCount,
+      indexedImportEdgeCount: snapshot.indexedImportEdgeCount,
+      renderedImportEdgeCount: snapshot.renderedImportEdgeCount,
+      indexedAt: snapshot.indexedAt,
+    });
+    this._lastPostedSeq = snapshot.seq;
+    this._postStructure();
+    this._postHierarchy();
+  }
+
+  private _postStructure(): void {
+    const structural = this._structural.get();
+    this._post({
+      type: "structure_state",
+      cyclicNeighborhoodPairs: structural.cyclicNeighborhoodPairs,
+      orphanNodeIds: structural.orphanNodeIds,
+      pocketNodeIds: structural.pocketNodeIds,
+      bridgeEdgeIds: structural.bridgeEdgeIds,
+    });
+  }
+
+  private _postRelationships(): void {
+    if (!this._hasWebviewTargets()) return;
+    const relationship = this._relationships.get();
+    this._post({
+      type: "relationships_state",
+      relationshipEdges: relationship.edges,
+      relationshipTruncated: relationship.truncated,
+      relationshipIndexing: relationship.indexing,
+      relationshipEdgeCount: relationship.edges.length,
+      relationshipTotalEdgeCount: relationship.totalEdgeCount,
+    });
+    this._postHierarchy();
+  }
+
+  private _postHierarchy(): void {
+    const hierarchy = this._extras.hierarchy?.get();
+    if (!hierarchy) return;
+    this._post({ type: "graph_hierarchy", hierarchy });
+  }
+
+  /** Co-change edges drawable on the current render sample. */
+  private _renderedCochange(nodes: readonly GraphNode[]): GraphEdge[] {
+    const all = typeof this._indexer.cochangeEdges === "function" ? this._indexer.cochangeEdges() : [];
+    if (all.length === 0) return [];
+    const ids = new Set(nodes.map((node) => node.id));
+    return all.filter((edge) => ids.has(edge.from) && ids.has(edge.to));
+  }
+
+  /** Files in one hierarchy group that the global render sample dropped, so a
+      scoped view can show the whole group (up to a ceiling). */
+  private _scopeDetail(level: string, key: string): { nodes: GraphNode[]; edges: GraphEdge[]; truncated: boolean } {
+    const snapshot = this._indexer.snapshot();
+    const index = typeof this._indexer.nodeIndex === "function" ? this._indexer.nodeIndex() : [];
+    if (!snapshot || index.length === 0 || !key) return { nodes: [], edges: [], truncated: false };
+    const rendered = new Set(snapshot.nodes.map((node) => node.id));
+    const inGroup = (node: GraphNode): boolean => {
+      if (level === "area") return node.dir === key;
+      if (level === "codebase") return (node.codebase ?? node.neighborhood) === key;
+      return node.id === key || node.id.startsWith(`${key}/`);
+    };
+    const members = index.filter((node) => !rendered.has(node.id) && inGroup(node));
+    const nodes = members.slice(0, MAX_SCOPE_DETAIL_NODES);
+    const added = new Set(nodes.map((node) => node.id));
+    const edges = this._indexer.importEdges().filter((edge) =>
+      (added.has(edge.from) || added.has(edge.to))
+      && (added.has(edge.from) || rendered.has(edge.from))
+      && (added.has(edge.to) || rendered.has(edge.to)));
+    return { nodes, edges, truncated: members.length > nodes.length };
+  }
+
+  private _searchCorpus(query: string): Array<{ id: string; dir: string; codebase?: string }> {
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    const index = typeof this._indexer.nodeIndex === "function" ? this._indexer.nodeIndex() : [];
+    const scored: Array<{ node: GraphNode; score: number }> = [];
+    for (const node of index) {
+      const id = node.id.toLowerCase();
+      const at = id.indexOf(q);
+      if (at < 0) continue;
+      const base = id.slice(id.lastIndexOf("/") + 1);
+      scored.push({ node, score: (base.startsWith(q) ? 0 : base.includes(q) ? 1 : 2) * 10_000 + id.length });
+    }
+    scored.sort((a, b) => a.score - b.score || a.node.id.localeCompare(b.node.id));
+    return scored.slice(0, MAX_CORPUS_SEARCH_RESULTS).map(({ node }) => ({
+      id: node.id,
+      dir: node.dir,
+      ...(node.codebase ? { codebase: node.codebase } : {}),
+    }));
+  }
+
+  /** Runs and reference documents for one selection — the inspector's
+      Activity and References tabs. Notes and tickets are already on the
+      webview; these two need host data. */
+  private async _selectionContext(msg: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const path = typeof msg.path === "string" ? msg.path : "";
+    const level = typeof msg.level === "string" ? msg.level : "";
+    const key = typeof msg.key === "string" ? msg.key : "";
+    const nodeIndex = typeof this._indexer.nodeIndex === "function" ? this._indexer.nodeIndex() : [];
+    const byId = new Map(nodeIndex.map((node) => [node.id, node]));
+    const matches = (file: string): boolean => {
+      if (path) return file === path;
+      if (!key) return false;
+      if (level === "area") return byId.get(file)?.dir === key;
+      if (level === "codebase") {
+        const node = byId.get(file);
+        return (node?.codebase ?? node?.neighborhood) === key;
+      }
+      return file === key || file.startsWith(`${key}/`);
+    };
+    let runs: unknown[] = [];
+    if (this._extras.runFootprints) {
+      try {
+        runs = runsTouching(await this._extras.runFootprints.footprints(), matches, 12);
+      } catch { /* runs are optional context */ }
+    }
+    let references: unknown[] = [];
+    if (this._extras.referenceLinks) {
+      const files = new Set(nodeIndex.map((node) => node.id));
+      const routes = routeProvidersFromEdges(this._relationships.full());
+      const generation = `${this._indexer.snapshot()?.seq ?? 0}:${routes.length}`;
+      const roots = this._roots();
+      references = this._extras.referenceLinks
+        .links(generation, files, buildBasenameIndex(files), routes)
+        .map((link) => ({
+          ...link,
+          /* Attachments live under the first folder's .blacksite; open_file
+             takes Map ids, which are folder-qualified in multi-root. */
+          openPath: roots[0] ? toNodeId(roots, `${roots[0].path}/${link.workspacePath}`) ?? link.workspacePath : link.workspacePath,
+          targets: link.targets.filter((target) => matches(target.path)),
+        }))
+        .filter((link) => link.targets.length > 0)
+        .slice(0, 20);
+    }
+    return { runs, references };
   }
 
   private async _onMessage(msg: Record<string, unknown>): Promise<void> {
@@ -415,6 +601,51 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       case "refresh":
         this._postState();
         await this._postRunPlaybackState();
+        break;
+      case "request_scope_detail": {
+        const detail = this._scopeDetail(String(msg.level ?? ""), String(msg.key ?? ""));
+        this._post({
+          type: "scope_detail",
+          groupId: String(msg.groupId ?? ""),
+          seq: this._lastPostedSeq ?? 0,
+          nodes: detail.nodes,
+          edges: detail.edges,
+          truncated: detail.truncated,
+        });
+        break;
+      }
+      case "search_corpus":
+        this._post({
+          type: "search_results",
+          query: String(msg.query ?? ""),
+          requestId: Number(msg.requestId) || 0,
+          results: this._searchCorpus(String(msg.query ?? "")),
+        });
+        break;
+      case "request_context": {
+        const context = await this._selectionContext(msg);
+        this._post({ type: "context_state", requestId: Number(msg.requestId) || 0, ...context });
+        break;
+      }
+      case "set_respect_gitignore": {
+        try {
+          await vscode.workspace.getConfiguration("blacksite.graph").update("respectGitignore", msg.enabled === true, vscode.ConfigurationTarget.Workspace);
+        } catch {
+          /* No workspace folder to persist to — setting stays at its default. */
+        }
+        break;
+      }
+      case "file_ticket_for_area": {
+        const areas = Array.isArray(msg.areas) ? msg.areas.filter((a): a is string => typeof a === "string" && a.trim().length > 0) : [];
+        const files = Array.isArray(msg.files) ? msg.files.filter((f): f is string => typeof f === "string" && f.trim().length > 0) : [];
+        if (areas.length === 0 && files.length === 0) break;
+        const title = typeof msg.title === "string" && msg.title.trim() ? msg.title.trim() : `Work in ${areas[0] ?? files[0]}`;
+        this._fileTicket?.({ title, areas, files, origin: "user", status: "backlog" });
+        void vscode.commands.executeCommand("blacksite.tickets.focus");
+        break;
+      }
+      case "open_run":
+        void vscode.commands.executeCommand("blacksite.openRunTheater", String(msg.runId ?? ""));
         break;
       case "select_run": {
         if (!this._runPlayback) break;
@@ -515,7 +746,9 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
         this.openFullPage();
         break;
       case "open_notes_timeline":
-        this._openNotesTimeline?.();
+        this._openNotesTimeline?.(typeof msg.filter === "object" && msg.filter
+          ? { prefix: String((msg.filter as Record<string, unknown>).prefix ?? ""), label: String((msg.filter as Record<string, unknown>).label ?? "") }
+          : undefined);
         break;
       case "open_tickets":
         void vscode.commands.executeCommand("blacksite.tickets.focus");
@@ -627,12 +860,18 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
 
   private async _refreshLanguageSupport(indexedFiles: readonly string[]): Promise<void> {
     if (this._lspInspecting || indexedFiles.length === 0) return;
+    /* Once per index shape. Every full post used to start an inspection whose
+       completion posted the full graph again — a loop that re-sent every node
+       and edge for as long as a Map was open. */
+    const key = `${indexedFiles.length}:${indexedFiles[0]}:${indexedFiles[indexedFiles.length - 1]}`;
+    if (key === this._lspKey) return;
+    this._lspKey = key;
     this._lspInspecting = true;
     try {
       const support = await inspectLanguageSupport(this._roots(), indexedFiles);
       this._lspSupport = support;
       await this._maybePromptForLsp(support);
-      this._postState();
+      this._post({ type: "lsp_support", lspSupport: support });
     } finally {
       this._lspInspecting = false;
     }
@@ -872,8 +1111,11 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     void this._refreshLanguageSupport(indexedFiles);
     this._post({
       type: "graph_state",
+      seq: snapshot?.seq ?? 0,
       nodes: snapshot?.nodes ?? [],
       edges: snapshot?.edges ?? [],
+      cochangeEdges: this._renderedCochange(snapshot?.nodes ?? []),
+      gitignoreApplied: snapshot?.gitignoreApplied === true,
       relationshipEdges: relationship.edges,
       symbolEdges: this._symbolEdges?.() ?? [],
       annotations: this._annotations?.read().annotations ?? [],
@@ -898,6 +1140,8 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
       pocketNodeIds: structural.pocketNodeIds,
       bridgeEdgeIds: structural.bridgeEdgeIds,
     });
+    this._lastPostedSeq = snapshot?.seq ?? null;
+    this._postHierarchy();
     this._postLiveActivity();
     this.notifyTicketsChanged();
     if (this._pendingFocusPath) {

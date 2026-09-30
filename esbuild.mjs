@@ -35,7 +35,7 @@ const buildOptions = {
   external: ["vscode", "playwright-core", "jq-wasm", "esbuild", "esbuild-wasm", "heic-decode", "libheif-js", "pdfjs-dist"],
   format: "cjs",
   platform: "node",
-  target: "node18",
+  target: "node24",
   sourcemap: true,
   // pdfjs-dist uses `new DOMMatrix()` at module-level for canvas rendering. That API
   // doesn't exist in Node.js (the VS Code extension host). We only use pdfjs for text
@@ -77,6 +77,23 @@ const buildOptions = {
    nonce'd <script> tags in every Markdown preview, so this is a small IIFE of its own rather
    than a Vite entry; it loads Mermaid's standalone build (copied below) only once it finds a
    diagram to draw. */
+/* The Codebase Map's background worker (src/graph/worker/graph-worker.ts). A
+   separate bundle because a worker_threads Worker is started from a file path;
+   it contains only the pure graph pipeline, never `vscode`. */
+const graphWorkerBuildOptions = {
+  absWorkingDir: __dirname,
+  entryPoints: [resolve(__dirname, "src/graph/worker/graph-worker.ts")],
+  bundle: true,
+  outfile: resolve(__dirname, "out/graph-worker.js"),
+  tsconfig: resolve(__dirname, "tsconfig.json"),
+  external: ["vscode"],
+  format: "cjs",
+  platform: "node",
+  target: "node24",
+  sourcemap: true,
+  logLevel: "info",
+};
+
 const markdownPreviewBuildOptions = {
   absWorkingDir: __dirname,
   entryPoints: [resolve(__dirname, "src/webview/react/markdown-preview/mermaid-preview.ts")],
@@ -140,6 +157,8 @@ if (watchMode) {
   await ctx.watch();
   const previewCtx = await esbuild.context(markdownPreviewBuildOptions);
   await previewCtx.watch();
+  const workerCtx = await esbuild.context(graphWorkerBuildOptions);
+  await workerCtx.watch();
   copyWebviewAssets();
   copyMarkdownPreviewAssets();
   copyBundledSkills();
@@ -149,6 +168,7 @@ if (watchMode) {
 } else {
   await esbuild.build(buildOptions);
   await esbuild.build(markdownPreviewBuildOptions);
+  await esbuild.build(graphWorkerBuildOptions);
   copyWebviewAssets();
   copyMarkdownPreviewAssets();
   copyBundledSkills();

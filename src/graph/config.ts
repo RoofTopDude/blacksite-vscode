@@ -7,6 +7,10 @@ export type GraphPerformanceProfile = "safe" | "balanced" | "large" | "extreme" 
     forces it, "off" keeps the flat layout. See graph/neighborhoods.ts. */
 export type GraphNeighborhoodMode = "auto" | "on" | "off";
 
+/** What the map opens on: "auto" picks the Systems overview for large or
+    multi-codebase workspaces and individual files otherwise. */
+export type GraphLandingView = "auto" | "systems" | "files";
+
 export interface GraphCapacityConfig {
   performanceProfile: GraphPerformanceProfile;
   maxIndexedFiles: number;
@@ -19,6 +23,9 @@ export interface GraphCapacityConfig {
 export interface GraphExclusionConfig {
   excludeDotDirectories: boolean;
   dotDirectoryAllowlist: readonly string[];
+  /** Discover files through `git ls-files` so .gitignore'd trees stay off the
+      map (see graph/git-discovery.ts). Non-git roots fall back to findFiles. */
+  respectGitignore: boolean;
 }
 
 export interface GraphConfig extends GraphCapacityConfig, GraphExclusionConfig {
@@ -29,6 +36,7 @@ export interface GraphConfig extends GraphCapacityConfig, GraphExclusionConfig {
       whole corpus). Off by default — it's the highest-cost layer. See
       graph/symbol-indexer.ts. */
   backgroundSymbols: boolean;
+  landingView: GraphLandingView;
 }
 
 export const PROFILE_CAPS: Record<Exclude<GraphPerformanceProfile, "custom">, Omit<GraphCapacityConfig, "performanceProfile">> = {
@@ -91,6 +99,7 @@ export function resolveGraphCapacity(raw: {
 export function resolveGraphExclusions(raw: {
   excludeDotDirectories?: unknown;
   dotDirectoryAllowlist?: unknown;
+  respectGitignore?: unknown;
 }): GraphExclusionConfig {
   const allowlist = Array.isArray(raw.dotDirectoryAllowlist)
     ? raw.dotDirectoryAllowlist.filter((entry): entry is string => typeof entry === "string")
@@ -101,6 +110,9 @@ export function resolveGraphExclusions(raw: {
        back into it. */
     excludeDotDirectories: raw.excludeDotDirectories !== false,
     dotDirectoryAllowlist: allowlist,
+    /* Default on for the same reason: an ignored tree is, by the repository's
+       own declaration, not part of the project. */
+    respectGitignore: raw.respectGitignore !== false,
   };
 }
 
@@ -116,6 +128,7 @@ export function readGraphConfig(): GraphConfig {
   const exclusions = resolveGraphExclusions({
     excludeDotDirectories: cfg.get("excludeDotDirectories"),
     dotDirectoryAllowlist: cfg.get("dotDirectoryAllowlist"),
+    respectGitignore: cfg.get("respectGitignore"),
   });
   return {
     ...capacity,
@@ -124,7 +137,12 @@ export function readGraphConfig(): GraphConfig {
     traceShellEvents: cfg.get<boolean>("traceShellEvents", true),
     neighborhoods: readNeighborhoodMode(cfg.get("neighborhoods")),
     backgroundSymbols: cfg.get<boolean>("backgroundSymbols", false),
+    landingView: readLandingView(cfg.get("landingView")),
   };
+}
+
+export function readLandingView(value: unknown): GraphLandingView {
+  return value === "systems" || value === "files" ? value : "auto";
 }
 
 function readNeighborhoodMode(value: unknown): GraphNeighborhoodMode {

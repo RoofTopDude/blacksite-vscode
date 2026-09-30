@@ -18,6 +18,8 @@ import type { GraphAnnotationContext, GraphAnnotationProvider, GraphAnnotation, 
 import type { GraphIndexer } from "./graph/graph-indexer.js";
 import type { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
 import type { StructuralSnapshot } from "./graph/structural-snapshot.js";
+import type { HierarchySnapshot } from "./graph/hierarchy-snapshot.js";
+import type { WorkspaceHierarchy } from "./graph/hierarchy.js";
 import type { GraphEdge, GraphNode } from "./graph/graph-model.js";
 import { resolveToNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
 import type { ProjectTopology } from "./graph/project-topology.js";
@@ -65,7 +67,25 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
         already backs the Map webview; when it isn't wired the query ops still
         answer, just without the structural section. */
     private readonly _structure: StructuralSnapshot | null = null,
+    /** Codebase-level relationships and dependency findings. Optional for the
+        same reason as `_structure`. */
+    private readonly _hierarchy: HierarchySnapshot | null = null,
   ) {}
+
+  /** Every indexed file as a node — a superset of the rendered projection
+      whenever the render cap truncates. Older indexers (and test doubles)
+      without a node index fall back to the rendered snapshot. */
+  private _nodes(): GraphNode[] {
+    if (typeof this._indexer.nodeIndex === "function") {
+      const index = this._indexer.nodeIndex();
+      if (index.length > 0) return index;
+    }
+    return this._indexer.snapshot()?.nodes ?? [];
+  }
+
+  private _cochange(): GraphEdge[] {
+    return typeof this._indexer.cochangeEdges === "function" ? this._indexer.cochangeEdges() : [];
+  }
 
   async dispatch(op: string, payload: Record<string, unknown>, ctx: GraphAnnotationContext): Promise<Record<string, unknown>> {
     if (op === "overview") return this._overview(payload, { waitForRelationships: true });
@@ -122,7 +142,7 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     const wantedSet = new Set(wanted);
 
     const nodesById = new Map<string, GraphNode>();
-    for (const node of snapshot.nodes) {
+    for (const node of this._nodes()) {
       if (wantedSet.has(node.id)) nodesById.set(node.id, node);
     }
     const dependenciesById = new Map<string, string[]>();
@@ -186,6 +206,9 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     const indexedFiles = snapshot.indexedFileCount ?? this._indexer.indexedFiles().length;
     const renderedFiles = snapshot.renderedNodeCount ?? snapshot.nodes.length;
     const structure = this._structureSummary(topology, limit, indexedFiles > renderedFiles);
+    const nodes = this._nodes();
+    const hierarchy = this._hierarchy?.get();
+    const codebases = hierarchy ? summarizeCodebases(hierarchy, limit) : [];
 
     return {
       ok: true,
@@ -201,8 +224,17 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
       },
       projects: summarizeProjects(topology, limit),
       projectReferences: summarizeProjectReferences(topology, limit),
-      areas: summarizeAreas(snapshot.nodes, limit),
-      hubs: [...snapshot.nodes]
+      ...(codebases.length > 0 ? { codebases } : {}),
+      ...(hierarchy && (hierarchy.declaredUnused.length > 0 || hierarchy.usedUndeclared.length > 0)
+        ? {
+          dependencyFindings: {
+            declaredButUnused: hierarchy.declaredUnused.slice(0, limit).map((f) => ({ from: f.fromName, to: f.toName, kind: f.kind })),
+            usedButUndeclared: hierarchy.usedUndeclared.slice(0, limit).map((f) => ({ from: f.fromName, to: f.toName, imports: f.imports })),
+          },
+        }
+        : {}),
+      areas: summarizeAreas(nodes, limit),
+      hubs: [...nodes]
         .sort((left, right) => (right.inDegree + right.outDegree) - (left.inDegree + left.outDegree) || left.id.localeCompare(right.id))
         .slice(0, limit)
         .map((node) => ({ path: node.id, inbound: node.inDegree, outbound: node.outDegree, area: node.neighborhood ?? node.dir })),
@@ -229,7 +261,9 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     if (!snapshot) return { ok: false, error: "The Codebase Map has not finished indexing yet — try again shortly." };
 
     const roots = this._roots();
-    const nodesById = new Map(snapshot.nodes.map((node) => [node.id, node]));
+    const nodesById = new Map(this._nodes().map((node) => [node.id, node]));
+    const renderedIds = new Set(snapshot.nodes.map((node) => node.id));
+    const cochange = this._cochange();
     const importEdges = typeof this._indexer.importEdges === "function"
       ? this._indexer.importEdges()
       : snapshot.edges.filter((edge) => edge.kind === "import");
@@ -252,7 +286,14 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     for (const raw of requested) {
       const id = resolveToNodeId(roots, raw);
       if (!id) { unresolved.push(raw); continue; }
-      files.push(buildFileRelationships(id, nodesById.get(id), importEdges, serviceEdges, symbolEdges, notes, limit, symbolLayerActive));
+      const entry = buildFileRelationships(id, nodesById.get(id), importEdges, serviceEdges, symbolEdges, notes, limit, symbolLayerActive, renderedIds.has(id));
+      const changedWith = cochange
+        .filter((edge) => edge.from === id || edge.to === id)
+        .sort((a, b) => (b.occurrenceCount ?? 0) - (a.occurrenceCount ?? 0))
+        .slice(0, limit)
+        .map((edge) => ({ peerFile: edge.from === id ? edge.to : edge.from, commits: edge.occurrenceCount, confidence: edge.confidence }));
+      if (changedWith.length > 0) entry.changedWith = changedWith;
+      files.push(entry);
     }
     return {
       ok: true,
@@ -318,7 +359,8 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     const noteEdges = layers.includes("note")
       ? this._annotations.list().map((note) => ({ from: note.from, to: note.to, title: note.title }))
       : [];
-    return { adjacency: buildAdjacency({ importEdges, serviceEdges, symbolEdges, noteEdges, layers }), symbolEdges };
+    const cochangeEdges = layers.includes("history") ? this._cochange() : [];
+    return { adjacency: buildAdjacency({ importEdges, serviceEdges, symbolEdges, noteEdges, cochangeEdges, layers }), symbolEdges };
   }
 
   /**
@@ -351,8 +393,9 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     const maxNodes = clampInt(payload.limit, DEFAULT_IMPACT_NODES, 1, MAX_IMPACT_NODES);
 
     const { hits, truncated } = traverseImpact(adjacency, seeds, { direction, maxDepth: depth, maxNodes });
-    const areaOf = buildAreaLookup(snapshot.nodes);
-    const degreeOf = new Map(snapshot.nodes.map((node) => [node.id, node.inDegree + node.outDegree]));
+    const indexNodes = this._nodes();
+    const areaOf = buildAreaLookup(indexNodes);
+    const degreeOf = new Map(indexNodes.map((node) => [node.id, node.inDegree + node.outDegree]));
 
     const byDepth = new Map<number, number>();
     for (const hit of hits) byDepth.set(hit.depth, (byDepth.get(hit.depth) ?? 0) + 1);
@@ -466,8 +509,10 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
       ? (payload.langs as unknown[]).filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       : undefined;
 
-    const result = findNodes(snapshot.nodes, {
+    const indexNodes = this._nodes();
+    const result = findNodes(indexNodes, {
       area,
+      codebase: typeof payload.codebase === "string" && payload.codebase.trim() ? payload.codebase.trim() : undefined,
       contains: typeof payload.contains === "string" ? payload.contains.trim() : undefined,
       glob: typeof payload.glob === "string" ? payload.glob.trim() : undefined,
       langs,
@@ -477,7 +522,7 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
       limit: clampInt(payload.limit, DEFAULT_LIMIT, 1, MAX_LIMIT),
     });
 
-    const gitLayerActive = snapshot.nodes.some((node) => node.churn !== undefined);
+    const gitLayerActive = indexNodes.some((node) => node.churn !== undefined);
     return {
       ok: true,
       sortBy,
@@ -492,9 +537,8 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
       ...(result.matched > result.files.length
         ? { more: result.matched - result.files.length, hint: "Raise `limit` or narrow the filter to see the rest." }
         : {}),
-      ...(snapshot.renderedNodeCount !== undefined && snapshot.indexedFileCount !== undefined
-        && snapshot.indexedFileCount > snapshot.renderedNodeCount
-        ? { coverageNote: "Search covers the rendered node projection; the workspace indexes more files than the map renders." }
+      ...(indexNodes.length < (snapshot.indexedFileCount ?? 0)
+        ? { coverageNote: "Search covers the files laid out so far; the background index has not finished every indexed file yet." }
         : {}),
     };
   }
@@ -631,8 +675,15 @@ function formatWorkspaceOverview(overview: Record<string, unknown>): string {
     for (const row of values as Record<string, unknown>[]) lines.push(`  - ${render(row)}`);
   };
 
+  addSection("Codebases", overview.codebases, (row) => {
+    const links = Array.isArray(row.dependsOn) && row.dependsOn.length > 0 ? `; depends on ${row.dependsOn.join(", ")}` : "";
+    return `${row.name} (${row.files} files${row.root ? ` in ${row.root}` : ""})${links}`;
+  });
   addSection("Projects", overview.projects, (row) => `${row.name} [${row.kind}] at ${row.root}`);
   addSection("Project links", overview.projectReferences, (row) => `${row.from} -> ${row.to} (${row.kind})`);
+  const findings = overview.dependencyFindings as Record<string, unknown> | undefined;
+  addSection("Imports no manifest declares", findings?.usedButUndeclared, (row) => `${row.from} -> ${row.to} (${row.imports} imports)`);
+  addSection("Declared dependencies with no imports", findings?.declaredButUnused, (row) => `${row.from} -> ${row.to} (${row.kind})`);
   addSection("Major areas", overview.areas, (row) => `${row.area}: ${row.files} files`);
   addSection("Dependency hubs", overview.hubs, (row) => `${row.path} (${row.inbound} in / ${row.outbound} out)`);
   addSection("Cross-service flows", overview.serviceFlows, (row) => {
@@ -656,8 +707,9 @@ function buildFileRelationships(
   notes: readonly GraphAnnotation[],
   limit: number,
   symbolLayerActive: boolean,
+  rendered = node !== undefined,
 ): Record<string, unknown> {
-  const onMap = node !== undefined;
+  const onMap = rendered;
   const imports = importEdges.filter((edge) => edge.from === id).map((edge) => edge.to);
   const importedBy = importEdges.filter((edge) => edge.to === id).map((edge) => edge.from);
   /* Symbol-layer edges are keyed by from/to (file paths), not the service
@@ -708,6 +760,7 @@ function buildFileRelationships(
        caller deciding how carefully to touch a file shouldn't need a second
        call (or a git log) to find out. */
     ...(node ? { area: node.neighborhood ?? node.dir, lang: node.lang } : {}),
+    ...(node?.codebase ? { codebase: node.codebase } : {}),
     ...(node?.churn === undefined ? {} : { recentCommits: node.churn }),
     importCount: imports.length,
     importedByCount: importedBy.length,
@@ -719,6 +772,35 @@ function buildFileRelationships(
     symbolRelations: symbolRelations.slice(0, limit),
     ...(symbolLayerActive ? {} : { symbolRelationsUnavailable: true }),
     notes: fileNotes,
-    ...(onMap ? {} : { warning: "This file isn't on the rendered Codebase Map. Full indexed import and service facts are still queried when available; the file may be beyond the render cap or excluded by the indexing profile." }),
+    ...(onMap ? {} : { warning: node
+      ? "This file is indexed but outside the rendered Codebase Map sample; its import and service facts above are complete."
+      : "This file isn't on the Codebase Map index. Full indexed import and service facts are still queried when available; the file may be beyond the index cap or excluded by the indexing profile." }),
   };
+}
+
+/** Codebases from the hierarchy, largest first, each with the codebases it
+    depends on (imports, routes, or declared references at its own level) and
+    any hidden coupling (co-change no structural link explains). */
+function summarizeCodebases(hierarchy: WorkspaceHierarchy, limit: number): Record<string, unknown>[] {
+  const hasCodebaseChild = new Set(hierarchy.groups.filter((g) => g.level === "codebase" && g.parent).map((g) => g.parent!));
+  const top = hierarchy.groups.filter((group) => group.level === "codebase" || (group.level === "root" && !hasCodebaseChild.has(group.id)));
+  if (top.length < 2) return [];
+  const label = new Map(hierarchy.groups.map((group) => [group.id, group.label]));
+  return top.slice(0, limit).map((group) => {
+    const outgoing = hierarchy.edges
+      .filter((edge) => edge.from === group.id && edge.kind !== "cochange" && edge.level === "systems")
+      .sort((a, b) => b.count - a.count);
+    const dependsOn = [...new Set(outgoing.map((edge) => label.get(edge.to) ?? edge.to))].slice(0, 6);
+    const coupled = hierarchy.edges
+      .filter((edge) => edge.kind === "cochange" && edge.unexplained && edge.level === "systems" && (edge.from === group.id || edge.to === group.id))
+      .map((edge) => label.get(edge.from === group.id ? edge.to : edge.from) ?? "");
+    return {
+      name: group.label,
+      root: group.key,
+      files: group.fileCount,
+      ...(group.projectKind ? { kind: group.projectKind } : {}),
+      ...(dependsOn.length > 0 ? { dependsOn } : {}),
+      ...(coupled.length > 0 ? { hiddenCouplingWith: [...new Set(coupled)].slice(0, 6) } : {}),
+    };
+  });
 }

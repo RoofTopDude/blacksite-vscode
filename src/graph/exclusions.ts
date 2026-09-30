@@ -44,6 +44,9 @@ export interface ExclusionPolicy {
   /** Dot-directory names to index anyway, stored without the leading dot and
       lower-cased — see normalizeAllowlistEntry. */
   allowlist: ReadonlySet<string>;
+  /** Discovery honours .gitignore (git-discovery.ts). Optional so existing
+      callers and tests that build a policy by hand keep today's behavior. */
+  respectGitignore?: boolean;
 }
 
 /** The policy in force when nothing is configured: the dot rule on, nothing
@@ -79,13 +82,18 @@ export function normalizeAllowlistEntry(raw: unknown): string | null {
 export function exclusionPolicy(config: {
   excludeDotDirectories: boolean;
   dotDirectoryAllowlist: readonly string[];
+  respectGitignore?: boolean;
 }): ExclusionPolicy {
   const allowlist = new Set<string>();
   for (const entry of config.dotDirectoryAllowlist) {
     const normalized = normalizeAllowlistEntry(entry);
     if (normalized) allowlist.add(normalized);
   }
-  return { excludeDotDirectories: config.excludeDotDirectories === true, allowlist };
+  return {
+    excludeDotDirectories: config.excludeDotDirectories === true,
+    allowlist,
+    ...(config.respectGitignore === true ? { respectGitignore: true } : {}),
+  };
 }
 
 /** Whether one *directory* segment is excluded under `policy`.
@@ -144,5 +152,8 @@ export function buildExcludeGlob(policy: ExclusionPolicy): string {
     at an unchanged map and concluding the feature is broken. */
 export function exclusionPolicyKey(policy: ExclusionPolicy): string {
   const allowed = [...policy.allowlist].sort().join(",");
-  return `dot:${policy.excludeDotDirectories ? 1 : 0}|allow:${allowed}`;
+  /* Appended only when on, so a hand-built policy (tests, pure helpers) keys
+     exactly as before; the corpus a gitignore-aware scan produces is a
+     different file set, so it must key differently. */
+  return `dot:${policy.excludeDotDirectories ? 1 : 0}|allow:${allowed}${policy.respectGitignore ? "|gi:1" : ""}`;
 }

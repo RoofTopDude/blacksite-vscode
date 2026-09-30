@@ -22,13 +22,22 @@ a call re-asking what they already answer. That is the single most common wasted
 
 ## The five beats
 
-**1. Orient — `map_overview`.** Start broad or architectural work here: project boundaries,
-major areas, dependency hubs, cross-service flows, structural findings (cycles, orphans,
+**1. Orient — `map_overview`.** Start broad or architectural work here: the codebases in the
+workspace (across every open folder) and what each depends on, project boundaries, major
+areas, dependency hubs, cross-service flows, structural findings (cycles, orphans,
 single-access pockets), recent notes. One call. Every section is a ranked top-N, not an
 exhaustive list — treat a short list as "the top few", not "all there is".
 
+Two findings deserve attention when present. **Imports no manifest declares** means code in
+one project reaches into another without a declared dependency — usually a path alias or a
+relative import across a package boundary. **Declared dependencies with no imports** is dead
+weight in a manifest, or a dependency used only in a way the index cannot see. And a codebase
+listed with `hiddenCouplingWith` keeps changing in the same commits as another codebase with no
+import, route, or declared dependency between them: treat that as a relationship to understand
+before changing either side.
+
 **2. Locate — `map_find`.** Turn an area the overview named into actual files. Filter by
-area, glob, language, connectivity, or churn; rank by what matters — `dependents` to find
+codebase, area, glob, language, connectivity, or churn; rank by what matters — `dependents` to find
 the risky files, `churn` to find the active ones. Prefer this over globbing the filesystem:
 it answers with the index's knowledge of each file, not just a path list.
 
@@ -44,6 +53,12 @@ graph transitively and tells you how far the change actually reaches and into wh
 **4. Trace — `map_path`.** When you know the two ends of a behaviour but not the middle,
 this returns the concrete chains between two files across import, service, and symbol layers.
 Use it instead of guessing at the wiring or grepping your way along it.
+
+Imports between packages resolve through the workspace itself: `import "@acme/ui"`, a Rust
+`use sibling_crate::…`, or a Python package installed from another folder lands on the source
+file in the workspace, including across workspace folders. Add `history` to `layers` when the
+question is "what else tends to change with this" — git co-change is undirected and catches
+coupling that no import states (`map_relationships` lists it per file as `changedWith`).
 
 **5. Record — `map_note_*`.** See the `map-notes` skill; after an edit a note is required.
 

@@ -53,6 +53,11 @@ export const RELATIONSHIP_EDGE_COLORS: Partial<Record<EdgeKind, number>> = {
   ticket_scope: 0x5b8def,
   ticket_blocked: 0xff8a65,
   ticket_overlap: 0xe9a8ff,
+  /* A declared dependency is structure, not traffic: a pale neutral that sits
+     behind the typed routes. Co-change is a warm rose, reserved for coupling
+     the code itself does not state. */
+  project_ref: 0xcbd5e1,
+  cochange: 0xf472b6,
 };
 
 /** Queue state, not file ownership, is the Work lens' primary colour signal. */
@@ -160,9 +165,49 @@ const MUDDY_HUE_GAP_WIDTH = 20;
     carefully (a previous, wider glow halo blew out into a white glare once
     already). */
 export function folderColor(dir: string): number {
-  const raw = hashString(dir) % (360 - MUDDY_HUE_GAP_WIDTH);
-  const hue = raw < MUDDY_HUE_GAP_START ? raw : raw + MUDDY_HUE_GAP_WIDTH;
-  return hslToRgb(hue, 0.62, 0.63);
+  const codebase = codebaseForDir(dir);
+  if (codebase === null) return hslToRgb(hueFor(dir), 0.62, 0.63);
+  /* Hierarchical color: every folder of a codebase shares its hue family, and
+     varies lightness, saturation, and a few degrees of hue within it — so at
+     file level a star's color says which codebase it belongs to. */
+  const hue = hueFor(codebase);
+  if (dir === codebase) return hslToRgb(hue, 0.62, 0.63);
+  const h = hashString(dir);
+  const shift = (h % 29) - 14;
+  const lightness = 0.54 + ((h >>> 5) % 18) / 100;
+  const saturation = 0.5 + ((h >>> 11) % 24) / 100;
+  return hslToRgb((hue + shift + 360) % 360, saturation, lightness);
+}
+
+function hueFor(key: string): number {
+  const raw = hashString(key) % (360 - MUDDY_HUE_GAP_WIDTH);
+  return raw < MUDDY_HUE_GAP_START ? raw : raw + MUDDY_HUE_GAP_WIDTH;
+}
+
+/* Codebase keys (paths) for hierarchical color, longest first. Set from the
+   host hierarchy; with fewer than two codebases there is no family to show and
+   folders keep their own hues exactly as before. */
+let codebaseKeys: string[] = [];
+
+/** Register the workspace's codebases. Returns true when the set changed, so
+    the caller can force the renderer to recompute tints. */
+export function setColorCodebases(keys: readonly string[]): boolean {
+  const next = [...new Set(keys)].sort((a, b) => b.length - a.length || a.localeCompare(b));
+  if (next.length === codebaseKeys.length && next.every((key, i) => key === codebaseKeys[i])) return false;
+  codebaseKeys = next;
+  return true;
+}
+
+function codebaseForDir(dir: string): string | null {
+  if (codebaseKeys.length < 2) return null;
+  for (const key of codebaseKeys) {
+    if (key === ".") {
+      if (dir === ".") return key;
+      continue;
+    }
+    if (dir === key || dir.startsWith(`${key}/`)) return key;
+  }
+  return null;
 }
 
 /** Blend two 0xRRGGBB colors; t=0 → a, t=1 → b. */

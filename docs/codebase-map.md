@@ -109,7 +109,39 @@ independent lenses coexist without fighting.
 
 ## 3. Host indexing pipeline
 
-`graph/graph-indexer.ts`, `_rebuildOnce()`:
+Since 1.30 the heavy part of a rebuild runs as a job (`graph/index-job.ts`) in a
+background worker (`graph/worker/graph-worker.ts`, bundled to `out/graph-worker.js`,
+started through `graph/graph-worker-client.ts`, which falls back to running the
+same job inline when no worker is available). `GraphIndexer` keeps what needs the
+VS Code API or is cheap: discovery, git, the watcher, the small incremental pass,
+and the render projection. The steps below describe the job's content; where it
+changed in 1.30 the step says so.
+
+- **Discovery** honours `.gitignore` (`graph/git-discovery.ts`): one
+  `git ls-files -co --exclude-standard` per repository, roots grouped by toplevel;
+  non-git roots use `findFiles` as before. New watcher paths are checked with
+  `git check-ignore --stdin` before they are admitted.
+- **Facts** (`graph/file-facts.ts`): everything resolution needs from a file's
+  content — import specifiers, doc links, C#/PHP/Python declarations, tsconfig,
+  package.json, Cargo, pyproject — extracted once and cached per file
+  (mtime+size) in `.blacksite/graph-facts.json`. Resolution
+  (`graph/scan-pipeline.ts`) runs on facts, so a warm start re-reads only changed
+  files and the incremental pass never re-reads whole-language corpora.
+- **Workspace packages** (`graph/workspace-packages.ts`): bare specifiers that
+  name a package declared in the corpus resolve to its source (package.json
+  `exports`/`imports`/`main`/`types`/`source`, dist→src twins), Rust sibling
+  crates resolve by crate name, and Python source roots come from
+  pyproject/setup.cfg — across workspace folders.
+- **Layout covers every indexed file**, not just the render sample, and
+  `GraphIndexer.nodeIndex()` exposes those nodes (with `codebase`) to the
+  gateway and to scope fill-in.
+- **Relationships** run as their own job (`graph/relationship-job.ts`), cached
+  against a corpus fingerprint in `.blacksite/graph-relationships.json`.
+- **Git** runs one `git log` per repository (`collectGitHistory`), which also
+  yields per-commit file sets for co-change (`graph/cochange.ts`).
+
+`graph/graph-indexer.ts`, `_rebuildOnce()` (pre-1.30 description, still accurate
+for the order of work):
 
 1. **Enumerate** — `vscode.workspace.findFiles` per root, excluding
    `node_modules/.git/dist/out/build/...`, filtered to code + docs/config
@@ -426,12 +458,48 @@ a neutral baseline rather than looking uniformly dormant.
 
 ---
 
-## 9. Persistence
+## 9. Hierarchy, scope, and the Systems overview (1.30)
+
+`graph/hierarchy.ts` (cached by `graph/hierarchy-snapshot.ts`) builds root →
+codebase → project → area over the whole index with true file counts, and
+aggregates relationships per level — imports, service routes, co-change, and
+manifest `project_ref`s — plus a `systems` level that joins exactly what the
+Systems overview draws (codebases, else workspace folders). It also compares
+declared project references with actual imports (`declaredUnused`,
+`usedUndeclared`) and flags co-change nothing structural explains
+(`unexplained`, drawn dashed as hidden coupling). It reaches the webview as
+`graph_hierarchy` and the agent through `map_overview`.
+
+The webview side is `lib/graph/scope.ts`: a `scope` breadcrumb and a mode
+(`systems`, `focus`, `all`). `computeFolds()` maps each drawn file to the group it
+is drawn as — codebases in Systems; siblings of the scope folded to their first
+group off the scope's path; inside the scope, a greedy expansion that keeps the
+drawn count under `display.focusBudget` while keeping the selection and live
+agent activity expanded. `deriveScopedGraph()` (view-model) turns that into the
+display graph: folded groups are `kind: "cluster"` super-nodes with `groupLevel`
+and `groupLabel`, file edges remap onto them, and between two groups the host's
+corpus-wide group edges replace the sampled remap. Hand-collapsed folders
+(`collapsedClusters`) still work exactly as in §4. When a scoped group has files
+the global render sample dropped, the store asks for them
+(`request_scope_detail` → `scope_detail`) and merges them into `nodes`.
+
+Incremental index passes reach the webview as `graph_delta` patches keyed by
+`seq`/`baseSeq`; a surface holding any other generation asks for a refresh.
+Relationships, structure, symbol edges, and language-server status have their own
+messages instead of re-posting `graph_state`.
+
+The panels (`apps/graph/panels/`): `SearchBar` (with `ScopeBar`), `Outline`,
+`Inspector` (tabs over the existing cards, plus `GroupCard`), `MapControls`,
+`Legend`, `LabelsOverlay`, `Minimap`, `StatusChips`.
+
+## 10. Persistence
 
 `store.ts` persists to webview `localStorage`:
 
-- `blacksite.map.display` — `display` options, `symbolsEnabled`,
-  `collapsedClusters`, `filter`. (Search is deliberately excluded so a stale
+- `blacksite.map.display` — `display` options (including `focusBudget`,
+  `showCochange`, `showProjectRefs`), `symbolsEnabled`, `collapsedClusters`,
+  `filter`, and — once the landing rule or the user chose one — `scope` and
+  `scopeMode`. (Search is deliberately excluded so a stale
   filter from a past session doesn't silently dim a different browsing session.)
 - `blacksite.map.camera` — camera position, trailing-debounced (300 ms) so a
   pan gesture doesn't thrash `localStorage`.
@@ -441,7 +509,7 @@ Host config (`blacksite.graph.*`): `traceFadeSeconds`, `maxNodes`,
 
 ---
 
-## 10. Enterprise-scale visual disclosure
+## 11. Enterprise-scale visual disclosure
 
 The Map uses semantic levels of detail instead of treating every relationship
 as equally useful at every zoom.
@@ -558,16 +626,15 @@ ids ride in the plan summary the agent sees each turn, and render in the Plans
 panel as chips that open the file or fly the Map's camera to its star via
 `GraphProvider.revealNote`.
 
-Current scale boundary: adaptive rendering is lossless with respect to the
-currently rendered projection, but it is not yet a canonical full-corpus
-adjacency index. When configured render/index caps truncate a workspace, the UI
-discloses that state. Building and querying imports over every indexed file
-before deriving the render sample remains the next host-side hardening step for
-research-grade whole-corpus claims.
+Scale boundary: imports are resolved and laid out over every indexed file, and
+the agent's queries read that full node index. The render sample is a
+projection of it; scoping into a group fetches the group's files the sample
+dropped (§9). What remains capped is the index itself
+(`maxIndexedFiles`/profile), which the UI discloses when it truncates.
 
 ---
 
-## 11. File map
+## 12. File map
 
 | Concern | File |
 | --- | --- |
@@ -593,11 +660,21 @@ research-grade whole-corpus claims.
 | Agent dispatch surface (all `graph.*` ops) | `src/graph-agent-gateway.ts` |
 | Pure transitive queries (impact / routes / node search) | `src/graph/map-queries.ts` |
 | Structural roles (cycles, orphans, pockets, bridges) | `src/graph/structural-analysis.ts`, `src/graph/structural-snapshot.ts` |
+| Background worker, job runner, jobs | `src/graph/worker/graph-worker.ts`, `src/graph/graph-worker-client.ts`, `src/graph/index-job.ts`, `src/graph/relationship-job.ts` |
+| Per-file facts cache, facts-based resolution | `src/graph/file-facts.ts`, `src/graph/scan-pipeline.ts` |
+| Git-aware discovery | `src/graph/git-discovery.ts` |
+| Workspace packages, crates, Python roots | `src/graph/workspace-packages.ts` |
+| Co-change | `src/graph/cochange.ts` |
+| Hierarchy and group relationships | `src/graph/hierarchy.ts`, `src/graph/hierarchy-snapshot.ts` |
+| Run footprints, reference links | `src/graph/run-footprints.ts`, `src/graph/reference-links.ts` |
+| Scope and focus-budget folding | `src/webview/react/lib/graph/scope.ts` |
+| Map panels | `src/webview/react/apps/graph/panels/*.tsx` |
+| Scale fixture generator | `scripts/gen-map-fixture.mjs` |
 | Tests | `tests/unit/graph-*.spec.ts` |
 
 ---
 
-## 12. Staged next: history playback
+## 13. Staged next: history playback
 
 The one enhancement not yet built. Traces are currently **ephemeral** (buffered
 briefly, fade-pruned by `traceFadeSeconds`). A playback scrubber needs:

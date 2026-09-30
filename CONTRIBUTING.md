@@ -23,7 +23,7 @@ sprawling ones may sit.
 
 ## Setup
 
-Requires Node 22 and VS Code 1.85+.
+Requires Node 22 and VS Code 1.139+.
 
 ```sh
 npm install

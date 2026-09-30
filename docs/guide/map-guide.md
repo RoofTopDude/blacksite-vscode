@@ -98,6 +98,56 @@ touches, which is usually the view you actually wanted.
 
 ---
 
+## Large and multi-codebase workspaces
+
+A workspace with tens of thousands of files, or several codebases across several folders, is not
+readable as one star field. For those the map opens on the **Systems overview**: one node per
+codebase, sized by how many files it holds, joined by the relationships between them — imports,
+API routes, events, shared data, dependencies declared in manifests, and **hidden coupling** (dashed:
+two codebases keep changing in the same commits, but nothing in the code connects them). Smaller
+workspaces open on files, as before; `blacksite.graph.landingView` sets this explicitly.
+
+From there you work inward:
+
+| Action | How |
+| --- | --- |
+| Step into a codebase, project, or area | Double-click its node, or pick it in the outline |
+| Step back out | The breadcrumb at the top left, or **Backspace** |
+| Switch view | **Systems**, **Focus**, or **All files** under the breadcrumb |
+| Find a file anywhere | Search — results beyond the drawn sample appear under *Beyond the drawn sample*, and picking one opens its codebase |
+
+Inside a scope the map draws up to the **focus budget** (Display & analysis → Advanced, 2,500 by
+default). When there is more than that, areas fold into single stars; the area you select and
+wherever the agent is working stay unfolded. The folded star says how many files it stands for —
+the true count, including files not drawn yet — and stepping into it draws them all.
+
+Star colors follow the hierarchy: every folder of a codebase shares that codebase's hue family, so
+at file level you can still tell which codebase a star belongs to.
+
+### The outline
+
+The **Outline** panel on the left lists every folder, codebase, project, and area with its file
+count. Each row also shows open tickets, map notes, a live dot while the agent is working there, and
+a thin bar for recent change heat. Click a row to scope the map to it; hover to preview it on the
+canvas. When there are findings, **Dependency findings** lists cross-project imports no manifest
+declares and declared dependencies nothing imports.
+
+### The inspector
+
+Selecting anything opens the inspector at the bottom left, with tabs:
+
+- **Overview** — what it is: role, size, links, change history, and for a group its languages and
+  true file count.
+- **Relations** — grouped by kind and by counterpart; links into another codebase are marked.
+- **Work** — open tickets covering it, and **File a ticket here**.
+- **Activity** — Execution Runs that touched it, with **Replay on map** and **Open run**.
+- **Notes** — map notes on it or inside it; **Open in timeline** opens the Notes timeline filtered
+  to it.
+- **Refs** — documents you attached to conversations that name it, by path, by an unambiguous file
+  name, or by an API route it serves.
+
+---
+
 ## Live agent traces
 
 When the agent works, the map shows it. Files it reads pulse; files it edits flare; the working
@@ -128,18 +178,21 @@ See [Tickets & the Board](tickets-and-board.html) for how territory is recorded.
 The map is the agent's structural sense. These are the tools it has against it, and knowing them
 tells you what to ask for:
 
-**`map_overview`** — orient in the whole workspace. Detected projects and project-to-project
-references, major code areas, dependency hubs, cross-service flows, structural findings (cross-project
+**`map_overview`** — orient in the whole workspace. The codebases across every open folder and what
+each depends on, hidden coupling between them, dependency findings (imports no manifest declares,
+declared dependencies nothing imports), detected projects and project-to-project references, major
+code areas, dependency hubs, cross-service flows, structural findings (cross-project
 cycles, orphan files, single-access pockets), index coverage, and recent notes. Every section is
 ranked and capped, so it is the top of a list rather than the whole list.
 
-**`map_find`** — enumerate files with filters and ranking. "Which files are in `src/graph`", "the
+**`map_find`** — enumerate files with filters and ranking, optionally within one codebase. "Which files are in `src/graph`", "the
 most-connected files under this area", "Python files with no dependents", "what has churned most
 recently here". Each result carries its area, language, dependent/dependency counts, size, and
 recent-commit count.
 
 **`map_relationships`** — one hop out from a file: what it imports, what imports it, cross-service
-relationships with evidence, and attached notes.
+relationships with evidence, the files it keeps changing together with (`changedWith`), and attached
+notes.
 
 **`map_impact`** — the transitive blast radius, N hops out, with the concrete edge chain connecting
 each file back to the seed. Grouped by depth and by area, so you can see immediately whether a change
@@ -207,7 +260,27 @@ You control the caps with `blacksite.graph.performanceProfile`:
 The advanced caps — `maxIndexedFiles`, `maxRenderedStars`, `maxRelationshipEdges` — each default to
 `0`, meaning "use the profile". Set them only when you need something the profiles do not give you.
 
+### How indexing stays out of the way
+
+Reading, extracting, resolving, and laying out a large workspace happens in a background worker, so
+chat and the agent stay responsive while the map rebuilds. What each file contributes is cached in
+`.blacksite/graph-facts.json`, so reopening a workspace re-reads only the files that changed; the
+service-relationship pass is cached the same way. While the map is open, an edit sends only what
+changed rather than the whole graph.
+
+Imports between packages resolve through the workspace itself: `import "@acme/ui"` reaches that
+package's source through its `package.json` (`exports`, `main`, `types`, or `src/index`), a Rust
+`use sibling_crate::…` reaches the sibling crate, and a Python project's declared source root
+(`src/` layouts) is searched for absolute imports — across workspace folders too.
+
 ### What the map does not index
+
+By default the map follows your `.gitignore` (`blacksite.graph.respectGitignore`): it indexes the
+files git tracks plus untracked files that are not ignored. Generated clients, vendored trees, and
+build output your repository ignores stay off the map. When this applies, the command panel says
+*Following .gitignore* with an **Include ignored** button. Folders that are not git repositories are
+scanned as before.
+
 
 Directories whose name begins with a dot hold tooling state, not authored source, and are skipped
 by default (`blacksite.graph.excludeDotDirectories`). This is usually the single biggest thing you

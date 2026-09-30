@@ -17,12 +17,26 @@ import type {
   SymbolRelation,
   TraceEvent,
   LanguageSupportStatus,
+  MapHierarchy,
+  MapReferenceLink,
+  MapRunTouch,
 } from "./protocol";
+import {
+  DEFAULT_FOCUS_BUDGET,
+  computeFolds,
+  indexHierarchy,
+  isHierarchyGroupId,
+  landingMode,
+  validScope,
+  type GroupIndex,
+  type ScopeMode,
+} from "./scope";
 import { isDepthChannel, type DepthChannel } from "./depth";
 import { PULSE_MS, pruneTraces } from "./traces";
 import { edgeArcMidpoint } from "./edges";
 import { fileRole } from "./file-role";
 import { relationKindLabel } from "@/lib/notes/categories";
+import { setColorCodebases } from "./colors";
 import type { Camera } from "./camera";
 
 export interface SymbolExpansion {
@@ -142,6 +156,14 @@ export interface GraphDisplayOptions {
   depthChannel: DepthChannel;
   /** 0 = flat (exactly the pre-depth rendering), 1 = full. */
   depthIntensity: number;
+  /** How many stars/groups a focused (scoped) view aims to draw before it
+      folds areas into super-nodes. The host render cap stays the ceiling. */
+  focusBudget: number;
+  /** File-level co-change links ("changed together in N commits"). Off by
+      default; group-level hidden coupling shows regardless. */
+  showCochange: boolean;
+  /** Manifest-declared dependencies between projects. */
+  showProjectRefs: boolean;
 }
 
 export const DEFAULT_DISPLAY_OPTIONS: GraphDisplayOptions = {
@@ -165,6 +187,9 @@ export const DEFAULT_DISPLAY_OPTIONS: GraphDisplayOptions = {
   showCulDeSacs: false,
   depthChannel: "nesting",
   depthIntensity: 1,
+  focusBudget: DEFAULT_FOCUS_BUDGET,
+  showCochange: false,
+  showProjectRefs: true,
 };
 
 /** Coerce persisted/incoming display options so a stale localStorage blob (or a
@@ -176,6 +201,11 @@ export function normalizeDisplayOptions(display: GraphDisplayOptions): GraphDisp
     ...display,
     depthChannel: isDepthChannel(display.depthChannel) ? display.depthChannel : DEFAULT_DISPLAY_OPTIONS.depthChannel,
     depthIntensity: Number.isFinite(intensity) ? Math.max(0, Math.min(1, intensity)) : DEFAULT_DISPLAY_OPTIONS.depthIntensity,
+    focusBudget: Number.isFinite(Number(display.focusBudget))
+      ? Math.max(200, Math.min(20_000, Math.round(Number(display.focusBudget))))
+      : DEFAULT_DISPLAY_OPTIONS.focusBudget,
+    showCochange: display.showCochange === true,
+    showProjectRefs: display.showProjectRefs !== false,
   };
 }
 
@@ -368,6 +398,32 @@ export interface GraphViewState {
       in the common case. Derived — never sent by the host. */
   displayNodes: GraphNode[];
   displayEdges: GraphEdge[];
+  /** file id → the folded group it is drawn as (Structure lens). Live
+      activity and traces on a folded file light up that group instead. */
+  displayFoldOf: ReadonlyMap<string, string>;
+  /** Host index generation this state reflects (graph_state / graph_delta). */
+  seq: number;
+  /** Set when a graph_delta arrived for a generation this view does not hold;
+      the store answers by asking the host for full state. */
+  needsRefresh: boolean;
+  /** Root → codebase → project → area over the whole index (host-computed). */
+  hierarchy: MapHierarchy | null;
+  /** Breadcrumb of group ids; [] = the whole workspace. */
+  scope: string[];
+  scopeMode: ScopeMode;
+  /** Whether the landing rule already chose a mode for this session (or the
+      user's persisted choice was restored), so later hierarchies don't override it. */
+  landingApplied: boolean;
+  /** Groups whose off-sample files have been fetched into `nodes`. */
+  detailGroups: string[];
+  cochangeEdges: GraphEdge[];
+  gitignoreApplied: boolean;
+  indexingPhase: string | null;
+  indexingProgress: number | null;
+  /** Inspector host context for the current selection. */
+  context: { requestId: number; runs: MapRunTouch[]; references: MapReferenceLink[] } | null;
+  /** Host corpus search results (files beyond the render sample). */
+  corpusSearch: { query: string; requestId: number; results: Array<{ id: string; dir: string; codebase?: string }> } | null;
 }
 
 /** A named, persisted snapshot of camera + display/filter/collapse state, so a
@@ -383,6 +439,9 @@ export interface SavedView {
   display: GraphDisplayOptions;
   filter: GraphFilter;
   collapsedClusters: string[];
+  /** Scope and mode at save time (absent on views saved before 1.30). */
+  scope?: string[];
+  scopeMode?: ScopeMode;
 }
 
 export const DEFAULT_CONFIG: GraphConfig = {
@@ -445,6 +504,20 @@ export function initialState(): GraphViewState {
     collapsedClusters: [],
     displayNodes: [],
     displayEdges: [],
+    displayFoldOf: new Map(),
+    seq: 0,
+    needsRefresh: false,
+    hierarchy: null,
+    scope: [],
+    scopeMode: "all",
+    landingApplied: false,
+    detailGroups: [],
+    cochangeEdges: [],
+    gitignoreApplied: false,
+    indexingPhase: null,
+    indexingProgress: null,
+    context: null,
+    corpusSearch: null,
   };
 }
 
@@ -607,6 +680,8 @@ export function edgeKindVisible(kind: GraphEdge["kind"], display: GraphDisplayOp
     case "ticket_scope":
     case "ticket_blocked":
     case "ticket_overlap": return display.lens === "work";
+    case "project_ref": return display.showProjectRefs;
+    case "cochange": return display.showCochange;
     default: return false;
   }
 }
@@ -1057,7 +1132,12 @@ export function deriveWorkGraph(nodes: GraphNode[], tickets: readonly MapTicket[
 /** Refresh displayNodes/displayEdges after nodes/edges/collapse change. */
 export function withDisplayGraph(state: GraphViewState): GraphViewState {
   const sourceEdges = state.display.lens === "services" ? state.relationshipEdges : state.edges;
-  const { displayNodes, displayEdges } = deriveDisplayGraph(state.nodes, sourceEdges, state.collapsedClusters, state.display, state.tickets);
+  const folded = state.display.lens === "files" && (state.hierarchy || state.collapsedClusters.length > 0)
+    ? deriveScopedGraph(state)
+    : null;
+  const { displayNodes, displayEdges } = folded
+    ?? deriveDisplayGraph(state.nodes, sourceEdges, state.collapsedClusters, state.display, state.tickets);
+  const displayFoldOf = folded?.foldOf ?? EMPTY_FOLDS;
   const selectionExists = !state.selectedNodeId || displayNodes.some((node) => node.id === state.selectedNodeId);
   const selectedNodeId = selectionExists ? state.selectedNodeId : null;
   const hoveredNodeId = state.hoveredNodeId && displayNodes.some((node) => node.id === state.hoveredNodeId)
@@ -1066,7 +1146,168 @@ export function withDisplayGraph(state: GraphViewState): GraphViewState {
   const filter = selectedNodeId || state.filter.isolateDepth === 0
     ? state.filter
     : { ...state.filter, isolateDepth: 0 };
-  return { ...state, displayNodes, displayEdges, selectedNodeId, hoveredNodeId, filter };
+  return { ...state, displayNodes, displayEdges, displayFoldOf, selectedNodeId, hoveredNodeId, filter };
+}
+
+const EMPTY_FOLDS: ReadonlyMap<string, string> = new Map();
+
+/** Group id → the file ids folded into it, for the current display graph. */
+export interface ScopedGraph {
+  displayNodes: GraphNode[];
+  displayEdges: GraphEdge[];
+  foldOf: ReadonlyMap<string, string>;
+}
+
+let groupIndexCache: { hierarchy: MapHierarchy | null; index: GroupIndex } = { hierarchy: null, index: indexHierarchy(null) };
+export function groupIndexFor(hierarchy: MapHierarchy | null): GroupIndex {
+  if (groupIndexCache.hierarchy !== hierarchy) groupIndexCache = { hierarchy, index: indexHierarchy(hierarchy) };
+  return groupIndexCache.index;
+}
+
+/** Files the focus budget should keep expanded: the selection and whatever
+    the agent is touching right now. */
+function interestSet(state: GraphViewState): Set<string> {
+  const out = new Set<string>();
+  if (state.selectedNodeId) out.add(state.selectedNodeId);
+  for (const live of state.liveActivity) out.add(live.path);
+  return out;
+}
+
+const GROUP_EDGE_LEVELS = new Set(["root", "codebase", "project"]);
+/* Codebase and folder groups can sit side by side (Systems view, siblings of
+   a scope); the host's "systems" edges are aggregated for exactly that mix. */
+const SYSTEMS_LEVELS = new Set(["root", "codebase"]);
+
+/** Which host edge level joins two displayed groups, if any. */
+function hostEdgeLevel(a: string | undefined, b: string | undefined): string | null {
+  if (!a || !b) return null;
+  if (SYSTEMS_LEVELS.has(a) && SYSTEMS_LEVELS.has(b)) return "systems";
+  return a === b && GROUP_EDGE_LEVELS.has(a) ? a : null;
+}
+
+/** The Structure lens's display graph under scope + budget folding. Each
+    group a file folds into becomes one super-node (kind "cluster", so the
+    renderer's aggregate path draws it), file edges are remapped onto the
+    visible endpoints, and between two groups of the same level the host's
+    true, corpus-wide group edges replace the remapped (sampled) ones. */
+export function deriveScopedGraph(state: GraphViewState): ScopedGraph {
+  const index = groupIndexFor(state.hierarchy);
+  const { foldOf } = computeFolds(state.nodes, index, { scope: state.scope, mode: state.scopeMode }, {
+    budget: state.display.focusBudget,
+    interest: interestSet(state),
+    collapsedDirs: new Set(state.collapsedClusters),
+  });
+  const withCochange = state.display.showCochange ? [...state.edges, ...state.cochangeEdges] : state.edges;
+  if (foldOf.size === 0) return { displayNodes: state.nodes, displayEdges: withCochange, foldOf };
+
+  const agg = new Map<string, { sx: number; sy: number; size: number; count: number; churn: number; lastAt: number; neighborhoods: Map<string, number>; codebase?: string }>();
+  const displayNodes: GraphNode[] = [];
+  for (const node of state.nodes) {
+    const group = foldOf.get(node.id);
+    if (!group) {
+      displayNodes.push(node);
+      continue;
+    }
+    const entry = agg.get(group) ?? { sx: 0, sy: 0, size: 0, count: 0, churn: 0, lastAt: 0, neighborhoods: new Map<string, number>(), ...(node.codebase ? { codebase: node.codebase } : {}) };
+    entry.sx += node.x;
+    entry.sy += node.y;
+    entry.size += node.sizeBytes;
+    entry.count += 1;
+    entry.churn += node.churn ?? 0;
+    entry.lastAt = Math.max(entry.lastAt, node.lastCommitAt ?? 0);
+    if (node.neighborhood) entry.neighborhoods.set(node.neighborhood, (entry.neighborhoods.get(node.neighborhood) ?? 0) + 1);
+    agg.set(group, entry);
+  }
+  const groupLevelOf = new Map<string, string>();
+  for (const [id, entry] of agg) {
+    const group = index.byId.get(id);
+    const neighborhood = [...entry.neighborhoods.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0];
+    const level = group?.level ?? "area";
+    groupLevelOf.set(id, level);
+    displayNodes.push({
+      id,
+      dir: group ? group.key : id.slice(1),
+      lang: "",
+      sizeBytes: entry.size,
+      inDegree: 0,
+      outDegree: 0,
+      x: entry.sx / entry.count,
+      y: entry.sy / entry.count,
+      z: 1,
+      kind: "cluster",
+      /* The host's true count — a folded codebase says "12,408 files" even
+         when only part of it is in the render sample. */
+      fileCount: Math.max(group?.fileCount ?? 0, entry.count),
+      churn: entry.churn || undefined,
+      lastCommitAt: entry.lastAt || undefined,
+      ...(neighborhood ? { neighborhood } : {}),
+      ...(entry.codebase ? { codebase: entry.codebase } : {}),
+      ...(group && level !== "area" ? { groupLevel: level, groupLabel: group.label } : {}),
+    });
+  }
+
+  const endpoint = (id: string): string => foldOf.get(id) ?? id;
+  const merged = new Map<string, GraphEdge>();
+  for (const edge of withCochange) {
+    if (!CLUSTER_REMAPPABLE_KINDS.has(edge.kind) && edge.kind !== "cochange") continue;
+    const from = endpoint(edge.from);
+    const to = endpoint(edge.to);
+    if (from === to) continue;
+    /* Group pairs the host aggregated get its corpus-wide edges below instead. */
+    if (hostEdgeLevel(groupLevelOf.get(from), groupLevelOf.get(to)) && (edge.kind === "import" || edge.kind === "cochange")) continue;
+    const key = `${edge.kind}|${from}->${to}`;
+    const existing = merged.get(key);
+    if (existing) {
+      existing.occurrenceCount = (existing.occurrenceCount ?? 1) + 1;
+      continue;
+    }
+    merged.set(key, { id: `${edge.kind === "import" ? "imp" : edge.kind}:${from}->${to}`, from, to, kind: edge.kind, occurrenceCount: 1 });
+  }
+  const displayed = new Set(agg.keys());
+  for (const edge of state.hierarchy?.edges ?? []) {
+    if (!displayed.has(edge.from) || !displayed.has(edge.to)) continue;
+    if (hostEdgeLevel(groupLevelOf.get(edge.from), groupLevelOf.get(edge.to)) !== edge.level) continue;
+    if (edge.kind === "cochange" && !edge.unexplained && !state.display.showCochange) continue;
+    merged.set(`grp|${edge.id}`, {
+      id: edge.id,
+      from: edge.from,
+      to: edge.to,
+      kind: edge.kind,
+      occurrenceCount: edge.count,
+      ...(edge.confidence !== undefined ? { confidence: edge.confidence } : {}),
+      ...(edge.unexplained ? { unexplained: true } : {}),
+      ...(edge.evidence ? { evidence: edge.evidence, label: edge.evidence[0] } : {}),
+    });
+  }
+  const displayEdges = [...merged.values()];
+  const inDegree = new Map<string, number>();
+  const outDegree = new Map<string, number>();
+  for (const edge of displayEdges) {
+    outDegree.set(edge.from, (outDegree.get(edge.from) ?? 0) + 1);
+    inDegree.set(edge.to, (inDegree.get(edge.to) ?? 0) + 1);
+  }
+  for (const node of displayNodes) {
+    if (!isClusterNode(node)) continue;
+    node.inDegree = inDegree.get(node.id) ?? 0;
+    node.outDegree = outDegree.get(node.id) ?? 0;
+  }
+  return { displayNodes, displayEdges, foldOf };
+}
+
+/** Apply the landing rule once per session: Systems for a large
+    multi-codebase workspace, a budgeted focus view for one large codebase,
+    plain files otherwise (blacksite.graph.landingView overrides). */
+export function applyLanding(state: GraphViewState): GraphViewState {
+  if (state.landingApplied || !state.hierarchy) return state;
+  const decision = landingMode(state.hierarchy, state.config.landingView, state.display.focusBudget);
+  return { ...state, landingApplied: true, scope: [], scopeMode: decision.mode };
+}
+
+/** Enter a group: scope to it (its ancestor chain) and fold by budget. */
+export function setScope(state: GraphViewState, scope: string[], mode: ScopeMode = "focus"): GraphViewState {
+  const index = groupIndexFor(state.hierarchy);
+  const next = validScope(scope, index);
+  return withDisplayGraph({ ...state, scope: next, scopeMode: next.length === 0 && mode === "focus" ? state.scopeMode : mode, landingApplied: true, selectedNodeId: null });
 }
 
 /** Toggle whether a cluster dir is collapsed; expanding drops any stale dirs. */
@@ -1109,6 +1350,7 @@ export function applySavedView(state: GraphViewState, view: SavedView): GraphVie
        (e.g. `dirs`) must come back well-formed, not with undefined arrays. */
     filter: { ...DEFAULT_FILTER, ...view.filter },
     collapsedClusters,
+    ...(view.scope ? { scope: validScope(view.scope, groupIndexFor(state.hierarchy)), scopeMode: view.scopeMode ?? "focus", landingApplied: true } : {}),
   });
 }
 
@@ -1164,9 +1406,14 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
       /* A selection/hover on a collapsed cluster's super-node has no file id in
          validIds; keep it as long as its cluster is still collapsed. */
       const stillValid = (id: string | null): boolean =>
-        Boolean(id) && (validIds.has(id!) || (isClusterNodeId(id!) && collapsedClusters.includes(id!.slice(1))));
+        Boolean(id) && (validIds.has(id!) || isHierarchyGroupId(id!) || (isClusterNodeId(id!) && collapsedClusters.includes(id!.slice(1))));
       return withDisplayGraph({
         ...state,
+        seq: msg.seq ?? state.seq + 1,
+        needsRefresh: false,
+        detailGroups: [],
+        cochangeEdges: msg.cochangeEdges ?? [],
+        gitignoreApplied: msg.gitignoreApplied === true,
         nodes: msg.nodes,
         // Symbol-sweep edges (call/reference/supertype) are file-to-file connections
         // like imports, so they belong in the same file-lens edge set rather than a
@@ -1201,7 +1448,62 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
       });
     }
     case "graph_indexing":
-      return { ...state, indexing: msg.indexing };
+      return {
+        ...state,
+        indexing: msg.indexing,
+        indexingPhase: msg.indexing ? msg.phase ?? state.indexingPhase : null,
+        indexingProgress: msg.indexing ? msg.progress ?? state.indexingProgress : null,
+      };
+    case "graph_delta":
+      return applyGraphDelta(state, msg);
+    case "relationships_state":
+      return withDisplayGraph({
+        ...state,
+        relationshipEdges: msg.relationshipEdges,
+        relationshipTruncated: msg.relationshipTruncated === true,
+        relationshipIndexing: msg.relationshipIndexing === true,
+        relationshipEdgeCount: msg.relationshipEdgeCount ?? msg.relationshipEdges.length,
+        relationshipTotalEdgeCount: msg.relationshipTotalEdgeCount ?? msg.relationshipEdges.length,
+      });
+    case "structure_state":
+      return {
+        ...state,
+        cyclicNeighborhoodPairs: msg.cyclicNeighborhoodPairs ?? [],
+        orphanNodeIds: msg.orphanNodeIds ?? [],
+        pocketNodeIds: msg.pocketNodeIds ?? [],
+        bridgeEdgeIds: msg.bridgeEdgeIds ?? [],
+      };
+    case "symbol_edges":
+      return withDisplayGraph({
+        ...state,
+        edges: [...state.edges.filter((edge) => edge.kind !== "call" && edge.kind !== "reference" && edge.kind !== "supertype"), ...msg.edges],
+      });
+    case "lsp_support":
+      return { ...state, lspSupport: msg.lspSupport };
+    case "graph_hierarchy": {
+      const index = groupIndexFor(msg.hierarchy);
+      const recolored = setColorCodebases(msg.hierarchy.groups
+        .filter((group) => group.level === "codebase" || group.level === "root")
+        .map((group) => group.key));
+      const next = withDisplayGraph(applyLanding({ ...state, hierarchy: msg.hierarchy, scope: validScope(state.scope, index) }));
+      /* New color families need a structural rebuild; a fresh array reference
+         is how the renderer is told. */
+      return recolored ? { ...next, displayNodes: [...next.displayNodes] } : next;
+    }
+    case "scope_detail": {
+      if (msg.seq !== state.seq || msg.nodes.length === 0) {
+        return state.detailGroups.includes(msg.groupId) ? state : { ...state, detailGroups: [...state.detailGroups, msg.groupId] };
+      }
+      const present = new Set(state.nodes.map((node) => node.id));
+      const nodes = [...state.nodes, ...msg.nodes.filter((node) => !present.has(node.id))];
+      const edgeIds = new Set(state.edges.map((edge) => edge.id));
+      const edges = [...state.edges, ...msg.edges.filter((edge) => !edgeIds.has(edge.id))];
+      return withDisplayGraph({ ...state, nodes, edges, detailGroups: [...state.detailGroups, msg.groupId] });
+    }
+    case "search_results":
+      return { ...state, corpusSearch: { query: msg.query, requestId: msg.requestId, results: msg.results } };
+    case "context_state":
+      return { ...state, context: { requestId: msg.requestId, runs: msg.runs, references: msg.references } };
     case "annotations_changed":
       return { ...state, annotations: msg.annotations };
     case "tickets_state":
@@ -1296,6 +1598,43 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
     default:
       return state;
   }
+}
+
+/** Patch nodes/edges with an incremental index pass. A delta for any other
+    base generation cannot be applied safely; flag a refresh instead. */
+export function applyGraphDelta(
+  state: GraphViewState,
+  msg: Extract<GraphHostMessage, { type: "graph_delta" }>,
+): GraphViewState {
+  if (msg.baseSeq !== state.seq) return { ...state, needsRefresh: true };
+  const removed = new Set(msg.removeNodeIds);
+  const upserts = new Map(msg.upsertNodes.map((node) => [node.id, node]));
+  const nodes: GraphNode[] = [];
+  for (const node of state.nodes) {
+    if (removed.has(node.id)) continue;
+    const next = upserts.get(node.id);
+    if (next) upserts.delete(node.id);
+    nodes.push(next ?? node);
+  }
+  nodes.push(...upserts.values());
+  const removedEdges = new Set(msg.removeEdgeIds);
+  const edges = state.edges.filter((edge) => !removedEdges.has(edge.id) && !removed.has(edge.from) && !removed.has(edge.to));
+  const edgeIds = new Set(edges.map((edge) => edge.id));
+  for (const edge of msg.addEdges) if (!edgeIds.has(edge.id)) edges.push(edge);
+  const importCount = edges.filter((edge) => edge.kind === "import").length;
+  return withDisplayGraph({
+    ...state,
+    seq: msg.seq,
+    needsRefresh: false,
+    nodes,
+    edges,
+    indexedFileCount: msg.indexedFileCount ?? state.indexedFileCount,
+    renderedNodeCount: msg.renderedNodeCount ?? nodes.length,
+    indexedImportEdgeCount: msg.indexedImportEdgeCount ?? state.indexedImportEdgeCount,
+    renderedImportEdgeCount: msg.renderedImportEdgeCount ?? importCount,
+    indexedAt: msg.indexedAt ?? state.indexedAt,
+    selectedNodeId: state.selectedNodeId && removed.has(state.selectedNodeId) ? null : state.selectedNodeId,
+  });
 }
 
 /** Optimistic, pure selection used by the store while the host validates the
@@ -1926,7 +2265,13 @@ export function clusterBackboneEdges(
   return ranked.filter((edge) => selected.has(edge.id));
 }
 
-export function graphNodeRadius(node: { inDegree: number; outDegree: number; sizeBytes?: number; kind?: string }): number {
+export function graphNodeRadius(node: { inDegree: number; outDegree: number; sizeBytes?: number; kind?: string; groupLevel?: string; fileCount?: number }): number {
+  if (node.kind === "cluster" && node.groupLevel && node.groupLevel !== "area") {
+    /* A folded codebase/project/root reads by how much code it stands for
+       (log-scaled), so a 12k-file codebase is visibly bigger than a 300-file
+       one without drowning the overview. */
+    return 7 + Math.min(15, Math.log10(1 + (node.fileCount ?? 1)) * 4.2);
+  }
   if (node.kind === "ticket") {
     /* Priority is visual weight, never hue alone. Tickets retain a clear target
        at overview distance without outgrowing their territory stars. */

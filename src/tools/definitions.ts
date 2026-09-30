@@ -2216,7 +2216,7 @@ export const GRAPH_TOOLS: ToolDefinition[] = [
   tool(
     "map_overview",
     "graph.overview",
-    "Orient yourself in the whole workspace using the Codebase Map's precomputed architecture index. Returns detected projects and project-to-project references, major code areas, dependency hubs, cross-service flows, structural findings (cross-project cycles, orphan files, single-access pockets), index coverage, and recent durable map notes. Use this before a broad or architectural change; then map_find to enumerate an area it named, map_relationships for the specific files you expect to touch, and map_impact to size what a change reaches. This is more accurate and cheaper than reconstructing repository structure with repeated globs and text searches. Every ranked section is capped by `limit` — treat it as the top of a list, not the whole list, and drill in with map_find rather than assuming what was omitted doesn't exist.",
+    "Orient yourself in the whole workspace using the Codebase Map's precomputed architecture index. Returns the codebases in the workspace (across every open folder) with what each depends on and any hidden coupling (co-change nothing structural explains), detected projects and project-to-project references, dependency findings (manifest dependencies with no imports behind them, and cross-project imports no manifest declares), major code areas, dependency hubs, cross-service flows, structural findings (cross-project cycles, orphan files, single-access pockets), index coverage, and recent durable map notes. Use this before a broad or architectural change; then map_find to enumerate an area it named, map_relationships for the specific files you expect to touch, and map_impact to size what a change reaches. This is more accurate and cheaper than reconstructing repository structure with repeated globs and text searches. Every ranked section is capped by `limit` — treat it as the top of a list, not the whole list, and drill in with map_find rather than assuming what was omitted doesn't exist.",
     {
       limit: num("Maximum entries in each ranked section (default 10, max 30)"),
     },
@@ -2230,6 +2230,7 @@ export const GRAPH_TOOLS: ToolDefinition[] = [
       contains: str("Restrict to paths containing this substring (case-insensitive)"),
       glob: str("Restrict to paths matching this glob — `**` spans directories, `*` and `?` do not (e.g. 'src/**/*.test.ts')"),
       langs: arr({ type: "string" }, "Restrict to these language buckets (file-extension based, e.g. ['ts','tsx'])"),
+      codebase: str("Restrict to one codebase, by its root path or the name map_overview lists under `codebases` (e.g. 'apps/web' or 'web')"),
       minDegree: num("Only files with at least this many total links (dependents + dependencies)"),
       minChurn: num("Only files with at least this many commits in the map's recent git window (needs the git heat layer)"),
       sortBy: enumStr(
@@ -2251,7 +2252,7 @@ export const GRAPH_TOOLS: ToolDefinition[] = [
         ["dependents", "dependencies", "both"],
       ),
       depth: num("How many hops to walk out (default 3, max 6). Depth 1 is what map_relationships already gives you."),
-      layers: arr({ type: "string" }, "Relationship layers to traverse: import, service, symbol, note. Default ['import','service','symbol']."),
+      layers: arr({ type: "string" }, "Relationship layers to traverse: import, service, symbol, note, history (files that change together in git — undirected, useful for coupling no import shows). Default ['import','service','symbol']."),
       limit: num("Max distinct files to reach before stopping (default 200, max 1000)"),
     },
   ),
@@ -2264,7 +2265,7 @@ export const GRAPH_TOOLS: ToolDefinition[] = [
       to: str("Workspace-relative path of the destination file"),
       maxHops: num("Longest chain to consider (default 5, max 8). Raise it before concluding two files are unconnected."),
       maxRoutes: num("How many distinct routes to return, shortest first (default 3, max 10)"),
-      layers: arr({ type: "string" }, "Relationship layers to traverse: import, service, symbol, note. Default ['import','service','symbol']."),
+      layers: arr({ type: "string" }, "Relationship layers to traverse: import, service, symbol, note, history (git co-change). Default ['import','service','symbol']."),
       directedOnly: bool("Follow dependency direction strictly instead of treating links as bidirectional (default false)"),
     },
     ["from", "to"],
@@ -2272,7 +2273,7 @@ export const GRAPH_TOOLS: ToolDefinition[] = [
   tool(
     "map_relationships",
     "graph.relationships",
-    "Look up how one or more files relate on the Codebase Map, one hop out: what each file imports, what imports it (imported-by), cross-service relationships (API calls, published/subscribed events, shared data/tables, config references) with the peer service and supporting evidence, the file's own map area/language/recent-commit count, and any working-memory notes attached to it. Use this to answer \"what are the relations of these files\" and to inherit prior sessions' knowledge before editing. Returns edges the map already computed from the workspace index — more reliable and cheaper than grepping for import structure. Pass workspace-relative paths (the same ids the map uses). For a change's true blast radius use map_impact instead — this tool stops at direct neighbours, and a shared module's real reach is several hops further out. On every layer, `direction: outbound` means this file depends on the peer and `inbound` means the peer depends on it. Symbol-level relations (inheritance/implements/call/reference) appear under `symbolRelations` only when the optional background symbol sweep is enabled; the top-level `symbolLayer` field reports whether it is active, and files carry `symbolRelationsUnavailable: true` when it is off — an empty `symbolRelations` then means \"not analyzed\", not \"none\".",
+    "Look up how one or more files relate on the Codebase Map, one hop out: what each file imports, what imports it (imported-by), cross-service relationships (API calls, published/subscribed events, shared data/tables, config references) with the peer service and supporting evidence, the file's own map area/codebase/language/recent-commit count, files it keeps changing together with in git (`changedWith`), and any working-memory notes attached to it. Use this to answer \"what are the relations of these files\" and to inherit prior sessions' knowledge before editing. Returns edges the map already computed from the workspace index — more reliable and cheaper than grepping for import structure. Pass workspace-relative paths (the same ids the map uses). For a change's true blast radius use map_impact instead — this tool stops at direct neighbours, and a shared module's real reach is several hops further out. On every layer, `direction: outbound` means this file depends on the peer and `inbound` means the peer depends on it. Symbol-level relations (inheritance/implements/call/reference) appear under `symbolRelations` only when the optional background symbol sweep is enabled; the top-level `symbolLayer` field reports whether it is active, and files carry `symbolRelationsUnavailable: true` when it is off — an empty `symbolRelations` then means \"not analyzed\", not \"none\".",
     {
       path: str("Workspace-relative path of a single file to inspect"),
       paths: arr({ type: "string" }, "Multiple file paths to inspect at once (use instead of `path`)"),

@@ -252,6 +252,7 @@ export function NotesApp() {
   const [scope, setScope] = useState<NoteScopeFilter>("all");
   const [category, setCategory] = useState<NoteCategoryFilter>("all");
   const [history, setHistory] = useState<Record<string, FileHistoryState>>({});
+  const [focus, setFocus] = useState<{ prefix: string; label: string } | null>(null);
 
   useEffect(() => {
     const off = onMessage((msg) => {
@@ -259,6 +260,7 @@ export function NotesApp() {
       if (msg.type === "notes_state") {
         setNotes(msg.notes);
         setWorkspaceName(msg.workspaceName || "workspace");
+        setFocus(msg.focus ?? null);
       } else if (msg.type === "file_history") {
         setHistory((current) => ({
           ...current,
@@ -277,7 +279,12 @@ export function NotesApp() {
   const openDiff = (path: string, commit: NoteFileCommit) =>
     send({ type: "open_commit_diff", path, hash: commit.hash, subject: commit.subject });
 
-  const filtered = useMemo(() => filterNotes(notes, scope, query, category), [notes, scope, query, category]);
+  const focused = useMemo(() => {
+    if (!focus) return notes;
+    const inFocus = (id?: string): boolean => Boolean(id) && (id === focus.prefix || id!.startsWith(`${focus.prefix}/`));
+    return notes.filter((note) => inFocus(note.from) || inFocus(note.to));
+  }, [notes, focus]);
+  const filtered = useMemo(() => filterNotes(focused, scope, query, category), [focused, scope, query, category]);
   const groups = useMemo(() => groupNotesByDay(filtered), [filtered]);
   const relationCount = useMemo(() => notes.filter((note) => isRelationNote(note)).length, [notes]);
 
@@ -318,6 +325,12 @@ export function NotesApp() {
               ))}
             </div>
           </div>
+          {focus && (
+            <div className="mt-1.5 flex items-center gap-2 text-xs text-muted-foreground" role="status">
+              <span>Showing notes for <strong className="font-mono text-foreground">{focus.label}</strong> ({focused.length})</span>
+              <button className="map-tool-button" onClick={() => setFocus(null)}>Show all</button>
+            </div>
+          )}
           <div className="mt-1.5 flex flex-wrap items-center gap-1" role="group" aria-label="Filter by category">
             <CategoryFilterChip value="all" active={category === "all"} onClick={() => setCategory("all")} />
             {NOTE_CATEGORIES.map((value) => (

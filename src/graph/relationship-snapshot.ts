@@ -139,13 +139,21 @@ export class RelationshipSnapshot {
     const topology = this._indexer.topology();
     this._buildingKey = key;
     this._building = (async () => {
-      const contents = await readIndexedContentsAsync(this._roots(), files);
-      await yieldToLoop();
-      const result = buildServiceRelationships(contents, Infinity, topology);
+      let edges: GraphEdge[];
+      if (typeof this._indexer.runRelationshipJob === "function") {
+        /* The indexer's job runner puts this pass in the background worker
+           (and caches it against a corpus fingerprint), so reading every
+           source file no longer happens on the extension host thread. */
+        edges = (await this._indexer.runRelationshipJob(files, topology).promise).edges;
+      } else {
+        const contents = await readIndexedContentsAsync(this._roots(), files);
+        await yieldToLoop();
+        edges = buildServiceRelationships(contents, Infinity, topology).edges;
+      }
       if (this._currentKey() !== key) return;
       this._key = key;
       this._failedKey = "";
-      this._allEdges = result.edges;
+      this._allEdges = edges;
     })().catch(() => {
       /* Best-effort analysis: retain the previous good generation on failure,
          and don't attempt this same generation again — see _failedKey. */

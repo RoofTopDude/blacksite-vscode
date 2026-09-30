@@ -8,6 +8,7 @@ import { aliasCandidates, type TsAliasTable } from "./tsconfig-paths.js";
 import { resolveGoImport, type GoModule } from "./go-modules.js";
 import type { CSharpIndex } from "./csharp-index.js";
 import type { PhpIndex } from "./php-index.js";
+import { workspacePackageCandidates, type WorkspacePackageIndex } from "./workspace-packages.js";
 
 export { joinPosix };
 
@@ -56,6 +57,22 @@ function resolvePython(fromPath: string, spec: string, files: ReadonlySet<string
   if (!joined) return null;
   if (files.has(`${joined}.py`)) return `${joined}.py`;
   if (files.has(`${joined}/__init__.py`)) return `${joined}/__init__.py`;
+  if (!relative && relModule) {
+    /* Multi-root: node ids carry the folder name, so "the workspace root" of an
+       absolute module is the importing file's own root first. Then every
+       source root a pyproject/setup.cfg declares (src/ layouts, poetry
+       `from`) — most specific first. Both are exact probes, so they are tried
+       before the fuzzier suffix fallback below. */
+    const bases = [
+      ...(rootPrefixOf(fromPath, ctx) ? [rootPrefixOf(fromPath, ctx)!] : []),
+      ...(ctx?.pythonSourceRoots ?? []),
+    ];
+    for (const root of bases) {
+      const candidate = `${root}/${relModule}`;
+      if (files.has(`${candidate}.py`)) return `${candidate}.py`;
+      if (files.has(`${candidate}/__init__.py`)) return `${candidate}/__init__.py`;
+    }
+  }
   /* An absolute module path assumes its top-level package sits at the workspace
      root. When the package instead lives under a source root — `src/`, a service
      directory, a `packages/*` layout — the root-relative probe above misses.
@@ -120,7 +137,7 @@ const JSON_CONFIG_EXTS = ["json", "jsonc", "yaml", "yml"];
     ("/icons/icon.png") retries workspace-root-relative. A bare package
     specifier (e.g. an `extends` naming an npm config) simply won't join to a
     workspace file, so it yields no edge. */
-function resolveJson(fromPath: string, spec: string, files: ReadonlySet<string>): string | null {
+function resolveJson(fromPath: string, spec: string, files: ReadonlySet<string>, ctx?: ResolveContext): string | null {
   const clean = spec.replace(/[?#].*$/, "").trim();
   if (!clean) return null;
   const probe = (base: string | null): string | null => {
@@ -133,7 +150,11 @@ function resolveJson(fromPath: string, spec: string, files: ReadonlySet<string>)
     return null;
   };
   if (clean.startsWith("/")) {
-    return probe(normalizeGraphPath(clean.slice(1)));
+    /* Web-root-absolute: in a multi-root workspace the "root" is the importing
+       file's own folder, whose name prefixes every node id. */
+    const rootPrefix = rootPrefixOf(fromPath, ctx);
+    return (rootPrefix ? probe(`${rootPrefix}/${normalizeGraphPath(clean.slice(1))}`) : null)
+      ?? probe(normalizeGraphPath(clean.slice(1)));
   }
   const normalized = normalizeGraphPath(clean);
   const direct = probe(joinPosix(dirOf(fromPath), normalized));
@@ -239,7 +260,7 @@ function rustModuleDir(fromPath: string): string {
     rather than guessing a file. The last path segment is usually an item (type
     /fn), so resolution tries the full path as a module file, then drops
     trailing segments until a module file matches. */
-function resolveRustUse(fromPath: string, path: string, files: ReadonlySet<string>): string | null {
+function resolveRustUse(fromPath: string, path: string, files: ReadonlySet<string>, ctx?: ResolveContext): string | null {
   const segs = path.split("::").map((s) => s.trim()).filter(Boolean);
   if (segs.length === 0) return null;
   let base: string | null;
@@ -255,6 +276,11 @@ function resolveRustUse(fromPath: string, path: string, files: ReadonlySet<strin
     rest = segs.slice(1);
     while (rest[0] === "super") { b = dirOf(b); rest = rest.slice(1); }
     base = dirOf(b);
+  } else if (ctx?.rustCrates?.has(segs[0]!)) {
+    /* A sibling workspace crate named by its crate identifier. Only crates a
+       Cargo.toml in the corpus declares resolve — registry crates never do. */
+    base = ctx.rustCrates.get(segs[0]!)!;
+    rest = segs.slice(1);
   } else {
     return null;
   }
@@ -667,6 +693,26 @@ export interface ResolveContext {
       available to any future Python resolution refinement without a second
       whole-corpus scan. */
   pythonIndex?: ReadonlyMap<string, ReadonlySet<string>>;
+  /** package.json names declared in the corpus (all roots), so a bare
+      `@acme/ui` import reaches the package's source — see workspace-packages.ts. */
+  workspacePackages?: WorkspacePackageIndex;
+  /** Cargo crate identifier (underscored) → its source dir, for sibling-crate
+      `use other_crate::…` paths. */
+  rustCrates?: ReadonlyMap<string, string>;
+  /** Python source roots declared by pyproject/setup.cfg, most specific first. */
+  pythonSourceRoots?: readonly string[];
+  /** Workspace folder names when more than one root is open (node ids are then
+      folder-qualified). Empty/absent in a single-root workspace. */
+  rootNames?: readonly string[];
+}
+
+/** The multi-root folder prefix of a node id ("web" for "web/src/a.ts"), or
+    null in a single-root workspace. */
+function rootPrefixOf(fromPath: string, ctx?: ResolveContext): string | null {
+  const names = ctx?.rootNames;
+  if (!names || names.length < 2) return null;
+  const head = fromPath.split("/", 1)[0] ?? "";
+  return names.includes(head) ? head : null;
 }
 
 /** Build the basename index a ResolveContext needs. */
@@ -702,12 +748,12 @@ export function resolveSpecifier(
   if (trimmed.startsWith("path:")) return resolvePathRef(from, trimmed.slice("path:".length), files);
 
   if (lang === "py") return resolvePython(from, trimmed, files, ctx);
-  if (lang === "json" || lang === "jsonc" || lang === "webmanifest") return resolveJson(from, trimmed, files);
+  if (lang === "json" || lang === "jsonc" || lang === "webmanifest") return resolveJson(from, trimmed, files, ctx);
   if (STYLE_EXTS.includes(lang)) return resolveStyle(from, trimmed, files);
   if (C_LANGS.has(lang)) return resolveInclude(from, trimmed, files);
   if (lang === "rs") {
     if (trimmed.startsWith("mod:")) return resolveRustMod(from, trimmed.slice(4), files);
-    if (trimmed.startsWith("use:")) return resolveRustUse(from, trimmed.slice(4), files);
+    if (trimmed.startsWith("use:")) return resolveRustUse(from, trimmed.slice(4), files, ctx);
     return null;
   }
   if (lang === "rb") return resolveRuby(from, trimmed, files);
@@ -752,6 +798,14 @@ export function resolveSpecifier(
       for (const base of aliasCandidates(from, aliasSpec, ctx.aliases)) {
         const hit = probeJsish(base, files);
         if (hit) return hit;
+      }
+    }
+    /* Then a package declared by a package.json anywhere in the workspace —
+       npm/pnpm/yarn workspace links and cross-root imports. */
+    if (ctx?.workspacePackages && JSISH_LANGS.has(lang)) {
+      for (const base of workspacePackageCandidates(from, trimmed, ctx.workspacePackages)) {
+        const hit = probeJsish(base, files);
+        if (hit && hit !== from) return hit;
       }
     }
     return null;

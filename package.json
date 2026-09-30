@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.29.0",
+  "version": "1.30.0-pre.1",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -17,7 +17,7 @@
   "license": "PolyForm-Noncommercial-1.0.0",
   "private": true,
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.139.0"
   },
   "categories": [
     "AI",
@@ -798,6 +798,26 @@
           "default": true,
           "description": "Skip directories whose name begins with a dot (.vscode-test, .pytest_cache, .gradle, .idea …) when indexing the Codebase Map. These hold tooling state rather than authored source. Dot-FILES such as .env and .eslintrc.json are always kept. Turning this off does not re-enable .git, .blacksite, .next, or .venv."
         },
+        "blacksite.graph.respectGitignore": {
+          "type": "boolean",
+          "default": true,
+          "description": "Build the Codebase Map from the files git tracks plus untracked files that are not ignored, so generated, vendored, and build-output trees your .gitignore excludes stay off the map. Tracked files are always included. Folders that are not git repositories are scanned as before."
+        },
+        "blacksite.graph.landingView": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "systems",
+            "files"
+          ],
+          "enumDescriptions": [
+            "Open large or multi-codebase workspaces on the Systems overview (one node per codebase), and everything else on individual files.",
+            "Always open on the Systems overview.",
+            "Always open on individual files, as before 1.30."
+          ],
+          "description": "What the Codebase Map shows when it opens. The Systems overview folds each codebase into one node and lets you drill in with the breadcrumb bar."
+        },
         "blacksite.graph.dotDirectoryAllowlist": {
           "type": "array",
           "items": {
@@ -1213,7 +1233,7 @@
     "@types/node": "^20.0.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "~1.138.0",
     "@vitest/coverage-v8": "^4.1.11",
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.9.2",

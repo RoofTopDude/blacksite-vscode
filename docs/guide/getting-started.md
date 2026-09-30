@@ -18,7 +18,7 @@ each term is explained when it first matters.
 
 You need two things:
 
-- **VS Code 1.85 or newer.** Check with **Help → About**.
+- **VS Code 1.139 or newer.** Check with **Help → About**.
 - **An API key** for at least one of: Anthropic, OpenAI, OpenRouter, or AWS Bedrock credentials.
 
 If you have never obtained a model API key before, OpenRouter is the shortest path — one key gives

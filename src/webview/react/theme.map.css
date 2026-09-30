@@ -817,3 +817,388 @@
     transition: none;
   }
 }
+
+/* ------------------------------------------------------------------------
+   1.30 — scope bar, outline rail, inspector tabs, group labels
+   (docs/map-scale-implementation-plan.md B3–B5). Same surface vocabulary as
+   the panels above: muted chrome, accent only for the current location.
+   ------------------------------------------------------------------------ */
+
+.map-scope-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 10px;
+}
+
+.map-breadcrumb {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  font-size: var(--text-xs);
+}
+
+.map-crumb {
+  max-width: 150px;
+  overflow: hidden;
+  border-radius: 5px;
+  padding: 2px 5px;
+  color: var(--muted-foreground);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-crumb:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--foreground);
+}
+
+.map-crumb-current {
+  background: var(--accent-dim);
+  color: var(--foreground);
+}
+
+.map-crumb-up {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  padding: 3px;
+  color: var(--muted-foreground);
+}
+
+.map-crumb-up:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--foreground);
+}
+
+.map-mode-switch {
+  display: grid;
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
+  gap: 4px;
+}
+
+.map-group-label {
+  user-select: none;
+  text-align: center;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.92);
+  pointer-events: none;
+}
+
+/* Outline rail: under the command panel, shrinking when the inspector opens. */
+.map-outline {
+  top: calc(var(--map-command-height, 180px) + 20px);
+  width: min(300px, calc(100vw - 24px));
+  max-height: calc(100% - var(--map-command-height, 180px) - var(--map-inspector-height, 0px) - 48px);
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.map-outline[data-open="false"] {
+  max-height: none;
+}
+
+.map-outline-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 12px;
+  color: var(--foreground);
+  font-size: var(--text-sm);
+  font-weight: 650;
+}
+
+.map-outline-header:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.map-outline-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 6px 8px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.map-outline-tree,
+.map-outline-tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.map-outline-row {
+  position: relative;
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 2px;
+  border-radius: 5px;
+  padding-right: 4px;
+  font-size: var(--text-xs);
+}
+
+.map-outline-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.map-outline-row-path {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.map-outline-row-scope {
+  background: var(--accent-dim);
+  box-shadow: inset 2px 0 0 var(--accent-bd);
+}
+
+.map-outline-twist {
+  display: inline-flex;
+  width: 16px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted-foreground);
+}
+
+.map-outline-label {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  color: color-mix(in srgb, var(--foreground) 88%, var(--muted-foreground));
+  text-align: left;
+}
+
+.map-outline-label:hover {
+  color: var(--foreground);
+}
+
+.map-outline-swatch {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: 999px;
+}
+
+.map-outline-swatch-root,
+.map-outline-swatch-codebase {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+}
+
+.map-outline-swatch-project {
+  border-radius: 2px;
+  transform: rotate(45deg);
+}
+
+.map-outline-badges {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.map-outline-badge {
+  min-width: 16px;
+  border-radius: 999px;
+  padding: 0 5px;
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+
+.map-outline-badge-ticket {
+  background: color-mix(in srgb, #4cc9f0 22%, transparent);
+  color: #a5e8fb;
+}
+
+.map-outline-badge-note {
+  background: color-mix(in srgb, #ffd66b 20%, transparent);
+  color: #ffe6a3;
+}
+
+.map-outline-live {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #5eead4;
+  box-shadow: 0 0 8px #5eead4;
+  animation: map-outline-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes map-outline-pulse {
+  50% { opacity: 0.35; }
+}
+
+.map-outline-count {
+  min-width: 34px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  text-align: right;
+}
+
+.map-outline-heat {
+  position: absolute;
+  bottom: 1px;
+  left: 20px;
+  height: 1px;
+  max-width: calc(100% - 24px);
+  background: linear-gradient(90deg, rgba(255, 122, 60, 0.7), rgba(255, 122, 60, 0));
+  pointer-events: none;
+}
+
+.map-outline-more {
+  padding: 2px 0 4px;
+  color: var(--muted-foreground);
+  font-size: var(--text-2xs);
+}
+
+.map-outline-findings {
+  margin: 8px 4px 0;
+  font-size: var(--text-xs);
+  color: var(--muted-foreground);
+}
+
+.map-outline-findings summary {
+  cursor: pointer;
+  color: #fcd9a6;
+  font-weight: 600;
+}
+
+.map-outline-findings ul {
+  margin: 4px 0 0;
+  padding-left: 14px;
+}
+
+.map-outline-findings strong {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.map-outline-hubs {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 10px 4px 0;
+}
+
+.map-outline-hub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: var(--text-xs);
+  text-align: left;
+}
+
+.map-outline-hub:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* Inspector: the card chrome is the container; tabs sit on top. */
+.map-inspector {
+  padding-top: 8px;
+}
+
+.map-inspector-tabs {
+  position: sticky;
+  top: -8px;
+  z-index: 1;
+  display: flex;
+  gap: 2px;
+  margin: -8px -14px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: linear-gradient(180deg, rgba(18, 19, 27, 0.99), rgba(14, 15, 22, 0.97));
+  padding: 6px 10px 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.map-inspector-tab {
+  flex-shrink: 0;
+  border-bottom: 2px solid transparent;
+  padding: 4px 6px 5px;
+  color: var(--muted-foreground);
+  font-size: var(--text-xs);
+  font-weight: 650;
+}
+
+.map-inspector-tab:hover {
+  color: var(--foreground);
+}
+
+.map-inspector-tab-active {
+  border-bottom-color: var(--accent-bd);
+  color: var(--foreground);
+}
+
+.map-inspector-row {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: var(--text-xs);
+  text-align: left;
+}
+
+.map-inspector-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.map-inspector-flag {
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, #f472b6 18%, transparent);
+  padding: 0 5px;
+  color: #fbcfe8;
+  font-size: var(--text-2xs);
+  font-weight: 600;
+}
+
+.map-inspector-item {
+  border-top: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+  padding: 6px 0;
+}
+
+.map-inspector-item:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+/* The language-server panel stacks below the outline instead of under it. */
+.map-lsp-panel {
+  top: calc(var(--map-command-height, 180px) + var(--map-outline-height, 0px) + 32px);
+}
+
+@container relay-map (max-width: 720px) {
+  .map-outline {
+    left: 8px;
+    top: calc(var(--map-command-height, 168px) + 14px);
+    width: calc(100cqw - 250px);
+    min-width: 180px;
+    max-width: 300px;
+  }
+  .map-lsp-panel {
+    top: calc(var(--map-command-height, 168px) + var(--map-outline-height, 0px) + 24px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-outline-live {
+    animation: none;
+  }
+}

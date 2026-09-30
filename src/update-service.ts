@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { unzipSync } from "fflate";
 
 const LAST_CHECK_KEY = "blacksite.updates.lastCheckAt";
 const DISMISSED_VERSION_KEY = "blacksite.updates.dismissedVersion";
@@ -60,6 +61,8 @@ interface ReleaseManifest {
   name?: unknown;
   digest?: unknown;
   size?: unknown;
+  /** The release's `engines.vscode` range, published by pages.yml from package.json. */
+  minimumVscodeVersion?: unknown;
 }
 
 export interface GithubReleaseAsset {
@@ -86,6 +89,9 @@ interface UpdateInfo {
   asset: GithubReleaseAsset;
   releaseUrl: string;
   releaseTitle: string;
+  /** `engines.vscode` of the release when the source publishes it (the manifest does; the
+      GitHub API does not, so the downloaded VSIX is checked as well — see readVsixEngineRange). */
+  minimumVscodeVersion?: string;
 }
 
 interface CommandResult {
@@ -182,7 +188,53 @@ export function parseReleaseManifest(payload: unknown, extensionPackageName = ""
     },
     releaseUrl: typeof manifest.releaseUrl === "string" && manifest.releaseUrl ? manifest.releaseUrl : DEFAULT_MANIFEST_URL,
     releaseTitle: typeof manifest.name === "string" && manifest.name ? manifest.name : `Blacksite ${rawVersion}`,
+    ...(typeof manifest.minimumVscodeVersion === "string" && manifest.minimumVscodeVersion.trim()
+      ? { minimumVscodeVersion: manifest.minimumVscodeVersion.trim() }
+      : {}),
   };
+}
+
+/**
+ * Whether the running VS Code satisfies a release's `engines.vscode` range.
+ *
+ * Only the shapes this project publishes are understood: `^x.y.z`, `>=x.y.z`, and a bare
+ * `x.y.z` (all meaning "at least"). Anything else — a malformed manifest, a range syntax we
+ * do not parse — counts as satisfied: the gate exists to spare users an install that VS Code
+ * will refuse, and a parsing gap must never be the reason nobody can update.
+ */
+export function engineSatisfied(range: string | undefined, running: string): boolean {
+  if (!range) return true;
+  const match = /^\s*(?:\^|>=\s*)?v?(\d+)\.(\d+)\.(\d+)\s*$/.exec(range);
+  if (!match) return true;
+  const minimum = `${match[1]}.${match[2]}.${match[3]}`;
+  // VS Code reports its own version without a prerelease tag ("1.139.1"); Insiders reports
+  // "1.140.0-insider". Compare cores only, so an Insiders build of the required minor passes.
+  const core = running.trim().split(/[-+]/, 1)[0] ?? running;
+  return compareVersions(core, minimum) >= 0;
+}
+
+/** Human form of an engine range for messages: "^1.139.0" → "1.139.0". */
+export function engineFloorLabel(range: string): string {
+  return range.trim().replace(/^(?:\^|>=\s*)v?/, "");
+}
+
+/**
+ * Read `engines.vscode` out of a VSIX (a zip whose manifest is `extension/package.json`).
+ * Returns null when the archive or manifest is unreadable — the digest already proved the
+ * bytes are what the release published, so a manifest we cannot parse is left for VS Code's
+ * own installer to judge rather than blocking here.
+ */
+export function readVsixEngineRange(bytes: Uint8Array): string | null {
+  try {
+    const files = unzipSync(bytes, { filter: (file) => file.name === "extension/package.json" });
+    const manifest = files["extension/package.json"];
+    if (!manifest) return null;
+    const parsed = JSON.parse(Buffer.from(manifest).toString("utf8")) as { engines?: { vscode?: unknown } };
+    const range = parsed.engines?.vscode;
+    return typeof range === "string" && range.trim() ? range.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 export function normalizeGithubRepositorySlug(input: string): string | null {
@@ -407,6 +459,8 @@ export class ExtensionUpdater {
     private readonly fetcher: Fetcher = fetch,
     private readonly runCommand: CommandRunner = defaultCommandRunner,
     private readonly installFromVsix: VsixInstaller = defaultVsixInstaller,
+    /** The running VS Code version; injectable so the engine gate is testable. */
+    private readonly runningVscodeVersion: string = vscode.version ?? "0.0.0",
   ) {}
 
   /**
@@ -471,6 +525,11 @@ export class ExtensionUpdater {
       if (!options.manual) {
         const dismissedVersion = this.context.globalState.get<string>(DISMISSED_VERSION_KEY);
         if (dismissedVersion === updateInfo.version) return;
+      }
+
+      if (!engineSatisfied(updateInfo.minimumVscodeVersion, this.runningVscodeVersion)) {
+        await this.promptEngineTooOld(updateInfo, options.manual);
+        return;
       }
 
       await this.promptForUpdate(currentVersion, updateInfo, options.manual);
@@ -565,6 +624,26 @@ export class ExtensionUpdater {
     }
 
     return null;
+  }
+
+  /**
+   * The release needs a newer VS Code than this one. Offering "Update Now" would download a
+   * VSIX VS Code refuses to install, so say what is actually needed instead. Automatic checks
+   * record the version as dismissed so the same notice does not return every three hours;
+   * a manual check always answers.
+   */
+  private async promptEngineTooOld(updateInfo: UpdateInfo, manual: boolean): Promise<void> {
+    const floor = engineFloorLabel(updateInfo.minimumVscodeVersion ?? "");
+    const action = await vscode.window.showInformationMessage(
+      `Blacksite ${updateInfo.version} needs VS Code ${floor} or newer (you have ${this.runningVscodeVersion}). Update VS Code, then update Blacksite.`,
+      "View Release",
+    );
+    if (action === "View Release") {
+      await vscode.env.openExternal(vscode.Uri.parse(updateInfo.releaseUrl));
+    }
+    if (!manual) {
+      await this.context.globalState.update(DISMISSED_VERSION_KEY, updateInfo.version);
+    }
   }
 
   private async promptForUpdate(currentVersion: string, updateInfo: UpdateInfo, manual: boolean): Promise<void> {
@@ -667,6 +746,15 @@ export class ExtensionUpdater {
 
       const bytes = Buffer.from(await response.arrayBuffer());
       verifyVsixBytes(bytes, expectedHash);
+      /* The manifest carries the engine range, the GitHub API (prereleases, manifest outages)
+         does not — so read it from the verified package itself before handing it to VS Code,
+         whose own refusal would otherwise surface as an opaque install failure. */
+      const engineRange = readVsixEngineRange(bytes);
+      if (engineRange && !engineSatisfied(engineRange, this.runningVscodeVersion)) {
+        throw new Error(
+          `Blacksite ${version} needs VS Code ${engineFloorLabel(engineRange)} or newer (you have ${this.runningVscodeVersion}). Update VS Code first.`,
+        );
+      }
       await fs.writeFile(destination, bytes);
       return destination;
     } catch (error) {

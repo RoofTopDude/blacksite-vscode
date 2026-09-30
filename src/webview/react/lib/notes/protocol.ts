@@ -15,7 +15,9 @@ export interface NoteFileCommit {
 }
 
 export type NotesHostMessage =
-  | { type: "notes_state"; notes: GraphAnnotation[]; workspaceName: string }
+  /** `focus` narrows the timeline to one file or folder prefix when the Map
+      inspector opened it ("Open in timeline"); null/absent shows everything. */
+  | { type: "notes_state"; notes: GraphAnnotation[]; workspaceName: string; focus?: { prefix: string; label: string } | null }
   /** Response to a file_history request; `error` set when git couldn't answer
       (not a repo, file never committed, git absent). */
   | { type: "file_history"; path: string; commits: NoteFileCommit[]; error?: string };

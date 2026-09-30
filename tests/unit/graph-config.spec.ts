@@ -53,7 +53,16 @@ describe("resolveGraphExclusions", () => {
     expect(resolveGraphExclusions({})).toEqual({
       excludeDotDirectories: true,
       dotDirectoryAllowlist: [],
+      respectGitignore: true,
     });
+  });
+
+  /* An ignored tree is, by the repository's own declaration, not part of the
+     project — so discovery honours .gitignore unless explicitly told not to. */
+  it("honours .gitignore by default and only an explicit false turns it off", () => {
+    expect(resolveGraphExclusions({ respectGitignore: false }).respectGitignore).toBe(false);
+    expect(resolveGraphExclusions({ respectGitignore: "no" }).respectGitignore).toBe(true);
+    expect(resolveGraphExclusions({ respectGitignore: undefined }).respectGitignore).toBe(true);
   });
 
   it("only an explicit false opts back into indexing them", () => {

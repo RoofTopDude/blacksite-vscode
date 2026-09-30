@@ -96,6 +96,8 @@ Full discussion in [Approvals & Safety](approvals-and-safety.html).
 | `blacksite.graph.backgroundSymbols` | `false` | | Background-index call/reference/inheritance relationships via language servers. Higher cost; runs on an idle budget and pauses while you edit |
 | `blacksite.graph.excludeDotDirectories` | `true` | | Skip directories whose name begins with a dot (`.vscode-test`, `.pytest_cache`, `.gradle`, …). Dot-*files* like `.env` are always kept. `.git`, `.blacksite`, `.next`, and `.venv` are never indexed either way |
 | `blacksite.graph.dotDirectoryAllowlist` | `[]` | | Dot-directories to index anyway, e.g. `[".github"]`. Matched by directory name at any depth; the leading dot is optional |
+| `blacksite.graph.respectGitignore` | `true` | | Build the map from the files git tracks plus untracked files that are not ignored, so generated, vendored, and build-output trees your `.gitignore` excludes stay off the map. Tracked files are always included. Folders that are not git repositories are scanned as before |
+| `blacksite.graph.landingView` | `auto` | `auto`, `systems`, `files` | What the map opens on. `auto` opens large or multi-codebase workspaces on the Systems overview (one node per codebase) and everything else on individual files |
 | `blacksite.graph.traceFadeSeconds` | `45` | 2–3600 | How long agent activity traces take to fade |
 | `blacksite.graph.traceShellEvents` | `true` | | Show shell/terminal activity as working-directory pulses |
 

@@ -54,13 +54,26 @@ export function parseCSharpDeclarations(content: string): { namespaces: string[]
 }
 
 export function buildCSharpIndex(files: Iterable<CSharpIndexInput>): CSharpIndex {
+  const declarations: Array<{ path: string; namespaces: string[]; types: string[] }> = [];
+  for (const file of files) {
+    const path = normalizeGraphPath(file.path);
+    if (!path.toLowerCase().endsWith(".cs")) continue;
+    declarations.push({ path, ...parseCSharpDeclarations(file.content) });
+  }
+  return buildCSharpIndexFromDeclarations(declarations);
+}
+
+/** Same index from already-extracted declarations (graph/file-facts.ts), so a
+    warm rebuild never re-reads a file whose facts are cached. */
+export function buildCSharpIndexFromDeclarations(
+  files: Iterable<{ path: string; namespaces: readonly string[]; types: readonly string[] }>,
+): CSharpIndex {
   const byNamespace = new Map<string, string[]>();
   const byType = new Map<string, string[]>();
   const typesByNamespace = new Map<string, Map<string, string[]>>();
   for (const file of files) {
     const path = normalizeGraphPath(file.path);
-    if (!path.toLowerCase().endsWith(".cs")) continue;
-    const declarations = parseCSharpDeclarations(file.content);
+    const declarations = file;
     for (const namespaceName of declarations.namespaces) pushUnique(byNamespace, namespaceName, path);
     for (const typeName of declarations.types) {
       pushUnique(byType, typeName, path);

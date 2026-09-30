@@ -3,6 +3,73 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.30.0-pre.1
+
+Prerelease. The stable update channel remains on 1.29.0.
+
+The Codebase Map is built for large and multi-codebase workspaces. It opens on an overview of your
+codebases, you drill in with a breadcrumb, and it now finds links between packages and between
+workspace folders that it used to miss. It also rebuilds in the background without slowing chat.
+
+### Changed
+
+- **Blacksite now requires VS Code 1.139 or newer.** Editors built on an older VS Code base can no
+  longer install it (Cursor was on VS Code 1.105 as of mid-2026). When a release needs a newer
+  VS Code than yours, the updater now says so instead of offering an update VS Code would refuse.
+- **The map follows your `.gitignore`.** Generated clients, vendored folders, and build output your
+  repository ignores stay off the map. The command panel shows *Following .gitignore* with an
+  **Include ignored** button (`blacksite.graph.respectGitignore`).
+- **The map controls are reorganized.** The lenses are now **Structure**, **Services**, and
+  **Work**. Depth, territory layout, and the new focus budget moved under **Advanced**. Folder and
+  hub lists moved to the new outline.
+
+### Added
+
+- **Systems overview.** Large or multi-codebase workspaces open on one node per codebase, sized by
+  file count and joined by imports, API routes, events, shared data, and dependencies declared in
+  manifests. `blacksite.graph.landingView` picks what the map opens on.
+- **Scope navigation.** Double-click a codebase, project, or area to step inside; use the
+  breadcrumb or Backspace to go back out. Inside a scope, areas fold into single stars when there is
+  more than the focus budget to draw. The area you select and wherever the agent is working stay
+  unfolded. Stepping into a codebase draws all of its files, even ones the overview had to leave
+  out.
+- **Outline.** A panel listing every folder, codebase, project, and area with true file counts,
+  open tickets, notes, where the agent is working right now, and recent change heat.
+- **Inspector tabs.** Selecting anything shows Overview, Relations, Work, Activity, Notes, and
+  References:
+  - Work lists the tickets that cover it and can file a new one for it.
+  - Activity lists the Execution Runs that touched it, with **Replay on map**.
+  - Notes opens the Notes timeline filtered to that file or area.
+  - References lists the documents attached to your conversations that mention it.
+- **Links between packages and workspace folders.** Imports now reach other packages in the
+  workspace, including across workspace folders:
+  - JS/TS imports like `import "@acme/ui"`, through that package's `package.json`;
+  - Rust `use` of a sibling crate;
+  - Python imports in `src/` layouts.
+- **Checks against your manifests.** The map points out dependencies a manifest declares that
+  nothing imports, and cross-project imports that no manifest declares.
+- **Files that change together.** Git history now shows which files change in the same commits.
+  Between codebases, when nothing in the code explains the coupling, the map draws a dashed line
+  labelled "hidden coupling". The agent's `map_overview`, `map_relationships`, and `map_impact`
+  report it as well.
+- **Colors follow codebases.** Every folder in a codebase shares that codebase's color family.
+- **Search beyond what's drawn.** When the map draws only part of a very large workspace, search
+  still finds every indexed file.
+
+### Fixed
+
+- **The map no longer slows chat while it rebuilds.** Reading, resolving, and laying out files runs
+  in a background worker. What each file contributed is cached, so reopening a workspace re-reads
+  only changed files. In a 22,000-file test workspace, a rebuild never blocked the editor for more
+  than about 70 ms.
+- **An open map no longer keeps re-sending itself.** Each language-server check re-sent the whole
+  map to the webview and then started another check, for as long as the map was open. The check
+  now runs once per index, and edits send only what changed.
+- **Systems navigation keeps the selection.** Focusing a file from the overview now opens its
+  inspector after scoping in, and the overview fits codebases between the side panels.
+- **The agent's workspace overview covers the whole index**, not just the files the map had room to
+  draw.
+
 ## 1.29.0
 
 ### Added

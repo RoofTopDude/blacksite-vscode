@@ -47,6 +47,9 @@ import { GraphAgentGateway } from "./graph-agent-gateway.js";
 import { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
 import { StructuralSnapshot } from "./graph/structural-snapshot.js";
 import { SymbolIndexer } from "./graph/symbol-indexer.js";
+import { HierarchySnapshot } from "./graph/hierarchy-snapshot.js";
+import { RunFootprintIndex } from "./graph/run-footprints.js";
+import { ReferenceLinkIndex } from "./graph/reference-links.js";
 import { buildWorkspaceRoots, toNodeId } from "./graph/workspace-roots.js";
 import { configuredWorkspaceRoot, resolvePrimaryWorkspaceRoot } from "./workspace-paths.js";
 import { RunStore } from "./runs/run-store.js";
@@ -162,7 +165,12 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   context.subscriptions.push(pauReceiptBus);
   const graphAnnotations = new GraphAnnotationStore(getGraphRoots);
   try { graphAnnotations.ensureInitialized(); } catch { /* ok — map annotations run read-only */ }
-  const graphIndexer = new GraphIndexer(getGraphRoots, () => readGraphConfig());
+  /* Heavy map passes (reads, extraction, resolution, relationships, layout) run
+     in out/graph-worker.js so a rebuild over a dense workspace never competes
+     with chat and the agent on this thread. */
+  const graphIndexer = new GraphIndexer(getGraphRoots, () => readGraphConfig(), {
+    workerScript: vscode.Uri.joinPath(context.extensionUri, "out", "graph-worker.js").fsPath,
+  });
   /* Validate note endpoints against the full *indexed* set, not just the
      rendered stars — on a large workspace a real .cs file can be indexed but
      beyond the render cap, and a relationship note on it must still persist. */
@@ -178,6 +186,10 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
      graph algorithms over data the indexer already has, recomputed per generation
      like the relationship snapshot above, never persisted to the render cache. */
   const structuralSnapshot = new StructuralSnapshot(graphIndexer);
+  /* Root → codebase → project → area over the whole index, with group-level
+     relationships and declared-vs-used dependency findings. Shared by the Map
+     (Systems overview, outline, scope bar) and map_overview. */
+  const hierarchySnapshot = new HierarchySnapshot(graphIndexer, relationshipSnapshot, getGraphRoots);
   /* Opt-in background symbol sweep (call/reference/supertype edges over the whole
      corpus). Off by default; re-pointed at the corpus after each rebuild and
      paused while the user edits. */
@@ -189,7 +201,7 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   );
   /* Gateway lets agent-session dispatch every graph.* op to one object: notes go
      to the durable store, map_overview/map_relationships to the live index + snapshot. */
-  const graphGateway = new GraphAgentGateway(graphAnnotations, graphIndexer, relationshipSnapshot, getGraphRoots, () => symbolIndexer.edges(), structuralSnapshot);
+  const graphGateway = new GraphAgentGateway(graphAnnotations, graphIndexer, relationshipSnapshot, getGraphRoots, () => symbolIndexer.edges(), structuralSnapshot, hierarchySnapshot);
   const ticketSweep = new TicketSweepRunner(getGraphRoots, () => graphIndexer.indexedFiles(), () => tickets.read().tickets);
   tickets.setSweepProvider(ticketSweep);
   context.subscriptions.push(activityBus, graphAnnotations, symbolIndexer);
@@ -335,6 +347,15 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
       };
     },
     sequences,
+    {
+      hierarchy: hierarchySnapshot,
+      /* Which runs touched a file or area — derived from the same bounded event
+         windows run playback reads, cached per finished run. */
+      ...(sequences
+        ? { runFootprints: new RunFootprintIndex(sequences, path.join(workspaceRoot, ".blacksite", "map", "run-footprints.json")) }
+        : {}),
+      referenceLinks: new ReferenceLinkIndex(reference),
+    },
   );
   const runProvider = runStore && sequences
     ? new RunProvider(context, runStore, sequences, {
@@ -405,7 +426,7 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
      git history + commit diffs. Cross-wired after construction so "Show on
      map" and the Map's "Notes timeline" button can reach each other. */
   const notesTimeline = new NotesTimelineProvider(context, getGraphRoots, graphAnnotations, (nodeId) => graphProvider.revealNote(nodeId));
-  graphProvider.setNotesTimelineOpener(() => notesTimeline.open());
+  graphProvider.setNotesTimelineOpener((filter) => notesTimeline.open(filter));
   /* A plan phase's declared map territory is only useful if it's navigable —
      let the Plans panel fly the Map to any file the phase claims. */
   planningProvider.setMapRevealer((nodeId) => graphProvider.revealNote(nodeId));
