@@ -26,11 +26,13 @@ const uriOf = (relative: string): vscode.Uri => vscode.Uri.file(path.join(ROOT, 
 
 let tracker: { dispose(): void } | undefined;
 const versions = new Map<string, number>();
+const opened = new Map<string, vscode.Uri>();
 
 function open(relative: string, version: number): vscode.Uri {
   const uri = uriOf(relative);
   versions.set(uri.toString(), version);
-  workspace.textDocuments = [...versions].map(([key, value]) => ({ uri: vscode.Uri.parse(key), version: value }));
+  opened.set(uri.toString(), uri);
+  workspace.textDocuments = [...versions].map(([key, value]) => ({ uri: opened.get(key)!, version: value }));
   return uri;
 }
 
@@ -40,6 +42,7 @@ function snapshot(uris: vscode.Uri[]) {
 
 beforeEach(() => {
   versions.clear();
+  opened.clear();
   workspace.textDocuments = [];
   workspace.openTextDocument = async (uri: vscode.Uri) => ({ uri, version: versions.get(uri.toString()) ?? 1 });
   languages.__clearDiagnostics();
