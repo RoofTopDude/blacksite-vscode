@@ -31,6 +31,13 @@ export interface InstallHint {
   docsUrl?: string;
   /** Sibling binaries that arrive with the same install (npm ships with node, …). */
   provides?: string[];
+  /**
+   * An installed program that does the same job, found on this machine: `python3` when `python`
+   * is missing (macOS ships only `python3`), the `py` launcher on Windows, `python3 -m pytest`
+   * when `pytest` is not on PATH. When set, nothing needs installing and the editor offers no
+   * install.
+   */
+  alternative?: { command: string; path: string; certain: boolean };
 }
 
 interface ToolSpec {
@@ -63,7 +70,7 @@ const NODE_TOOLCHAIN: ToolSpec = {
 const PYTHON_TOOLCHAIN: ToolSpec = {
   summary: "Python interpreter and its bundled package installer (python, pip)",
   docsUrl: "https://www.python.org/downloads/",
-  provides: ["python", "python3", "pip", "pip3"],
+  provides: ["python", "python3", "py", "pip", "pip3"],
   win32: [{ manager: "winget", command: "winget install Python.Python.3.12" }],
   darwin: [{ manager: "brew", command: "brew install python" }],
   linux: [
@@ -208,6 +215,9 @@ const MISSING_PATTERNS: RegExp[] = [
   /The term '([^']+)' is not recognized/i,                           // PowerShell
   /(?:^|:\s*)([^\s:]+): command not found/im,                        // bash / zsh
   /(?:^|:\s*)([^\s:]+): not found\s*$/im,                            // dash / sh / busybox
+  // Windows' App Execution Alias for `python` when no Python is installed from the Store: it
+  // exits 9009 with this instead of cmd.exe's own message.
+  /^(Python) was not found; run without arguments to install from the Microsoft Store/im,
 ];
 
 /**
@@ -259,6 +269,40 @@ export function installHintFor(command: string, platform: NodeJS.Platform = proc
   };
 }
 
+/** Python tools that also run as a module of the interpreter (`python3 -m pytest`). */
+const PYTHON_MODULE_TOOLS = new Set(["pytest", "mypy", "black", "isort", "flake8", "pylint", "ruff", "pip", "pip3"]);
+const PYTHON_INTERPRETERS = ["python3", "python", "py"];
+
+/**
+ * An installed program that can stand in for a missing one, found with `locate` (a PATH lookup
+ * returning the absolute path, or undefined). Sibling binaries of the same install come first;
+ * for a Python tool, an installed interpreter that can run it as a module.
+ */
+export function findInstalledAlternative(
+  hint: InstallHint,
+  locate: (name: string) => string | undefined,
+): InstallHint["alternative"] {
+  const missing = hint.command;
+  const pythonFamily = PYTHON_INTERPRETERS.includes(missing);
+  for (const sibling of hint.provides ?? []) {
+    if (sibling === missing) continue;
+    // A missing interpreter is replaced by another interpreter, never by pip.
+    if (pythonFamily && !PYTHON_INTERPRETERS.includes(sibling)) continue;
+    if (!pythonFamily && PYTHON_INTERPRETERS.includes(sibling)) continue;
+    const found = locate(sibling);
+    if (found) return { command: sibling, path: found, certain: true };
+  }
+  if (PYTHON_MODULE_TOOLS.has(missing)) {
+    const module = missing === "pip3" ? "pip" : missing;
+    for (const interpreter of PYTHON_INTERPRETERS) {
+      const found = locate(interpreter);
+      // pip ships with the interpreter; the others are only there if someone installed them.
+      if (found) return { command: `${interpreter} -m ${module}`, path: found, certain: module === "pip" };
+    }
+  }
+  return undefined;
+}
+
 /**
  * The error text handed back to the model for a missing executable.
  *
@@ -269,6 +313,15 @@ export function installHintFor(command: string, platform: NodeJS.Platform = proc
  * variations.
  */
 export function describeMissingCommand(hint: InstallHint): string {
+  const alternative = hint.alternative;
+  if (alternative) {
+    return alternative.certain
+      ? `\`${hint.command}\` is not on PATH, but \`${alternative.command}\` is installed (${alternative.path}) and does the same job. `
+        + `Use \`${alternative.command}\` instead; nothing needs installing. Do not call \`${hint.command}\` again.`
+      : `\`${hint.command}\` is not on PATH, and the project has no virtualenv that provides it. `
+        + `If it is installed for the Python at ${alternative.path}, \`${alternative.command}\` runs it. `
+        + `Do not call \`${hint.command}\` again; if that fails too, tell the user it needs installing.`;
+  }
   const lines = [
     `\`${hint.command}\` is not installed on this machine (not found on PATH), so the command did not run.`,
     "Re-running it, or retrying with different arguments, will fail the same way until it is installed.",

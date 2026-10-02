@@ -81,15 +81,52 @@ describe("compression deadlines and unusable responses", () => {
 
   it.each([
     { choices: [{ message: { content: "" }, finish_reason: "stop" }] },
-    { choices: [{ message: { content: VALID_SUMMARY }, finish_reason: "length" }] },
     { content: [{ type: "text", text: " " }], stop_reason: "end_turn" },
-    { content: [{ type: "text", text: VALID_SUMMARY }], stop_reason: "max_tokens" },
-  ])("rejects empty or truncated output before history can be discarded: %j", async (body) => {
+  ])("rejects empty output before history can be discarded: %j", async (body) => {
     const fetchMock = vi.fn(() => jsonResponse(body));
     vi.stubGlobal("fetch", fetchMock);
     await expect(compressHistory({ ...opts, provider: "content" in body ? "anthropic" : "openrouter" }, MESSAGES))
-      .rejects.toThrow(/empty summary|output token limit/);
+      .rejects.toThrow(/empty summary/);
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  /* Truncated output is never accepted. It is retried as two halves first; only when the halves
+     cannot be split further does compaction give up, with history preserved. */
+  it.each([
+    { choices: [{ message: { content: VALID_SUMMARY }, finish_reason: "length" }] },
+    { content: [{ type: "text", text: VALID_SUMMARY }], stop_reason: "max_tokens" },
+  ])("rejects truncated output that still overflows after splitting: %j", async (body) => {
+    const fetchMock = vi.fn(() => jsonResponse(body));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(compressHistory({ ...opts, provider: "content" in body ? "anthropic" : "openrouter" }, MESSAGES))
+      .rejects.toThrow(/output token limit/);
+    // The whole transcript, then each of its two one-message halves.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("summarises an overflowing transcript in halves and merges them", async () => {
+    const half = (objective: string, file: string) => JSON.stringify({
+      compressionMeta: { messageCount: 1, version: 1 }, objective, status: "in_progress",
+      workContext: { files: [file], technologies: [], keySymbols: [], environment: "" },
+      decisions: [], codeChanges: [], discoveries: [], userRequirements: ["keep it small"], errors: [],
+      pendingTasks: [{ task: objective, priority: "high", status: "pending" }],
+      conversationNarrative: `${objective}.`, criticalContext: "",
+    });
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => jsonResponse({ content: [{ type: "text", text: "{" }], stop_reason: "max_tokens" }))
+      .mockImplementationOnce(() => jsonResponse({ content: [{ type: "text", text: half("fix the bug", "a.ts") }], stop_reason: "end_turn" }))
+      .mockImplementationOnce(() => jsonResponse({ content: [{ type: "text", text: half("ship the fix", "b.ts") }], stop_reason: "end_turn" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const merged = JSON.parse(await compressHistory({ ...opts, provider: "anthropic" }, MESSAGES)) as Record<string, any>;
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(merged.compressionMeta.messageCount).toBe(2);
+    expect(merged.objective).toBe("ship the fix");
+    expect(merged.workContext.files).toEqual(["a.ts", "b.ts"]);
+    expect(merged.userRequirements).toEqual(["keep it small"]);
+    expect(merged.pendingTasks).toEqual([{ task: "ship the fix", priority: "high", status: "pending" }]);
+    expect(merged.conversationNarrative).toBe("fix the bug. ship the fix.");
   });
 
   it("preserves a provider error returned inside HTTP 200 instead of accepting an empty summary", async () => {

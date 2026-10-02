@@ -85,3 +85,125 @@ describe("post-edit verification gate", () => {
     expect(session.runtimeState.verification).toMatchObject({ status: "skipped", files: ["src/renamed.ts"] });
   });
 });
+
+/* A workspace holding several projects: services/billing (Python), apps/web (TypeScript), and a
+   root-level project. A check run inside one project speaks for that project only. */
+function projectRootOf(value: string): string {
+  if (value === "services/billing" || value.startsWith("services/billing/")) return "services/billing";
+  if (value === "apps/web" || value.startsWith("apps/web/")) return "apps/web";
+  return ".";
+}
+
+async function multiProject(
+  factory: ScriptedTurnFactory,
+  options: { shell?: Record<string, unknown>; lsp?: Record<string, unknown>; subagentProvider?: unknown } = {},
+): Promise<{ events: AgentEvent[]; scripted: ScriptedProviderSession; session: AgentSession }> {
+  const scripted = new ScriptedProviderSession(factory);
+  const editProvider = { applyEdit: async (input: { path: string }): Promise<EditResult> => ({ ok: true, path: input.path, replacements: 1 }) } as EditProvider;
+  const runtime = {
+    handleMessage: vi.fn(async (message: { type: string }) => ({
+      result: message.type === "system.shell" ? (options.shell ?? { ok: true, exitCode: 0, stdout: "", stderr: "" }) : { ok: true },
+    })),
+  };
+  const graphProvider = {
+    dispatch: vi.fn(async () => ({ ok: true })),
+    projectRootOf,
+    isMapIndexable: () => true,
+  };
+  const session = new AgentSession({
+    apiKey: "key", model: "claude-sonnet-4-6", systemPrompt: "test", workspaceRoot: "C:/workspace",
+    runtime: runtime as any, context: context() as any, provider: "anthropic", maxIterations: 12,
+    checkpointingEnabled: false, editProvider, graphProvider: graphProvider as any, mapNotes: "off",
+    lspProvider: options.lsp ? { dispatch: vi.fn(async () => options.lsp) } as any : undefined,
+    subagentProvider: options.subagentProvider as any,
+    memoryProvider: { append: () => undefined, readMemory: () => "", readContext: () => "" },
+    providerTurnSessionFactory: () => scripted,
+  });
+  const events: AgentEvent[] = [];
+  for await (const event of session.send("make the edits")) events.push(event);
+  return { events, scripted, session };
+}
+
+const editAt = (id: string, path: string): ToolUseBlock => ({ type: "tool_use", id, name: "file_edit", input: { path, oldString: "a", newString: "b" } });
+const shellAt = (id: string, command: string, args: string[], cwd?: string): ToolUseBlock => ({ type: "tool_use", id, name: "shell_run", input: { command, args, ...(cwd ? { cwd } : {}) } });
+
+describe("verification across several projects", () => {
+  it("counts pytest run inside one project for that project only", async () => {
+    const { scripted, session } = await multiProject(({ turnIndex }) => {
+      if (turnIndex === 0) return { toolCalls: [editAt("e1", "services/billing/app.py"), editAt("e2", "apps/web/main.ts")], stopReason: "tool_use", usage };
+      if (turnIndex === 1) return { toolCalls: [shellAt("t", "pytest", ["-q"], "services/billing")], stopReason: "tool_use", usage };
+      return { text: "done", stopReason: "end_turn", usage };
+    });
+
+    const reminder = scripted.userTexts.find((text) => text.includes("not verified yet"));
+    expect(reminder).toContain("apps/web/main.ts");
+    expect(reminder).not.toContain("services/billing/app.py");
+    expect(session.exportState().verification).toMatchObject({ files: ["services/billing/app.py", "apps/web/main.ts"] });
+  });
+
+  it("names the project each outstanding file belongs to", async () => {
+    const { scripted } = await multiProject(({ turnIndex }) => {
+      if (turnIndex === 0) return { toolCalls: [editAt("e1", "services/billing/app.py"), editAt("e2", "apps/web/main.ts")], stopReason: "tool_use", usage };
+      return { text: "done", stopReason: "end_turn", usage };
+    });
+
+    const reminder = scripted.userTexts.find((text) => text.includes("not verified yet"))!;
+    expect(reminder).toContain("services/billing: services/billing/app.py");
+    expect(reminder).toContain("apps/web: apps/web/main.ts");
+  });
+
+  it("lets a check run from the workspace root cover everything", async () => {
+    const { session } = await multiProject(({ turnIndex }) => {
+      if (turnIndex === 0) return { toolCalls: [editAt("e1", "services/billing/app.py"), editAt("e2", "apps/web/main.ts")], stopReason: "tool_use", usage };
+      if (turnIndex === 1) return { toolCalls: [shellAt("t", "npm", ["test"])], stopReason: "tool_use", usage };
+      return { text: "done", stopReason: "end_turn", usage };
+    });
+
+    expect(session.runtimeState.verification.status).toBe("passed");
+  });
+
+  it("settles each file of a code_diagnostics batch on its own", async () => {
+    const diagnostics: ToolUseBlock = { type: "tool_use", id: "d", name: "code_diagnostics", input: { paths: ["services/billing/app.py", "deploy/values.yaml"] } };
+    const { session } = await multiProject(({ turnIndex }) => {
+      if (turnIndex === 0) return { toolCalls: [editAt("e1", "services/billing/app.py"), editAt("e2", "deploy/values.yaml")], stopReason: "tool_use", usage };
+      if (turnIndex === 1) return { toolCalls: [diagnostics], stopReason: "tool_use", usage };
+      return { text: "done", stopReason: "end_turn", usage };
+    }, {
+      lsp: {
+        ok: true, status: "ready", counts: { error: 0 }, errors: 0, problems: [],
+        freshness: { files: { "workspace:services/billing/app.py": "ready", "workspace:deploy/values.yaml": "no_checker" } },
+      },
+    });
+
+    expect(session.runtimeState.verification).toMatchObject({ status: "passed", uncheckedFiles: ["deploy/values.yaml"] });
+  });
+
+  it("never asks to verify prose", async () => {
+    const { scripted, session } = await multiProject(({ turnIndex }) => {
+      if (turnIndex === 0) return { toolCalls: [editAt("e1", "docs/architecture.md")], stopReason: "tool_use", usage };
+      return { text: "done", stopReason: "end_turn", usage };
+    });
+
+    expect(scripted.userTexts.some((text) => text.includes("not verified yet"))).toBe(false);
+    expect(session.runtimeState.verification.status).toBe("idle");
+  });
+
+  it("counts a delegated lane's own test run for the parent", async () => {
+    async function* spawn(): AsyncGenerator<unknown> {
+      const lane = { type: "subagent_lane_event", parentToolCallId: "lane", laneId: "l1" };
+      yield { ...lane, event: { type: "tool_call_start", toolCallId: "l1:e", toolName: "file_edit", inputPreview: "", input: { path: "services/billing/app.py" } } };
+      yield { ...lane, event: { type: "tool_call_result", toolCallId: "l1:e", toolName: "file_edit", ok: true, summary: "", elapsedMs: 1, result: { ok: true, path: "services/billing/app.py" } } };
+      yield { ...lane, event: { type: "tool_call_start", toolCallId: "l1:t", toolName: "shell_run", inputPreview: "", input: { command: "uv", args: ["run", "pytest"], cwd: "services/billing" } } };
+      yield { ...lane, event: { type: "tool_call_result", toolCallId: "l1:t", toolName: "shell_run", ok: true, summary: "", elapsedMs: 1, result: { ok: true, exitCode: 0 } } };
+      yield { type: "subagent_tool_result", result: { ok: true, subRequestId: "s1", answer: "fixed and tested", toolRounds: 2 } };
+    }
+    const delegate: ToolUseBlock = { type: "tool_use", id: "lane", name: "subagent_spawn", input: { task: "fix billing" } };
+    const { scripted, session } = await multiProject(({ turnIndex }) => {
+      if (turnIndex === 0) return { toolCalls: [delegate], stopReason: "tool_use", usage };
+      return { text: "done", stopReason: "end_turn", usage };
+    }, { subagentProvider: { spawn } });
+
+    expect(session.runtimeState.verification).toMatchObject({ status: "passed", files: ["services/billing/app.py"] });
+    expect(scripted.userTexts.some((text) => text.includes("not verified yet"))).toBe(false);
+  });
+});

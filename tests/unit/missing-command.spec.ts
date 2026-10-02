@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  describeMissingCommand, detectMissingCommand, installHintFor,
+  describeMissingCommand, detectMissingCommand, findInstalledAlternative, installHintFor,
 } from "../../packages/local-runtime/src/missing-command.js";
 import { handleShell } from "../../packages/local-runtime/src/shell.js";
 import { shellLineInvokes } from "../../src/agent-session.js";
@@ -176,5 +176,43 @@ describe("describeMissingCommand", () => {
     const text = describeMissingCommand(installHintFor("brew", "win32"));
     expect(text).toMatch(/https:\/\/brew\.sh/);
     expect(text).toMatch(/Do not call this command again/);
+  });
+});
+
+/* Often nothing is missing at all, just named differently here: macOS ships only `python3`, and on
+   Windows `py` is the launcher. Telling the agent to install Python there sent users off to
+   install a second one. */
+describe("findInstalledAlternative", () => {
+  const onPath = (names: Record<string, string>) => (name: string): string | undefined => names[name];
+
+  it("points a missing python at the installed python3", () => {
+    const alternative = findInstalledAlternative(installHintFor("python", "darwin"), onPath({ python3: "/usr/bin/python3" }));
+    expect(alternative).toEqual({ command: "python3", path: "/usr/bin/python3", certain: true });
+    const text = describeMissingCommand({ ...installHintFor("python", "darwin"), alternative });
+    expect(text).toContain("Use `python3` instead; nothing needs installing.");
+    expect(text).not.toMatch(/brew install/);
+  });
+
+  it("uses the Windows launcher when that is what is installed", () => {
+    expect(findInstalledAlternative(installHintFor("python", "win32"), onPath({ py: "C:\\Windows\\py.exe" })))
+      .toMatchObject({ command: "py", certain: true });
+  });
+
+  it("never offers pip as a stand-in for an interpreter", () => {
+    expect(findInstalledAlternative(installHintFor("python", "linux"), onPath({ pip3: "/usr/bin/pip3" }))).toBeUndefined();
+  });
+
+  it("suggests running a missing Python tool as a module, without claiming it is there", () => {
+    const alternative = findInstalledAlternative(installHintFor("pytest", "linux"), onPath({ python3: "/usr/bin/python3" }));
+    expect(alternative).toEqual({ command: "python3 -m pytest", path: "/usr/bin/python3", certain: false });
+    expect(describeMissingCommand({ ...installHintFor("pytest", "linux"), alternative })).toContain("If it is installed for the Python at /usr/bin/python3");
+  });
+
+  it("finds nothing when nothing suitable is installed", () => {
+    expect(findInstalledAlternative(installHintFor("python", "linux"), onPath({}))).toBeUndefined();
+  });
+
+  it("recognises Windows' Store alias for a missing Python", () => {
+    expect(detectMissingCommand("Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Manage App Execution Aliases.")).toBe("python");
   });
 });

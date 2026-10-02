@@ -210,11 +210,19 @@ function anthropicReasoningOff(model: string): Record<string, unknown> {
 // stays. It is shared across retries so overload cannot multiply the total wait.
 const COMPRESSION_TIMEOUT_MS = 300_000;
 
+/** The summary did not fit its output budget: the transcript is too large for one pass. */
+export class SummaryOverflowError extends Error {
+  constructor() {
+    super("Summary ran past the output token limit before it finished. Lower Keep Recent or compact at a lower trigger percentage so less transcript reaches the summariser; history was preserved.");
+    this.name = "SummaryOverflowError";
+  }
+}
+
 function validateSummary(text: string, stopReason?: string): string {
   if (stopReason === "length" || stopReason === "max_tokens") {
     // Reasoning is off, so the whole 8k budget went to the summary itself: the transcript is
-    // genuinely too large for one pass. The actionable levers are the ones that shorten it.
-    throw new Error("Summary ran past the output token limit before it finished. Lower Keep Recent or compact at a lower trigger percentage so less transcript reaches the summariser; history was preserved.");
+    // genuinely too large for one pass. compressHistory splits it and tries again.
+    throw new SummaryOverflowError();
   }
   if (!text.trim()) throw new Error("Provider returned an empty summary; history was preserved.");
   return text;
@@ -339,24 +347,116 @@ async function callBedrock(opts: CompressorOptions, transcript: string, signal: 
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 
+/** How many times an overflowing transcript is halved before giving up: at most four parts. */
+const MAX_SPLIT_DEPTH = 2;
+
+/**
+ * Two summaries of consecutive parts of one conversation, as one. Lists are concatenated in
+ * order (repeats dropped); the later part's objective and status describe where things stand
+ * now; the prose fields are joined. Deterministic, so merging can never overflow the way a
+ * third model call could.
+ */
+export function mergeSummaries(earlier: string, later: string): string {
+  let a: Record<string, unknown>;
+  let b: Record<string, unknown>;
+  try {
+    a = JSON.parse(earlier) as Record<string, unknown>;
+    b = JSON.parse(later) as Record<string, unknown>;
+  } catch {
+    return `${earlier}\n\n${later}`;
+  }
+  const list = (key: string): unknown[] => {
+    const seen = new Set<string>();
+    return [...(Array.isArray(a[key]) ? a[key] as unknown[] : []), ...(Array.isArray(b[key]) ? b[key] as unknown[] : [])]
+      .filter((item) => { const id = JSON.stringify(item); if (seen.has(id)) return false; seen.add(id); return true; });
+  };
+  const prose = (key: string): string => [a[key], b[key]].filter((value) => typeof value === "string" && value.trim()).join(" ");
+  const contextA = (a["workContext"] ?? {}) as Record<string, unknown>;
+  const contextB = (b["workContext"] ?? {}) as Record<string, unknown>;
+  const contextList = (key: string): unknown[] => [...new Set([
+    ...(Array.isArray(contextA[key]) ? contextA[key] as unknown[] : []),
+    ...(Array.isArray(contextB[key]) ? contextB[key] as unknown[] : []),
+  ])];
+  const metaA = (a["compressionMeta"] ?? {}) as Record<string, unknown>;
+  const metaB = (b["compressionMeta"] ?? {}) as Record<string, unknown>;
+  return JSON.stringify({
+    compressionMeta: { messageCount: Number(metaA["messageCount"] ?? 0) + Number(metaB["messageCount"] ?? 0), version: 1 },
+    objective: b["objective"] || a["objective"] || "",
+    status: b["status"] || a["status"] || "",
+    workContext: {
+      files: contextList("files"),
+      technologies: contextList("technologies"),
+      keySymbols: contextList("keySymbols"),
+      environment: [contextA["environment"], contextB["environment"]].filter((value) => typeof value === "string" && value.trim()).join(" "),
+    },
+    decisions: list("decisions"),
+    codeChanges: list("codeChanges"),
+    discoveries: list("discoveries"),
+    userRequirements: list("userRequirements"),
+    errors: list("errors"),
+    // Tasks the earlier part left open may have been finished later; the later list is current.
+    pendingTasks: Array.isArray(b["pendingTasks"]) ? b["pendingTasks"] : list("pendingTasks"),
+    conversationNarrative: prose("conversationNarrative"),
+    criticalContext: prose("criticalContext"),
+  });
+}
+
+/** The first valid JSON object in a model's reply, or the reply itself when there is none. */
+function extractSummaryJson(raw: string): string {
+  const trimmed = raw.trim();
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start === -1 || end === -1) return trimmed;
+  const jsonStr = trimmed.slice(start, end + 1);
+  try {
+    JSON.parse(jsonStr);
+    return jsonStr;
+  } catch {
+    return trimmed;
+  }
+}
+
+async function summarizeOnce(opts: CompressorOptions, messages: StoredMessage[], signal: AbortSignal): Promise<string> {
+  const transcript = messagesToText(messages);
+  return retryAsync(
+    () => opts.generateText
+      ? opts.generateText(SYSTEM_PROMPT, transcript, signal)
+      : opts.provider === "anthropic"
+      ? callAnthropic(opts, transcript, signal)
+      : opts.provider === "bedrock"
+      ? callBedrock(opts, transcript, signal)
+      : callOpenAI(opts, transcript, signal),
+    { policy: COMPRESSION_RETRY_POLICY, signal },
+  );
+}
+
+/**
+ * Summarise, and when the summary does not fit its output budget, summarise each half and merge.
+ * A long session used to fail compaction outright here and carry its whole uncompacted history
+ * on — exactly when shedding context mattered most.
+ */
+async function summarizeWithSplit(opts: CompressorOptions, messages: StoredMessage[], signal: AbortSignal, depth: number): Promise<string> {
+  try {
+    return extractSummaryJson(await summarizeOnce(opts, messages, signal));
+  } catch (err) {
+    if (!(err instanceof SummaryOverflowError) || depth >= MAX_SPLIT_DEPTH || messages.length < 2) throw err;
+    const middle = Math.ceil(messages.length / 2);
+    const [earlier, later] = await Promise.all([
+      summarizeWithSplit(opts, messages.slice(0, middle), signal, depth + 1),
+      summarizeWithSplit(opts, messages.slice(middle), signal, depth + 1),
+    ]);
+    return mergeSummaries(earlier, later);
+  }
+}
+
 export async function compressHistory(
   opts: CompressorOptions,
   messages: StoredMessage[],
 ): Promise<string> {
-  const transcript = messagesToText(messages);
   const signal = AbortSignal.timeout(COMPRESSION_TIMEOUT_MS);
   let raw: string;
   try {
-    raw = await retryAsync(
-      () => opts.generateText
-        ? opts.generateText(SYSTEM_PROMPT, transcript, signal)
-        : opts.provider === "anthropic"
-        ? callAnthropic(opts, transcript, signal)
-        : opts.provider === "bedrock"
-        ? callBedrock(opts, transcript, signal)
-        : callOpenAI(opts, transcript, signal),
-      { policy: COMPRESSION_RETRY_POLICY, signal },
-    );
+    raw = await summarizeWithSplit(opts, messages, signal, 0);
   } catch (err) {
     const detail = signal.aborted
       ? `Timed out after ${COMPRESSION_TIMEOUT_MS / 1000}s while generating the summary. Try a faster compression model or compact earlier.`
@@ -370,17 +470,6 @@ export async function compressHistory(
     throw error;
   }
 
-  // Validate the output is JSON — if not, return as-is (graceful degradation)
-  const trimmed = raw.trim();
-  const start = trimmed.indexOf("{");
-  const end = trimmed.lastIndexOf("}");
-  if (start === -1 || end === -1) return trimmed;
-
-  const jsonStr = trimmed.slice(start, end + 1);
-  try {
-    JSON.parse(jsonStr); // validate
-    return jsonStr;
-  } catch {
-    return trimmed;
-  }
+  // Already reduced to its JSON object where there was one (graceful degradation otherwise).
+  return raw;
 }

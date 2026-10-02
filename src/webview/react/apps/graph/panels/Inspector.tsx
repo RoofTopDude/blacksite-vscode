@@ -5,7 +5,7 @@
      Overview    the existing card for that kind of node
      Relations   grouped by kind and by counterpart codebase, with provenance
      Work        open tickets covering it; file a new one for it
-     Activity    Execution Runs that touched it (replay on the map)
+     Activity    Chat requests that changed it, and Execution Runs that touched it (replay on the map)
      Notes       map notes on it (or inside it); open them in the timeline
      References  attached documents that name it
 
@@ -269,11 +269,25 @@ function WorkTab({ view, node, members }: { view: GraphViewState; node: GraphNod
 function ActivityTab({ view, members }: { view: GraphViewState; members: ReadonlySet<string> }) {
   const live = view.liveActivity.filter((activity) => members.has(activity.path));
   const runs = view.context?.runs ?? null;
+  const changes = view.context?.changes ?? [];
   return (
     <div className="map-inspector-content">
       {live.length > 0 && (
         <div className="mb-1.5 rounded border border-cyan-300/20 bg-cyan-950/25 px-2 py-1 text-xs text-cyan-100/85">
           The agent is {live[0]!.kind === "read" ? "reading" : "working on"} {baseName(live[0]!.path)}{live.length > 1 ? ` and ${live.length - 1} more` : ""} now.
+        </div>
+      )}
+      {changes.length > 0 && (
+        <div className="mb-2">
+          <div className="mb-1 text-2xs uppercase tracking-wide text-muted-foreground">Changed in chat</div>
+          {changes.map((change) => (
+            <div key={`${change.path}:${change.at}:${change.sessionId}`} className="map-inspector-item">
+              <div className="truncate text-sm text-foreground" title={change.request}>{change.request || "Untitled request"}</div>
+              <div className="text-2xs text-muted-foreground">
+                {relativeTime(new Date(change.at).toISOString())} · {baseName(change.path)} · <span className="text-emerald-300/80">+{change.additions}</span> <span className="text-rose-300/80">−{change.deletions}</span>
+              </div>
+            </div>
+          ))}
         </div>
       )}
       {runs === null && <div className="text-xs text-muted-foreground">Looking up Execution Runs…</div>}

@@ -12,6 +12,7 @@ import { loadCheckpoint, hasCheckpoint } from "./checkpoint.js";
 import { registerFileWatcher, getSelectionContext, getFileContext, getDiagnosticContext, invalidateWorkspaceContextCache } from "./workspace-context.js";
 import { BlacksiteCodeActionProvider } from "./code-actions.js";
 import { DiagnosticsPublisher } from "./diagnostics-publisher.js";
+import { startDiagnosticPublishTracker } from "./post-edit-diagnostics.js";
 import { McpPanel } from "./mcp-panel.js";
 import { McpRegistry } from "./mcp-registry.js";
 import { BaseContextStore } from "./base-context-store.js";
@@ -50,7 +51,8 @@ import { SymbolIndexer } from "./graph/symbol-indexer.js";
 import { HierarchySnapshot } from "./graph/hierarchy-snapshot.js";
 import { RunFootprintIndex } from "./graph/run-footprints.js";
 import { ReferenceLinkIndex } from "./graph/reference-links.js";
-import { buildWorkspaceRoots, toNodeId } from "./graph/workspace-roots.js";
+import { buildWorkspaceRoots, resolveToNodeId, toNodeId } from "./graph/workspace-roots.js";
+import { ChangeLog } from "./graph/change-log.js";
 import { configuredWorkspaceRoot, resolvePrimaryWorkspaceRoot } from "./workspace-paths.js";
 import { RunStore } from "./runs/run-store.js";
 import { VideoRetentionManager, type VideoRetentionPolicy } from "./runs/video-retention.js";
@@ -77,6 +79,9 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     mermaidCodeLens,
     vscode.languages.registerCodeLensProvider({ language: "markdown" }, mermaidCodeLens),
   );
+  /* Early, so every publish after activation is on record: a check of a file whose diagnostics
+     settled before the check started reads as current instead of timing out. */
+  context.subscriptions.push(startDiagnosticPublishTracker());
 
   const openFolders = vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [];
   const workspaceRoot = resolvePrimaryWorkspaceRoot(
@@ -326,6 +331,13 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   );
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
   const updater = new ExtensionUpdater(context);
+  /* What each chat request changed, written by the harness after the turn (see change-log.ts) so
+     the agent does not have to narrate its own edits as map notes. */
+  const changeLog = new ChangeLog(
+    path.join(workspaceRoot, ".blacksite", "map", "changes.json"),
+    (file) => resolveToNodeId(getGraphRoots(), path.isAbsolute(file) ? file : path.join(workspaceRoot, file)),
+  );
+  chatProvider.setChangeLog(changeLog);
   const graphProvider = new GraphProvider(
     context, getGraphRoots, graphIndexer, relationshipSnapshot, structuralSnapshot, activityBus, graphAnnotations,
     () => symbolIndexer.edges(),
@@ -355,6 +367,7 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
         ? { runFootprints: new RunFootprintIndex(sequences, path.join(workspaceRoot, ".blacksite", "map", "run-footprints.json")) }
         : {}),
       referenceLinks: new ReferenceLinkIndex(reference),
+      changeLog,
     },
   );
   const runProvider = runStore && sequences

@@ -43,6 +43,8 @@ export interface ShellResult {
   timedOut: boolean;
   tier: OperationTier;
   cwd: string;
+  /** The project virtualenv a Python tool ran from, workspace-relative, when it did. */
+  projectEnvironment?: string;
 }
 
 // ── Long-running processes ────────────────────────────────────────────────────

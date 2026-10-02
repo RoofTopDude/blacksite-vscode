@@ -22,7 +22,7 @@ import type { HierarchySnapshot } from "./graph/hierarchy-snapshot.js";
 import type { WorkspaceHierarchy } from "./graph/hierarchy.js";
 import type { GraphEdge, GraphNode } from "./graph/graph-model.js";
 import { resolveToNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
-import type { ProjectTopology } from "./graph/project-topology.js";
+import { owningProjectForPath, type ProjectTopology } from "./graph/project-topology.js";
 import {
   buildAdjacency,
   findNodes,
@@ -98,6 +98,20 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
 
   async syncIndex(): Promise<{ appliedChanges: number }> {
     return { appliedChanges: await this._indexer.flushPending() };
+  }
+
+  projectRootOf(value: string): string | undefined {
+    const topology = this._indexer.topology();
+    if (!topology) return undefined;
+    const id = resolveToNodeId(this._roots(), value);
+    if (!id) return undefined;
+    return owningProjectForPath(topology, id)?.root ?? "";
+  }
+
+  isMapIndexable(value: string): boolean {
+    const id = resolveToNodeId(this._roots(), value);
+    if (!id) return false;
+    return typeof this._indexer.isExcludedPath === "function" ? !this._indexer.isExcludedPath(id) : true;
   }
 
   /** Compact prose form injected into the live workspace context on every model turn. */

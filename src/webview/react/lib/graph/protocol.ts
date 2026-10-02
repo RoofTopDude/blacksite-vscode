@@ -163,6 +163,17 @@ export interface MapRunTouch {
   events: number;
 }
 
+/** A chat request that changed a file in the selection, recorded by the harness (inspector
+    Activity tab). */
+export interface MapChangeTouch {
+  path: string;
+  at: number;
+  sessionId: string;
+  request: string;
+  additions: number;
+  deletions: number;
+}
+
 /** An attached reference document that names code in the selection. */
 export interface MapReferenceLink {
   id: string;
@@ -430,7 +441,7 @@ export type GraphHostMessage =
   /** Files of one hierarchy group the global render sample dropped. */
   | { type: "scope_detail"; groupId: string; seq: number; nodes: GraphNode[]; edges: GraphEdge[]; truncated?: boolean }
   | { type: "search_results"; query: string; requestId: number; results: Array<{ id: string; dir: string; codebase?: string }> }
-  | { type: "context_state"; requestId: number; runs: MapRunTouch[]; references: MapReferenceLink[] }
+  | { type: "context_state"; requestId: number; runs: MapRunTouch[]; references: MapReferenceLink[]; changes?: MapChangeTouch[] }
   | { type: "annotations_changed"; annotations: GraphAnnotation[] }
   /** Open-ticket weight per file id — priority-weighted, resolved on the host from each
       ticket's declared files and areas so the webview never has to expand an area itself. */

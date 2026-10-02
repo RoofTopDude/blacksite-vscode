@@ -37,8 +37,21 @@ export interface DiagnosticBaseline {
   readonly fingerprints: Map<string, NormalizedDiagnostic>;
 }
 
+/**
+ * Whether one requested file's diagnostics describe its current content.
+ *
+ * - `ready`: a publish for this file arrived during the wait, or the last publish seen for it
+ *   matches the content the document holds now.
+ * - `timed_out`: the file has a checker, but its last publish describes older content and no new
+ *   one arrived in time.
+ * - `no_checker`: nothing has ever published diagnostics for this file since the tracker started.
+ *   For a file the session edited, that means no language server or linter covers it (Markdown,
+ *   most YAML/TOML), so an empty result is not evidence either way.
+ */
+export type FileDiagnosticStatus = "ready" | "timed_out" | "no_checker";
+
 export interface DiagnosticSnapshot {
-  status: "ready" | "partial" | "unknown" | "timed_out" | "cancelled";
+  status: "ready" | "partial" | "unknown" | "timed_out" | "cancelled" | "no_checker";
   scope: "file" | "published_workspace" | "activated_workspace";
   counts: SeverityCounts;
   allCounts: SeverityCounts;
@@ -52,6 +65,8 @@ export interface DiagnosticSnapshot {
     observedDiagnosticChange: boolean;
     waitedMs: number;
     documentVersions: Record<string, number>;
+    /** Per requested file (keyed like documentVersions), when files were requested. */
+    files?: Record<string, FileDiagnosticStatus>;
   };
   coverage: {
     requestedFiles?: number;
@@ -81,6 +96,83 @@ interface SnapshotOptions {
   waitForChange?: boolean;
   scope?: DiagnosticSnapshot["scope"];
   coverageCapped?: boolean;
+}
+
+/**
+ * When each file's diagnostics were last published, and for which document version.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────
+ * A snapshot used to count as current only if a publish arrived *during* its 1.5 s wait. A
+ * language server publishes once per change, usually within moments of the edit, so a check the
+ * agent ran a few seconds later saw nothing new and reported `timed_out` for a file whose
+ * diagnostics were perfectly current. Files with no checker at all (Markdown, most YAML) timed
+ * out every time. The verification gate read both as a failed check, and the agent learned that
+ * code_diagnostics "always times out" and to discount it.
+ *
+ * Remembering the last publish per file lets a quiet wait be read correctly: the diagnostics VS
+ * Code holds already describe the current content, or nothing has ever checked this file.
+ *
+ * ── Bounds ──────────────────────────────────────────────────────────────────
+ * One listener for the whole extension, and an insertion-ordered map capped at MAX_TRACKED_URIS
+ * so a workspace-wide publish over tens of thousands of files cannot grow it without limit.
+ */
+const MAX_TRACKED_URIS = 10_000;
+
+interface PublishRecord {
+  at: number;
+  /** Version of the open document when the publish arrived; undefined if it was not open. */
+  version?: number;
+}
+
+const publishes = new Map<string, PublishRecord>();
+let trackerStarted = false;
+
+function recordPublishes(uris: readonly vscode.Uri[]): void {
+  const now = Date.now();
+  const openVersions = new Map<string, number>();
+  for (const doc of vscode.workspace.textDocuments ?? []) openVersions.set(doc.uri.toString(), doc.version);
+  for (const uri of uris) {
+    const key = uri.toString();
+    publishes.delete(key);
+    publishes.set(key, { at: now, version: openVersions.get(key) });
+  }
+  while (publishes.size > MAX_TRACKED_URIS) {
+    const oldest = publishes.keys().next().value;
+    if (oldest === undefined) break;
+    publishes.delete(oldest);
+  }
+}
+
+/** Start recording diagnostic publishes. Call once at activation; the returned disposable stops it. */
+export function startDiagnosticPublishTracker(): vscode.Disposable {
+  trackerStarted = true;
+  const subscription = vscode.languages.onDidChangeDiagnostics((event) => recordPublishes(event.uris));
+  return {
+    dispose: () => {
+      subscription.dispose();
+      trackerStarted = false;
+      publishes.clear();
+    },
+  };
+}
+
+/** Read whether the diagnostics VS Code holds for `uri` describe the content it has now. */
+function fileStatusFromHistory(uri: vscode.Uri, currentVersion: number | undefined): FileDiagnosticStatus {
+  const record = publishes.get(uri.toString());
+  if (!record) return "no_checker";
+  if (record.version !== undefined) return record.version === currentVersion ? "ready" : "timed_out";
+  // Published while the file was closed: current unless the file changed on disk since.
+  try {
+    return fs.statSync(uri.fsPath).mtimeMs <= record.at ? "ready" : "timed_out";
+  } catch {
+    return "timed_out";
+  }
+}
+
+function overallFileStatus(states: readonly FileDiagnosticStatus[]): DiagnosticSnapshot["status"] {
+  if (states.includes("timed_out")) return "timed_out";
+  if (states.length > 0 && states.every((state) => state === "no_checker")) return "no_checker";
+  return "ready";
 }
 
 const SEVERITY_NAMES = ["error", "warning", "info", "hint"];
@@ -119,17 +211,22 @@ export async function collectDiagnosticSnapshot(
   const identity = new WorkspaceIdentity(workspaceRoot);
   const uris = opts.uris ? dedupe(opts.uris) : undefined;
   const documentVersions: Record<string, number> = {};
+  const opened: Array<{ uri: vscode.Uri; key: string; version: number | undefined }> = [];
   let activatedFiles = 0;
 
   if (uris) {
     for (const uri of uris) {
+      const display = identity.fromUri(uri);
+      const key = display.ok ? `${display.value.rootId}:${display.value.path}` : uri.toString();
       try {
         const doc = await vscode.workspace.openTextDocument(uri);
-        const display = identity.fromUri(uri);
-        const key = display.ok ? `${display.value.rootId}:${display.value.path}` : uri.toString();
         documentVersions[key] = doc.version;
+        opened.push({ uri, key, version: doc.version });
         activatedFiles += 1;
-      } catch { /* invalid paths are rejected by callers; a disappearing file stays unactivated */ }
+      } catch {
+        /* invalid paths are rejected by callers; a disappearing file stays unactivated */
+        opened.push({ uri, key, version: undefined });
+      }
     }
   }
 
@@ -139,7 +236,20 @@ export async function collectDiagnosticSnapshot(
         quietMs: opts.quietMs ?? 180,
         signal: opts.signal,
       })
-    : { observed: false, timedOut: false, cancelled: false, waitedMs: 0 };
+    : { observed: false, timedOut: false, cancelled: false, waitedMs: 0, changed: new Set<string>() };
+
+  /* Per file, for an explicit file request: a publish during the wait settles it, and otherwise the
+     publish history says whether what VS Code holds is current. Only with the tracker running —
+     without it there is no history, and the old reading (a quiet wait is a timeout) stands. */
+  let files: Record<string, FileDiagnosticStatus> | undefined;
+  if (trackerStarted && opts.scope === "file" && opts.waitForChange && opened.length > 0 && !wait.cancelled) {
+    files = {};
+    for (const entry of opened) {
+      files[entry.key] = wait.changed.has(entry.uri.toString())
+        ? (wait.timedOut ? "timed_out" : "ready")
+        : fileStatusFromHistory(entry.uri, entry.version);
+    }
+  }
 
   const rawEntries = uris ? entriesForUris(uris) : vscode.languages.getDiagnostics();
   const inWorkspace = rawEntries.filter(([uri]) => identity.contains(uri));
@@ -163,11 +273,13 @@ export async function collectDiagnosticSnapshot(
     ? "cancelled"
     : scope === "published_workspace"
       ? "partial"
-      : wait.timedOut
-        ? "timed_out"
-        : wait.observed
-          ? "ready"
-          : "unknown";
+      : files
+        ? overallFileStatus(Object.values(files))
+        : wait.timedOut
+          ? "timed_out"
+          : wait.observed
+            ? "ready"
+            : "unknown";
 
   const delta = opts.baseline ? diagnosticDelta(opts.baseline, allProblems) : undefined;
   return {
@@ -184,6 +296,7 @@ export async function collectDiagnosticSnapshot(
       observedDiagnosticChange: wait.observed,
       waitedMs: wait.waitedMs,
       documentVersions,
+      ...(files ? { files } : {}),
     },
     coverage: {
       requestedFiles: uris?.length,
@@ -242,9 +355,10 @@ export function staleDiagnosticFiles(workspaceRoot: string): string[] {
 export async function waitForDiagnosticQuiescence(
   uris: vscode.Uri[],
   opts: { timeoutMs: number; quietMs: number; signal?: AbortSignal },
-): Promise<{ observed: boolean; timedOut: boolean; cancelled: boolean; waitedMs: number }> {
+): Promise<{ observed: boolean; timedOut: boolean; cancelled: boolean; waitedMs: number; changed: Set<string> }> {
   const started = Date.now();
-  if (opts.signal?.aborted) return { observed: false, timedOut: false, cancelled: true, waitedMs: 0 };
+  const changed = new Set<string>();
+  if (opts.signal?.aborted) return { observed: false, timedOut: false, cancelled: true, waitedMs: 0, changed };
   return new Promise((resolve) => {
     const keys = new Set(uris.map((uri) => uri.toString()));
     let observed = false;
@@ -257,11 +371,13 @@ export async function waitForDiagnosticQuiescence(
       clearTimeout(deadlineTimer);
       if (quietTimer) clearTimeout(quietTimer);
       opts.signal?.removeEventListener("abort", onAbort);
-      resolve({ observed, timedOut, cancelled, waitedMs: Date.now() - started });
+      resolve({ observed, timedOut, cancelled, waitedMs: Date.now() - started, changed });
     };
     const onAbort = (): void => finish(false, true);
     const subscription = vscode.languages.onDidChangeDiagnostics((event) => {
-      if (!event.uris.some((uri) => keys.has(uri.toString()))) return;
+      const hits = event.uris.filter((uri) => keys.has(uri.toString()));
+      if (hits.length === 0) return;
+      for (const uri of hits) changed.add(uri.toString());
       observed = true;
       if (quietTimer) clearTimeout(quietTimer);
       quietTimer = setTimeout(() => finish(false, false), opts.quietMs);

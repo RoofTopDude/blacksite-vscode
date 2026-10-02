@@ -61,6 +61,8 @@ function createBedrockSession() {
     memoryProvider: { append: () => undefined, readMemory: () => "", readContext: () => "" },
     editProvider,
     graphProvider,
+    // Both gates forcing a continuation is the case under test, so notes are required here.
+    mapNotes: "require",
   } as never);
 }
 

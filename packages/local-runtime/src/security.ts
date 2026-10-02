@@ -4,15 +4,31 @@ import type { OperationClassification, OperationTier } from "./types.js";
 import { isWithinWorkspace, normalizeWorkspaceRoot, resolveReadPath } from "./path-policy.js";
 import { isInsideDirectory } from "./toolchain-roots.js";
 
-const ARG_BLOCKLIST: Record<string, string[]> = {
-  git: ["--upload-pack", "--receive-pack", "--exec-path", "--ext-diff", "--ssh-command"],
-  // `-p`/`--print` evaluates exactly like `-e`, and `--import`/`--loader` accept a `data:` URL.
-  node: ["-e", "--eval", "-p", "--print", "-r", "--require", "--import", "--loader", "--experimental-loader"],
+/**
+ * Flags that run a code snippet given on the command line. These are allowed, but always shown
+ * to the user in an approval prompt with the snippet, even for a binary they always allow — the
+ * snippet is the code being run, and nothing else in the prompt would show it.
+ *
+ * They used to be refused outright. That did not stop arbitrary code (`python script.py` runs
+ * without a prompt once `python` is always allowed); it only sent the agent to write a scratch
+ * file and run that instead, which hid the code from the prompt and left a file behind.
+ */
+const EVAL_FLAGS: Record<string, string[]> = {
+  // `-p`/`--print` evaluates exactly like `-e`.
+  node: ["-e", "--eval", "-p", "--print"],
   deno: ["eval"],
   bun: ["-e", "--eval", "-p", "--print"],
   python: ["-c"], py: ["-c"], python3: ["-c"],
   ruby: ["-e"], perl: ["-e", "-E"], php: ["-r"],
   lua: ["-e"], rscript: ["-e"], r: ["-e"],
+};
+
+/** Arguments that make a trusted binary launch some other program, or load code from somewhere a
+ *  prompt cannot show. Refused outright. */
+const ARG_BLOCKLIST: Record<string, string[]> = {
+  git: ["--upload-pack", "--receive-pack", "--exec-path", "--ext-diff", "--ssh-command"],
+  // `--import`/`--loader` accept a `data:` URL.
+  node: ["-r", "--require", "--import", "--loader", "--experimental-loader"],
   npm: ["--script-shell", "--userconfig", "--call"],
   pnpm: ["--script-shell", "--userconfig"],
   npx: ["--userconfig", "-c", "--call"],
@@ -82,7 +98,8 @@ function isTrustedExecutablePath(command: string, executableDirs: readonly strin
  * - `allowedCommands` extends the built-in allowlist with extra binaries.
  * - `deniedCommands` hard-blocks binaries; it wins over every allow source.
  * - `autoApprove` runs a binary's network/destructive operations without a prompt.
- * - `allowEvalFlags` opts out of the inline-eval argument blocklist (advanced, unsafe).
+ * - `allowEvalFlags` runs inline-eval snippets without the approval prompt they otherwise always
+ *   get, and opts out of the argument blocklist (advanced, unsafe).
  * - `readToolchains` (default on) lets tools read installed toolchains outside the workspace.
  * - `readableRoots` adds directories outside the workspace that tools may read without asking.
  */
@@ -99,10 +116,41 @@ function normalizeList(values?: string[]): string[] {
   return (values ?? []).map(normalizeCommandName).filter(Boolean);
 }
 
+/** Longest snippet shown in an approval prompt; past it the rest is counted, not shown. */
+const MAX_SNIPPET_CHARS = 2_000;
+
 /**
- * Refuse the inline-eval/script-shell flags that turn an interpreter's command line into
- * arbitrary code — a safety floor that only the explicit `allowEvalFlags` opt-in disables.
- * Where an argument *points* is a separate question, answered by {@link externalPathArgs}.
+ * The code an inline-eval flag runs (`python -c "…"`, `node -e "…"`), or undefined when the
+ * command has none. Reads the snippet from the argument after the flag, or from the flag itself
+ * when its value is attached (`--eval=…`, `-cprint(1)`).
+ */
+export function inlineCodeSnippet(command: string, args: readonly string[]): string | undefined {
+  const flags = EVAL_FLAGS[normalizeCommandName(command)];
+  if (!flags) return undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = String(args[index]);
+    for (const flag of flags) {
+      if (!argInvokesFlag(arg, flag, false)) continue;
+      if (arg === flag || (/^-[A-Za-z]+$/.test(arg) && arg.endsWith(flag.slice(1)))) return String(args[index + 1] ?? "");
+      if (flag.startsWith("--") && arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1);
+      return arg.slice(flag.length);
+    }
+  }
+  return undefined;
+}
+
+function describeInlineCode(command: string, snippet: string): string {
+  const shown = snippet.length > MAX_SNIPPET_CHARS
+    ? `${snippet.slice(0, MAX_SNIPPET_CHARS)}\n… (${snippet.length - MAX_SNIPPET_CHARS} more characters)`
+    : snippet;
+  return `Run inline ${normalizeCommandName(command)} code:\n${shown}`;
+}
+
+/**
+ * Refuse the flags that make a trusted binary launch another program or load hidden code — a
+ * safety floor that only the explicit `allowEvalFlags` opt-in disables. Inline-eval flags are not
+ * refused here: they prompt (see {@link resolveShellConfirmation}). Where an argument *points* is
+ * a separate question, answered by {@link externalPathArgs}.
  */
 export function validateArgs(
   command: string,
@@ -117,9 +165,8 @@ export function validateArgs(
     for (const flag of blocked) {
       if (argInvokesFlag(arg, flag, abbreviates)) {
         throw new Error(
-          `Argument "${flag}" is not allowed for "${base}" for security reasons. ` +
-          `Write the snippet to a file and run that file instead ` +
-          `(e.g. write a .cjs/.mjs/.py file with file_write, then run it). Do not retry this same flag.`,
+          `Argument "${flag}" is not allowed for "${base}" for security reasons: it makes "${base}" run another program or load code the approval prompt cannot show. ` +
+          `Run what you need directly instead. Do not retry this same flag.`,
         );
       }
     }
@@ -560,6 +607,12 @@ export function resolveShellConfirmation(
   const external = access.externalPaths ?? [];
   const reachesOutside = external.some((entry) => !entry.toolchain)
     || (external.length > 0 && !autoApproved && !READ_ONLY_INSPECTION_BINARIES.has(base));
+  // Inline code always asks, with the code in the prompt — "always allow python" is about the
+  // binary, not about whatever snippet comes with it. Only allowEvalFlags skips this.
+  const snippet = policy?.allowEvalFlags ? undefined : inlineCodeSnippet(command, args);
+  if (snippet !== undefined && !confirmed) {
+    return { kind: "confirm", tier, description: describeInlineCode(command, snippet), unrecognizedCommand };
+  }
   if ((needsConfirmation || unrecognizedCommand || codeExecution || reachesOutside) && !confirmed) {
     return { kind: "confirm", tier, description: buildDescription(command, args, unrecognizedCommand, access), unrecognizedCommand };
   }

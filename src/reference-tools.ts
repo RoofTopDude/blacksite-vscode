@@ -274,7 +274,13 @@ export class ReferenceToolService {
     }
     const candidate = resolveWorkspacePath(requestedPath, [...this.workspaceRoots]);
     if (!candidate) return { ok: false, error: `Workspace PDF path is outside the open workspace: ${requestedPath}` };
-    if (extensionOf(candidate) !== "pdf") return { ok: false, error: `'${requestedPath}' is not a PDF. Workspace paths are supported only for PDFs.` };
+    if (extensionOf(candidate) !== "pdf") {
+      return {
+        ok: false,
+        error: `'${requestedPath}' is not a PDF. The reference tools read workspace files only when they are PDFs; `
+          + "read any other workspace file with file_read (and search it with file_search). Do not retry this tool for non-PDF files.",
+      };
+    }
 
     try {
       const physical = fs.realpathSync(candidate);

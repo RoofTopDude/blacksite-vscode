@@ -499,6 +499,12 @@ export class GraphIndexer implements vscode.Disposable {
     return exclusionPolicy(this._config());
   }
 
+  /** Whether a map id sits under a directory the map never indexes (a dot directory, a virtualenv,
+      node_modules, .blacksite …), by the same rule the scan applies. */
+  isExcludedPath(id: string): boolean {
+    return hasExcludedSegment(id, this._exclusions());
+  }
+
   private _markDirty(uri: vscode.Uri): void {
     const rel = toNodeId(this._roots(), uri.fsPath);
     /* The watcher matters as much as the enumerate path: without this, a file

@@ -19,6 +19,7 @@ export {
   classifyOperation, classifyCommandPermission, buildDescription, isAllowedCommand, requiresTierConfirmation,
   normalizeCommandName, validateArgs, DEFAULT_ALLOWED_COMMANDS, resolveConfirmation, resolveShellConfirmation,
   requiresCodeExecutionConfirmation, resolveCommandForSpawn, externalPathArgs, isReadOnlyCommand,
+  inlineCodeSnippet,
 } from "./security.js";
 export type { CommandPolicy, CommandClassification, ShellConfirmationOutcome, CommandAccess, ExternalPathArg } from "./security.js";
 export { computeToolchainRoots, isInsideToolchainRoot } from "./toolchain-roots.js";
@@ -30,6 +31,7 @@ export { detectMissingCommand, installHintFor, describeMissingCommand } from "./
 export type { InstallHint, InstallOption } from "./missing-command.js";
 export { detectFramework, runTests } from "./test-harness.js";
 export { buildSanitizedProcessEnv } from "./process-env.js";
+export { findProjectVenv, venvExecutable, venvPythonVersion, resolveProjectPythonTool, PROJECT_PYTHON_TOOLS } from "./project-interpreter.js";
 export { createWorktree, removeWorktree, listWorktrees, handleWorktreeOp, resolveManagedWorktreePath } from "./subagent-runner.js";
 export { handleGithub, handleGitlab, handleJira, handleConfluence, handleSalesforce, normalizeServiceOrigin } from "./service-tools.js";
 export type {

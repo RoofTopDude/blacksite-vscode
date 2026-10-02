@@ -88,6 +88,19 @@ const write = (id: string, file: string) => call(id, "file_write", { path: file,
 const reminders = (scripted: ScriptedProviderSession) => scripted.userTexts.filter((text) => text.startsWith("[Internal continuation]"));
 
 describe("scratch files and the completion gates", () => {
+  it("owes nothing for a script kept in the scratch folder, and keeps that folder out of git", async () => {
+    const root = workspace();
+    const { session, scripted } = makeSession(root, ({ turnIndex }) => {
+      if (turnIndex === 0) return { toolCalls: [write("w", ".blacksite/scratch/probe.py")], stopReason: "tool_use", usage };
+      return { text: "done", stopReason: "end_turn", usage };
+    }, { mapNotes: "require" });
+    await run(session);
+
+    expect(reminders(scripted)).toEqual([]);
+    expect(session.runtimeState.verification.status).toBe("idle");
+    expect(fs.readFileSync(path.join(root, ".blacksite", "scratch", ".gitignore"), "utf8")).toContain("*");
+  });
+
   it("owes nothing for a script written and then removed with file_delete", async () => {
     const root = workspace();
     const { session, scripted } = makeSession(root, ({ turnIndex }) => {
@@ -115,18 +128,18 @@ describe("scratch files and the completion gates", () => {
     const [reminder] = reminders(scripted);
     expect(reminder).toContain("src/a.ts");
     expect(reminder).not.toContain("check.mjs");
-    expect(events.some((event) => event.type === "execution_diagnostic" && event.message.includes("since deleted: check.mjs"))).toBe(true);
+    expect(events.some((event) => event.type === "execution_diagnostic" && event.message.includes("no longer on disk: check.mjs"))).toBe(true);
     expect(session.runtimeState.verification).toMatchObject({ status: "passed", files: ["src/a.ts"] });
   });
 
   it("names one file once, however the tool reported it", async () => {
     const root = workspace();
     const { session } = makeSession(root, ({ turnIndex }) => turnIndex === 0
-      ? { toolCalls: [write("w", "notes.md")], stopReason: "tool_use", usage }
+      ? { toolCalls: [write("w", "notes.ts")], stopReason: "tool_use", usage }
       : { text: "done", stopReason: "end_turn", usage });
     await run(session);
     // file_write reports the absolute path as well as the relative one it was given.
-    expect(session.exportState().verification?.files).toEqual(["notes.md"]);
+    expect(session.exportState().verification?.files).toEqual(["notes.ts"]);
   });
 
   it("keeps a deleted pre-existing file pending and marks it deleted in the reminder", async () => {
@@ -174,6 +187,9 @@ describe("scratch files and the completion gates", () => {
 
 describe("workspace_refresh", () => {
   it("re-syncs the lists with the disk without passing the gate", async () => {
+    /* legacy.ts existed before the session, was rewritten, then removed from the shell. The pass
+       before every iteration drops its note debt on its own (it was on disk when edited, so its
+       absence is a deletion); its verification stays owed, since deleting a real file is a change. */
     const root = workspace({ "src/a.ts": "old", "legacy.ts": "old" });
     const { session, scripted, graphProvider } = makeSession(root, ({ turnIndex }) => {
       if (turnIndex === 0) return { toolCalls: [write("a", "src/a.ts"), write("l", "legacy.ts")], stopReason: "tool_use", usage };
@@ -185,7 +201,7 @@ describe("workspace_refresh", () => {
 
     const refresh = scripted.toolResults.flat().find((result) => result.tool_use_id === "r")!;
     const body = JSON.parse(refresh.content) as Record<string, unknown>;
-    expect(body["droppedReminders"]).toEqual(["legacy.ts"]);
+    expect(body["droppedReminders"]).toEqual([]);
     expect(body["staleDiagnosticsFor"]).toEqual(["legacy.ts"]);
     expect(body["mapIndex"]).toEqual({ appliedChanges: 1 });
     expect(body["outstanding"]).toEqual([

@@ -531,9 +531,10 @@ export const CODE_INTEL_TOOLS: ToolDefinition[] = [
   tool(
     "code_diagnostics",
     "lsp.diagnostics",
-    "Read diagnostics published to VS Code. File results report freshness; workspace results report published-cache coverage and remain partial unless every relevant file has been analyzed. Use compiler, linter, and test tools for definitive whole-project verification.",
+    "Read diagnostics published to VS Code. Pass `paths` to check a whole change set in one call. File results report per-file freshness: `ready` (current), `timed_out` (the language server has not caught up yet), or `no_checker` (nothing covers that file type, so an empty result proves nothing). Workspace results report published-cache coverage and remain partial unless every relevant file has been analyzed. Use compiler, linter, and test tools for definitive whole-project verification.",
     {
       path: str("File path to scope diagnostics (omit for the whole workspace)"),
+        paths: arr({ type: "string" }, "Several file paths checked together (max 50), e.g. every file you changed"),
         rootId: str("Workspace-root identifier when `path` is ambiguous in a multi-root workspace"),
         severity: enumStr("Minimum severity to include (includes that level and more severe).", ["error", "warning", "info", "hint"]),
         limit: num("Max problems to return (default 100, max 500)"),
@@ -2450,6 +2451,64 @@ export function validateToolInput(toolName: string, input: Record<string, unknow
   const issues: ToolInputValidationIssue[] = [];
   validateObjectAgainstSchema(input, toolDef.input_schema as unknown as Record<string, unknown>, "", issues);
   return issues;
+}
+
+const MAX_SHAPE_CHARS = 700;
+
+function describeSchemaType(schema: Record<string, unknown> | undefined, depth: number): string {
+  if (!schema) return "any";
+  if (Array.isArray(schema["enum"])) return (schema["enum"] as unknown[]).map((value) => JSON.stringify(value)).join(" | ");
+  const type = schema["type"];
+  if (type === "array") {
+    const items = schema["items"] as Record<string, unknown> | undefined;
+    return `${describeSchemaType(items, depth)}[]`;
+  }
+  if (type === "object" && schema["properties"] && depth < 2) return describeObjectShape(schema, depth + 1);
+  return typeof type === "string" ? type : "any";
+}
+
+function describeObjectShape(schema: Record<string, unknown>, depth: number): string {
+  const properties = (schema["properties"] ?? {}) as Record<string, Record<string, unknown>>;
+  const required = new Set(Array.isArray(schema["required"]) ? schema["required"] as string[] : []);
+  // Required keys first: they are what a malformed call is usually missing.
+  const keys = Object.keys(properties).sort((a, b) => Number(required.has(b)) - Number(required.has(a)));
+  return `{ ${keys.map((key) => `${key}${required.has(key) ? "" : "?"}: ${describeSchemaType(properties[key], depth)}`).join(", ")} }`;
+}
+
+/**
+ * The argument shape a tool expects, compact enough to append to a validation error: required
+ * keys first, optional ones marked `?`, nested objects one level deep. A model that guessed the
+ * shape wrong ("target must be object", "text is required") gets the right one in the same reply
+ * instead of abandoning the tool for a cruder one.
+ */
+export function describeExpectedToolShape(toolName: string): string | undefined {
+  const toolDef = TOOL_DEFINITION_MAP[toolName];
+  if (!toolDef) return undefined;
+  const shape = describeObjectShape(toolDef.input_schema as unknown as Record<string, unknown>, 0);
+  return shape.length > MAX_SHAPE_CHARS ? `${shape.slice(0, MAX_SHAPE_CHARS)}…` : shape;
+}
+
+/**
+ * Check a value against a JSON Schema the harness does not own (an MCP tool's `inputSchema`),
+ * with the same rules as the built-in tools, and describe the shape it expects.
+ */
+export function checkAgainstSchema(value: unknown, schema: Record<string, unknown>): { issues: ToolInputValidationIssue[]; shape: string } {
+  const shapeText = describeObjectShape(schema, 0);
+  const shape = shapeText.length > MAX_SHAPE_CHARS ? `${shapeText.slice(0, MAX_SHAPE_CHARS)}…` : shapeText;
+  if (value === null || value === undefined || typeof value !== "object" || Array.isArray(value)) {
+    return { issues: [{ path: "", kind: "invalid_type", message: "Arguments must be a JSON object." }], shape };
+  }
+  const issues: ToolInputValidationIssue[] = [];
+  validateObjectAgainstSchema(value as Record<string, unknown>, schema, "", issues);
+  return { issues, shape };
+}
+
+/** Top-level argument keys the tool does not define — usually a guessed name for a real one. */
+export function unknownToolArguments(toolName: string, input: unknown): string[] {
+  const toolDef = TOOL_DEFINITION_MAP[toolName];
+  if (!toolDef || !input || typeof input !== "object" || Array.isArray(input)) return [];
+  const properties = ((toolDef.input_schema as unknown as Record<string, unknown>)["properties"] ?? {}) as Record<string, unknown>;
+  return Object.keys(input as Record<string, unknown>).filter((key) => !(key in properties));
 }
 
 /**

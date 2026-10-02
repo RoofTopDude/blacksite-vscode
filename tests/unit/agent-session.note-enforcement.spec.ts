@@ -98,6 +98,9 @@ function createSession(overrides: Partial<ConstructorParameters<typeof AgentSess
     memoryProvider: { append: () => undefined, readMemory: () => "", readContext: () => "" },
     editProvider: createFakeEditProvider(),
     graphProvider: createFakeGraphProvider(),
+    // The forced-continuation behaviour under test is the opt-in "require" mode; the default
+    // "suggest" mode has its own cases at the end of this file.
+    mapNotes: "require",
     ...overrides,
     disabledTools,
   });
@@ -274,5 +277,75 @@ describe("AgentSession — Codebase Map note enforcement", () => {
     expect(events.filter((e) => e.type === "turn_complete")).toHaveLength(1);
     expect(scripted.userTexts.some((t) => t.includes("map_note_add"))).toBe(false);
     expect(events.some((e) => e.type === "execution_diagnostic" && e.message.includes("src/off.ts"))).toBe(false);
+  });
+
+  it("never asks for a note on a file the map cannot index", async () => {
+    const scripted = new ScriptedProviderSession(editThenEndTurn(".har-scratch/probe.py"));
+    const graphProvider = { ...createFakeGraphProvider(), isMapIndexable: (value: string) => !value.startsWith(".har-scratch/") };
+    const { session } = createSession({ providerTurnSessionFactory: () => scripted, graphProvider });
+
+    const events = await collectEvents(session.send("probe something"));
+
+    expect(events.filter((e) => e.type === "turn_complete")).toHaveLength(1);
+    expect(scripted.userTexts.some((t) => t.includes("map_note_add"))).toBe(false);
+    expect(session.exportState().dirtyMapFiles).toBeUndefined();
+  });
+});
+
+describe("AgentSession — Codebase Map notes in suggest mode (the default)", () => {
+  const editThenEndTurn = (path: string): ScriptedTurnFactory => ({ turnIndex }) => {
+    if (turnIndex === 0) {
+      const call: ToolUseBlock = { type: "tool_use", id: "call-edit", name: "file_edit", input: { path, oldString: "a", newString: "b" } };
+      return { toolCalls: [call], stopReason: "tool_use", usage };
+    }
+    return { text: "Done editing.", stopReason: "end_turn", usage };
+  };
+
+  /** The per-turn context tail as the model saw it, captured at the turn that ends. */
+  const capturingTail = (factory: ScriptedTurnFactory, session: () => AgentSession, seen: string[]): ScriptedTurnFactory => (state) => {
+    seen.push((session() as unknown as { _dynamicContext(): string })._dynamicContext());
+    return factory(state);
+  };
+
+  it("offers the note in the checklist but finishes without a forced continuation", async () => {
+    const tails: string[] = [];
+    const holder: { session?: AgentSession } = {};
+    const scripted = new ScriptedProviderSession(capturingTail(editThenEndTurn("src/suggest.ts"), () => holder.session!, tails));
+    const { session } = createSession({ providerTurnSessionFactory: () => scripted, mapNotes: undefined });
+    holder.session = session;
+
+    const events = await collectEvents(session.send("edit src/suggest.ts"));
+
+    expect(events.filter((e) => e.type === "turn_complete")).toHaveLength(1);
+    // One provider turn for the edit, one for the answer: no reminder round trip.
+    expect(scripted.userTexts.some((t) => t.includes("[Internal continuation]"))).toBe(false);
+    expect(events.some((e) => e.type === "execution_diagnostic" && e.message.includes("src/suggest.ts"))).toBe(false);
+    expect(tails.some((context) => context.includes("Optional:") && context.includes("src/suggest.ts"))).toBe(true);
+    // Debt does not pile up across turns: the next turn starts with nothing owed.
+    expect(session.exportState().dirtyMapFiles).toBeUndefined();
+  });
+
+  it("does not mention notes at all in off mode", async () => {
+    const tails: string[] = [];
+    const holder: { session?: AgentSession } = {};
+    const scripted = new ScriptedProviderSession(capturingTail(editThenEndTurn("src/quiet.ts"), () => holder.session!, tails));
+    const { session } = createSession({ providerTurnSessionFactory: () => scripted, mapNotes: "off" });
+    holder.session = session;
+
+    await collectEvents(session.send("edit src/quiet.ts"));
+
+    expect(tails.length).toBeGreaterThan(1);
+    expect(tails.some((context) => context.includes("map_note_add"))).toBe(false);
+    expect(scripted.userTexts.some((t) => t.includes("map_note_add"))).toBe(false);
+  });
+
+  it("never forces a delegated lane to spend its budget on a note, even in require mode", async () => {
+    const scripted = new ScriptedProviderSession(editThenEndTurn("src/lane.ts"));
+    const { session } = createSession({ providerTurnSessionFactory: () => scripted, mapNotes: "require", delegatedLane: true });
+
+    const events = await collectEvents(session.send("edit src/lane.ts"));
+
+    expect(events.filter((e) => e.type === "turn_complete")).toHaveLength(1);
+    expect(scripted.userTexts.some((t) => t.includes("[Internal continuation]"))).toBe(false);
   });
 });

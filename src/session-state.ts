@@ -50,7 +50,15 @@ export type PendingGateState = PendingApprovalState | PendingQuestionState;
 
 export interface VerificationGateState {
   status: "idle" | "pending" | "passed" | "failed" | "skipped";
+  /** Every file the current editing episode changed. */
   files: string[];
+  /** The files in `files` still owing a check (failed ones included). Absent in state saved before
+   *  per-file tracking, where every file in `files` is outstanding while the status says so. */
+  pendingFiles?: string[];
+  /** Outstanding files whose last check failed. */
+  failedFiles?: string[];
+  /** Files no checker covers (code_diagnostics reported `no_checker`): not verified, not owed. */
+  uncheckedFiles?: string[];
   method?: string;
   detail?: string;
   updatedAt?: number;

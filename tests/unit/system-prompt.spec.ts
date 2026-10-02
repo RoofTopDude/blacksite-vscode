@@ -132,7 +132,9 @@ describe("buildSystemPrompt capability map", () => {
 
   it("teaches the Codebase Map workflow and note-taking strategy", () => {
     expect(prompt).toContain("Codebase Map: usage & note-taking");
-    expect(prompt).toContain("After an edit, a note is required");
+    // Notes are for knowledge the automatic change record cannot hold, not a per-edit chore.
+    expect(prompt).toContain("What changed is recorded for you.");
+    expect(prompt).not.toContain("a note is required");
     expect(prompt).toContain("Refine, don't duplicate");
     expect(prompt).toContain("Prune what you invalidate");
   });

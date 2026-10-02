@@ -10,6 +10,7 @@ import type { GraphIndexer } from "./graph/graph-indexer.js";
 import type { GraphEdge, GraphNode, GraphSnapshot } from "./graph/graph-model.js";
 import type { HierarchySnapshot } from "./graph/hierarchy-snapshot.js";
 import { runsTouching, type RunFootprintIndex } from "./graph/run-footprints.js";
+import type { ChangeLog } from "./graph/change-log.js";
 import { routeProvidersFromEdges, type ReferenceLinkIndex } from "./graph/reference-links.js";
 import { buildBasenameIndex } from "./graph/resolve-imports.js";
 import { activityIntent, activityToTraces, type TraceKind } from "./graph/trace-extract.js";
@@ -115,6 +116,8 @@ export interface GraphProviderExtras {
   hierarchy?: HierarchySnapshot;
   runFootprints?: RunFootprintIndex;
   referenceLinks?: ReferenceLinkIndex;
+  /** Which chat requests changed which files, recorded by the harness after each turn. */
+  changeLog?: ChangeLog;
 }
 
 export interface RunPlaybackProvider {
@@ -548,9 +551,9 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
     }));
   }
 
-  /** Runs and reference documents for one selection — the inspector's
-      Activity and References tabs. Notes and tickets are already on the
-      webview; these two need host data. */
+  /** Runs, chat changes and reference documents for one selection — the
+      inspector's Activity and References tabs. Notes and tickets are already
+      on the webview; these need host data. */
   private async _selectionContext(msg: Record<string, unknown>): Promise<Record<string, unknown>> {
     const path = typeof msg.path === "string" ? msg.path : "";
     const level = typeof msg.level === "string" ? msg.level : "";
@@ -591,7 +594,11 @@ export class GraphProvider implements vscode.WebviewViewProvider, vscode.Disposa
         .filter((link) => link.targets.length > 0)
         .slice(0, 20);
     }
-    return { runs, references };
+    let changes: unknown[] = [];
+    if (this._extras.changeLog) {
+      try { changes = this._extras.changeLog.changesTouching(matches, 12); } catch { /* changes are optional context */ }
+    }
+    return { runs, references, changes };
   }
 
   private async _onMessage(msg: Record<string, unknown>): Promise<void> {

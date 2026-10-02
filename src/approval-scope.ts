@@ -11,7 +11,7 @@
  * nobody has vetted, so an "Allow All" on one covers repeat runs of that same executable only.
  */
 
-import { normalizeCommandName } from "@blacksite/local-runtime";
+import { inlineCodeSnippet, normalizeCommandName } from "@blacksite/local-runtime";
 
 export type ApprovalCategory = "edit" | "command" | "service" | "sequence";
 
@@ -32,10 +32,14 @@ export interface ApprovalScope {
   tier: string;
   /** Set for an unrecognized executable: the normalized binary name the grant is pinned to. */
   unrecognizedBinary?: string;
+  /** Set for inline code (`python -c "…"`): the interpreter the grant is pinned to. A grant for
+   *  ordinary commands never covers a snippet, whose code is only visible in its own prompt. */
+  inlineCodeBinary?: string;
 }
 
 export function approvalGrantKey(scope: ApprovalScope): string {
   const base = `${scope.category}:${scope.tier || "unknown"}`;
+  if (scope.inlineCodeBinary) return `${base}:inline:${scope.inlineCodeBinary}`;
   return scope.unrecognizedBinary ? `${base}:unrecognized:${scope.unrecognizedBinary}` : base;
 }
 
@@ -48,6 +52,9 @@ export function commandApprovalScope(
   unrecognizedCommand: boolean | undefined,
 ): ApprovalScope {
   const category = approvalCategory(toolName, runtimeType);
+  const command = String(payload["command"] ?? "");
+  const args = Array.isArray(payload["args"]) ? payload["args"].map((arg) => String(arg)) : [];
+  if (inlineCodeSnippet(command, args) !== undefined) return { category, tier, inlineCodeBinary: normalizeCommandName(command) };
   if (!unrecognizedCommand) return { category, tier };
   return { category, tier, unrecognizedBinary: executableIdentity(String(payload["command"] ?? "")) };
 }

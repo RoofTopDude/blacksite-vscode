@@ -3,6 +3,7 @@ import type { ProcessOutputEntry, ProcessOutputPage, ProcessSummary } from "./ty
 import { resolveWorkspaceCwd } from "./path-policy.js";
 import { validateArgs, planSpawn, resolveCommandForSpawn, type CommandPolicy } from "./security.js";
 import { buildSanitizedProcessEnv } from "./process-env.js";
+import { resolveProjectPythonTool } from "./project-interpreter.js";
 
 const OUTPUT_MAX_ENTRIES = 400;
 const OUTPUT_MAX_CHARS = 200_000;
@@ -94,7 +95,9 @@ export class ProcessManager {
     const { command, args, cwd, allowStdin = false } = options;
     validateArgs(command, args, { policy: this.policy });
     const env = this.buildEnv();
-    const resolvedCommand = resolveCommandForSpawn(command, cwd, this.workspaceRoot, env);
+    // Same rule as shell_run: a Python tool runs from the project's own environment when it has one.
+    const resolvedCommand = resolveProjectPythonTool(command, args, cwd, this.workspaceRoot)?.executable
+      ?? resolveCommandForSpawn(command, cwd, this.workspaceRoot, env);
     const plan = planSpawn(resolvedCommand, args);
     const child = spawn(plan.command, plan.args, {
       cwd, env, shell: plan.shell,

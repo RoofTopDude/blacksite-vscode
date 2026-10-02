@@ -8,6 +8,9 @@ import {
   WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, RESEARCH_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS, SKILL_TOOLS,
   resolveToolDispatch,
   validateToolInput,
+  describeExpectedToolShape,
+  unknownToolArguments,
+  checkAgainstSchema,
   coerceToolInput,
   suggestToolName,
   isMutatingServiceTool,
@@ -17,6 +20,8 @@ import {
 export { isMutatingServiceTool } from "./tools/definitions.js";
 import type { ToolDefinition, QCardOption, QCardQuestion } from "./tools/definitions.js";
 import { ToolOutputStore } from "./agent/tool-output-store.js";
+import { isVerificationCommand } from "./agent/verification-commands.js";
+import { outstandingFiles, recordCheck, recordMutation, withoutFiles, type CheckCoverage } from "./agent/verification-ledger.js";
 import type { AgentMemoryIndex } from "./agent-memory-index.js";
 import { capturePauReceipt, pauTraceFormatFor, type PauReceipt } from "./pau-metrics.js";
 import { PauCacheObserver } from "./pau-cache-observer.js";
@@ -712,9 +717,9 @@ function completionReminderPrompt(
   }
   if (verification?.paths.length) {
     lines.push(
-      `- The edit set is not verified yet: ${verification.paths.join(", ")}. `
+      `- The edit set is not verified yet: ${verification.paths.join("; ")}. `
       + (verification.failedDetail ? `The last verification failed: ${verification.failedDetail} ` : "Run the smallest relevant verification now. ")
-      + "Prefer a targeted test. If no applicable test exists, run code_diagnostics for the changed files; for interactive UI, retained browser evidence also qualifies. Fix failures when they are caused by these edits.",
+      + "Prefer a targeted test or the project's own checker, run with `cwd` inside the project it covers. If no applicable test exists, one code_diagnostics call with `paths` checks several files; for interactive UI, retained browser evidence also qualifies. Fix failures when they are caused by these edits.",
     );
   }
   lines.push(debtHint);
@@ -759,9 +764,41 @@ function verificationMethod(toolName: string, input: Record<string, unknown>): s
   if (toolName === "ui_preview_render") return "rendered preview";
   if (toolName === "shell_run") {
     const command = String(input.command ?? input.cmd ?? "");
-    if (/\b(test|lint|typecheck|check|verify)\b/i.test(command)) return "verification command";
+    const args = Array.isArray(input.args) ? input.args.map((arg) => String(arg)) : [];
+    if (isVerificationCommand(command, args)) return "verification command";
   }
   return undefined;
+}
+
+/** Where the agent keeps throwaway scripts. Gitignored, never on the map, and never owed a note
+ *  or a check — so writing a snippet to a file instead of passing it inline costs nothing. */
+export const SCRATCH_DIR = ".blacksite/scratch";
+
+/** Keep the scratch folder out of git, so a throwaway script never shows up as a change to commit. */
+function ensureScratchIgnored(workspaceRoot: string): void {
+  const marker = path.join(workspaceRoot, SCRATCH_DIR, ".gitignore");
+  try {
+    if (fs.existsSync(marker)) return;
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, "# Throwaway scripts the Blacksite agent writes and runs. Not part of the project.\n*\n");
+  } catch { /* best effort: a read-only checkout just shows the files */ }
+}
+
+function isScratchPath(file: string): boolean {
+  const normalized = file.replace(/\\/g, "/").replace(/^\.\//, "");
+  return normalized === SCRATCH_DIR || normalized.startsWith(`${SCRATCH_DIR}/`) || normalized.includes(`/${SCRATCH_DIR}/`);
+}
+
+/** Files with nothing to run a check against: prose and images. A change to one is reviewed by
+ *  reading it, so the verification gate never asks for a test or diagnostics pass. */
+const UNCHECKABLE_EXTENSIONS = new Set([
+  ".md", ".mdx", ".markdown", ".txt", ".rst", ".adoc",
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".bmp",
+]);
+
+function owesVerification(file: string): boolean {
+  if (isScratchPath(file)) return false;
+  return !UNCHECKABLE_EXTENSIONS.has(path.extname(file).toLowerCase());
 }
 
 function verificationPassed(toolName: string, result: Record<string, unknown>, ok: boolean): boolean {
@@ -787,6 +824,8 @@ function verificationDetail(toolName: string, result: Record<string, unknown>, p
     const counts = result.counts && typeof result.counts === "object" ? result.counts as Record<string, unknown> : {};
     const errors = Number(result.errors ?? counts.error ?? 0);
     const status = typeof result.status === "string" ? result.status : "unknown";
+    if (status === "no_checker") return "No language server or linter covers these files, so diagnostics cannot check them.";
+    if (status === "timed_out") return "The language server had not caught up with the latest content; run the project's own checker (tests, type checker, linter) or try diagnostics again shortly.";
     if (status !== "ready") return `Diagnostics returned '${status}', not a complete post-edit check.`;
     return passed ? "No errors reported by code diagnostics." : `${errors || "One or more"} diagnostic errors remain.`;
   }
@@ -1282,8 +1321,33 @@ export type CacheTtl = "5m" | "1h";
  *  The failure carries prose because the agent's best next move depends on which failure it
  *  was — retry later, ask the user to authorize, or stop reaching for that server. */
 export type McpServerResolution =
-  | { ok: true; server: McpServer }
+  | {
+    ok: true;
+    server: McpServer;
+    /** The cached input schema of one of the server's tools, when it has been discovered. Lets a
+     *  call with the wrong arguments fail before the user is asked to approve it. */
+    toolSchema?: (toolName: string) => Record<string, unknown> | undefined;
+  }
   | { ok: false; message: string };
+
+/**
+ * Arguments that do not fit an MCP tool's discovered schema, as a tool error naming what is
+ * wrong and the shape that works. Undefined when they fit, or when the schema is not known.
+ *
+ * Checked before the approval prompt: a call with a guessed argument name used to be approved
+ * by the user, sent, and rejected by the server, and the next session guessed the same way.
+ */
+function mcpArgumentError(resolution: McpServerResolution | undefined, payload: Record<string, unknown>): string | undefined {
+  if (!resolution?.ok || !resolution.toolSchema) return undefined;
+  const toolName = String(payload["toolName"] ?? "");
+  const schema = resolution.toolSchema(toolName);
+  if (!schema || typeof schema !== "object") return undefined;
+  const args = payload["args"] && typeof payload["args"] === "object" ? payload["args"] : {};
+  const { issues, shape } = checkAgainstSchema(args, schema);
+  if (issues.length === 0) return undefined;
+  return `Invalid arguments for MCP tool '${toolName}': ${issues.map((issue) => issue.message).join(" ")} `
+    + `Expected args: ${shape}. Correct the arguments and call mcp_call_tool again.`;
+}
 
 export interface AgentSessionOptions {
   hookProvider?: HookProvider;
@@ -1411,6 +1475,21 @@ export interface AgentSessionOptions {
   ticketProvider?: TicketToolProvider;
   /** Backs the map_note_* tools with persistent Codebase Map working memory. */
   graphProvider?: GraphAnnotationProvider;
+  /**
+   * How hard to push for a Codebase Map note after an edit (`blacksite.graph.agentNotes`).
+   * "suggest" (the default) lists it in the closing checklist as optional; "require" also forces
+   * up to MAX_NOTE_ENFORCEMENT_CONTINUATIONS extra turns; "off" never mentions it. What changed is
+   * recorded on the map automatically in every mode, so a note is for what is not obvious.
+   */
+  mapNotes?: "suggest" | "require" | "off" | (() => "suggest" | "require" | "off");
+  /**
+   * True for a delegated subagent lane. Its edits and checks are relayed into the parent's own
+   * completion tracking, so the lane lists what is outstanding but is never forced to spend its
+   * small iteration budget clearing it — the parent does that once, for the combined work.
+   */
+  delegatedLane?: boolean;
+  /** Probe installed toolchains again (workspace_refresh): something may have been installed since. */
+  refreshToolchains?: () => Promise<void>;
   /** Backs the db_* tools with the embedded database surface (read-only + classify). */
   dataProvider?: DataToolProvider;
   /** Backs the reference_* tools with permanent per-conversation attachment storage. */
@@ -1757,6 +1836,9 @@ export class AgentSession {
       Codebase Map note recorded since (see _trackToolResultForNotes and the
       end-of-turn check in _run()). */
   private _dirtyMapFiles = new Set<string>();
+  /** Entries of _dirtyMapFiles that were on disk when the debt was taken on. One that is gone
+      later was deleted after the edit, so the note it owes can never be written. */
+  private readonly _noteDebtSeenOnDisk = new Set<string>();
   /** Which files this session has read and which it has changed since, so an
       edit built on an out-of-date copy of a file gets told so rather than
       failing on an anchor mismatch with no explanation — or, for a whole-file
@@ -1791,6 +1873,8 @@ export class AgentSession {
   /** Executables the runtime reported as not installed. Later calls to them are refused
       without spawning — see _missingCommandError. */
   private readonly _missingCommands = new Set<string>();
+  /** For a missing executable with an installed stand-in (`python` → `python3`), what to use. */
+  private readonly _missingCommandAlternatives = new Map<string, string>();
   private _duplicateToolRoundNudgeCount = 0;
   /** Set after the missing-contextLength diagnostic has been emitted once. */
   private _contextLengthWarned = false;
@@ -1977,20 +2061,28 @@ export class AgentSession {
   private _completionChecklist(): string {
     const items: string[] = [];
     if (this._dirtyMapFiles.size > 0 && this._mapNoteToolUsable()) {
-      items.push(`- A Codebase Map note (map_note_add) for each edited file: ${checklistPaths(this._describeDebtPaths([...this._dirtyMapFiles]))}`);
+      const notePaths = checklistPaths(this._describeDebtPaths([...this._dirtyMapFiles]));
+      const mode = this._mapNotesMode();
+      if (mode === "require") {
+        items.push(`- A Codebase Map note (map_note_add) for each edited file: ${notePaths}`);
+      } else if (mode === "suggest") {
+        items.push(`- Optional: if you learned something non-obvious about ${notePaths} (a constraint, a gotcha, why it is built this way), record it with map_note_add — one note can cover several files. What changed is recorded on the map automatically, so skip the note when there is nothing beyond that.`);
+      }
     }
-    if ((this._verification.status === "pending" || this._verification.status === "failed")
-      && this._verification.files.length > 0
-      && this._verificationToolUsable()) {
+    const owedChecks = this._outstandingVerificationFiles();
+    if (owedChecks.length > 0 && this._verificationToolUsable()) {
       const failed = this._verification.status === "failed" ? " (the last check failed)" : "";
-      items.push(`- A verification check after your last edit — a targeted test, code_diagnostics, or UI evidence — covering: ${checklistPaths(this._describeDebtPaths(this._verification.files))}${failed}`);
+      items.push(`- A verification check after your last edit — a targeted test or the project's checker run in that project, code_diagnostics with \`paths\` for several files at once, or UI evidence — covering: ${checklistPaths(this._groupDebtByProject(this._describeDebtPaths(owedChecks)))}${failed}`);
     }
     if (items.length === 0) return "";
+    const onlyOptional = items.every((item) => item.startsWith("- Optional:"));
     return [
       "# Before your final answer",
-      "Still outstanding from your edits. Do these after your last edit and before you write your final answer, so that the answer is the last thing you write:",
+      onlyOptional
+        ? "Nothing is owed from your edits. If it applies, do this after your last edit and before you write your final answer:"
+        : "Still outstanding from your edits. Do these after your last edit and before you write your final answer, so that the answer is the last thing you write:",
       ...items,
-      this._debtHint(),
+      ...(onlyOptional ? [] : [this._debtHint()]),
     ].join("\n");
   }
 
@@ -2186,16 +2278,25 @@ export class AgentSession {
       if (typeof relative === "string" && relative) return relative;
       return typeof row.path === "string" && row.path ? row.path : undefined;
     };
+    /* Only a file that can carry a note owes one. A scratch script, or anything under a directory
+       the map never indexes (a dot directory, a virtualenv, node_modules), would hold a reminder
+       nothing could satisfy. */
+    const owesNote = (target: string): boolean => {
+      const file = normalizeStoredPath(target);
+      if (isScratchPath(this._canonicalPath(file))) return false;
+      const indexable = this.opts.graphProvider?.isMapIndexable;
+      return typeof indexable === "function" ? indexable.call(this.opts.graphProvider, file) : true;
+    };
     if (toolName === "file_edit" || toolName === "file_write" || toolName === "code_insert" || toolName === "code_replace" || toolName === "json_edit") {
       const target = dirtyPath(r);
-      if (target) this._dirtyMapFiles.add(normalizeStoredPath(target));
+      if (target && owesNote(target)) this._addNoteDebt(target);
       return;
     }
     if (toolName === "file_edit_batch" || toolName === "code_replace_batch") {
       const edits = Array.isArray(r.results) ? r.results as Array<Record<string, unknown>> : [];
       for (const edit of edits) {
         const target = dirtyPath(edit);
-        if (target) this._dirtyMapFiles.add(normalizeStoredPath(target));
+        if (target && owesNote(target)) this._addNoteDebt(target);
       }
       return;
     }
@@ -2219,6 +2320,35 @@ export class AgentSession {
       }
       if (this._dirtyMapFiles.size === 0) this._noteEnforcementCount = 0;
     }
+  }
+
+  private _addNoteDebt(target: string): void {
+    const entry = normalizeStoredPath(target);
+    this._dirtyMapFiles.add(entry);
+    if (this._pathExists(entry)) this._noteDebtSeenOnDisk.add(entry);
+  }
+
+  /**
+   * Fold a delegated lane's tool events into this session's own completion tracking.
+   *
+   * A lane's edits and notes are this session's responsibility, so they land in the same trackers
+   * as a direct call. Its checks count too: a lane that ran the project's tests after its edit has
+   * verified them, and the parent should not be asked to repeat it. The input comes from the
+   * lane's matching start event, since a relayed result carries none — without it a lane's
+   * `shell_run pytest` was indistinguishable from any other command.
+   */
+  private _relayLaneToolEvent(event: AgentEvent, inputs: Map<string, Record<string, unknown>>): void {
+    if (event.type === "tool_call_start") {
+      inputs.set(event.toolCallId, event.input);
+      return;
+    }
+    if (event.type !== "tool_call_result") return;
+    const input = inputs.get(event.toolCallId) ?? {};
+    inputs.delete(event.toolCallId);
+    this._trackToolResultForNotes(event.toolName, event.result);
+    this._trackVerification(event.toolName, input, event.result, event.ok);
+    // A lane's edit makes this session's copy of the file stale just as its own would.
+    this._freshness.recordWriteFromResult(event.toolName, event.result);
   }
 
   /** Fold mutations and explicit checks into one user-visible completion gate. */
@@ -2250,17 +2380,15 @@ export class AgentSession {
         if (removed.some((file) => this._createdFiles.delete(file))) for (const file of destinations) this._createdFiles.add(file);
         added = destinations;
       }
-      const files = [...new Set([...outstanding.filter((file) => !removed.includes(file)), ...added])];
-      if (files.length === 0) {
+      if (added.some((file) => isScratchPath(file))) ensureScratchIgnored(this.opts.workspaceRoot);
+      // Prose, images and scratch scripts have no check to run, so they are never owed one.
+      added = added.filter((file) => owesVerification(file));
+      const next = recordMutation(this._verification, added, removed, Date.now());
+      if (!next) {
         this._settleVerification();
         return { ...row, verification: this._verification };
       }
-      this._verification = {
-        status: "pending",
-        files,
-        detail: "Changed files have not been checked after the latest mutation.",
-        updatedAt: Date.now(),
-      };
+      this._verification = next;
       this._verificationEnforcementCount = 0;
       return { ...row, verification: this._verification };
     }
@@ -2268,33 +2396,37 @@ export class AgentSession {
     // A check aimed at a file that no longer exists checked nothing, so it neither passes nor fails.
     if (row.code === "file_missing") return result;
     const method = verificationMethod(toolName, call);
-    if (!method || this._verification.files.length === 0) return result;
+    const outstanding = this._outstandingVerificationFiles();
+    if (!method || outstanding.length === 0) return result;
     const passed = verificationPassed(toolName, row, ok);
     const detail = verificationDetail(toolName, row, passed);
-    this._verification = {
-      status: passed ? "passed" : "failed",
-      files: [...this._verification.files],
-      method,
-      detail,
-      updatedAt: Date.now(),
-    };
-    if (passed) this._verificationEnforcementCount = 0;
+    const coverage = this._checkCoverage(toolName, call, row, passed, outstanding);
+    const next = recordCheck(this._verification, coverage, method, detail, Date.now());
+    if (!next) {
+      return { ...row, verificationNote: `This check covered none of the files still owing one (${checklistPaths(outstanding)}).` };
+    }
+    this._verification = next;
+    if (next.status === "passed" || next.status === "skipped") this._verificationEnforcementCount = 0;
     return { ...row, verification: this._verification };
   }
 
   /**
    * workspace_refresh: bring the harness's own bookkeeping back in line with the disk, on the
-   * agent's request. The automatic pass each iteration only drops files this session created; here
-   * the agent has said the lists look wrong, so map-note debt for any missing file goes too, and
-   * the map index and diagnostics are re-read rather than waited for.
+   * agent's request. The same reconciliation also runs before every iteration; here the map index
+   * and diagnostics are re-read too rather than waited for.
    *
    * Deliberately not a verification method. Fresh diagnostics for the pending files come back as
    * information; a check still has to be run on purpose, so this can never quietly clear the gate.
    */
   private async _handleWorkspaceRefresh(): Promise<Record<string, unknown>> {
-    const dropped = this._reconcileEditDebtWithDisk({ includePreexisting: true });
+    const dropped = this._reconcileEditDebtWithDisk({ includeUnseen: true });
     let mapIndex: { appliedChanges: number } | undefined;
     try { mapIndex = await this.opts.graphProvider?.syncIndex?.(); } catch { /* the map is an enrichment */ }
+    // Something may have been installed since a command was found missing.
+    if (this.opts.refreshToolchains) {
+      this.forgetMissingCommands();
+      try { await this.opts.refreshToolchains(); } catch { /* the inventory is an enrichment */ }
+    }
     await this._refreshWorkspaceContext();
 
     const pending = this._outstandingVerificationFiles();
@@ -2331,9 +2463,109 @@ export class AgentSession {
   }
 
   private _outstandingVerificationFiles(): string[] {
-    return this._verification.status === "pending" || this._verification.status === "failed"
-      ? this._verification.files
-      : [];
+    return outstandingFiles(this._verification);
+  }
+
+  private _mapNotesMode(): "suggest" | "require" | "off" {
+    const mode = typeof this.opts.mapNotes === "function" ? this.opts.mapNotes() : this.opts.mapNotes;
+    return mode ?? "suggest";
+  }
+
+  /**
+   * Debt paths grouped by the project that owns them, when they span more than one: in a
+   * workspace holding many codebases, "services/billing: a.py, b.py" says where to run the check.
+   * Unchanged (one path per entry) when there is no Map or everything sits in one project.
+   */
+  private _groupDebtByProject(paths: readonly string[]): string[] {
+    const provider = this.opts.graphProvider;
+    if (!provider || typeof provider.projectRootOf !== "function" || paths.length < 2) return [...paths];
+    const groups = new Map<string, string[]>();
+    for (const entry of paths) {
+      const file = entry.replace(/ \(deleted\)$/, "");
+      const project = provider.projectRootOf(file);
+      const label = project && project !== "." ? project : "";
+      groups.set(label, [...(groups.get(label) ?? []), entry]);
+    }
+    if (groups.size < 2) return [...paths];
+    return [...groups.entries()].map(([project, files]) => `${project || "(workspace root)"}: ${files.join(", ")}`);
+  }
+
+  /**
+   * Which outstanding files a check actually covered, and with what verdict.
+   *
+   * code_diagnostics covers the files it was asked about, each with its own result: a file no
+   * checker covers is set aside rather than failed, and one whose language server has not caught
+   * up stays failed with that reason. A test or a shell check covers the project it ran in, so in
+   * a workspace holding many codebases a test in one does not verify edits in another. A check run
+   * at the workspace root, or without a Map to say where projects are, covers everything — as
+   * before.
+   */
+  private _checkCoverage(
+    toolName: string,
+    call: Record<string, unknown>,
+    row: Record<string, unknown>,
+    passed: boolean,
+    outstanding: readonly string[],
+  ): CheckCoverage {
+    if (toolName === "code_diagnostics") {
+      const requested = new Set(this._canonicalPaths([call.path, ...(Array.isArray(call.paths) ? call.paths : [])]));
+      if (requested.size === 0) {
+        return passed ? { passed: outstanding, failed: [], unchecked: [] } : { passed: [], failed: outstanding, unchecked: [] };
+      }
+      const freshness = row.freshness && typeof row.freshness === "object" ? row.freshness as { files?: Record<string, unknown> } : {};
+      const states = new Map<string, string>();
+      for (const [key, state] of Object.entries(freshness.files ?? {})) {
+        states.set(this._canonicalPath(key.replace(/^[^:]*:/, "")), String(state));
+      }
+      const problems = Array.isArray(row.problems) ? row.problems as Array<Record<string, unknown>> : [];
+      const errorRows = problems.filter((problem) => problem.severity === "error" && typeof problem.path === "string");
+      const withErrors = new Set(errorRows.map((problem) => this._canonicalPath(String(problem.path))));
+      const counts = row.counts && typeof row.counts === "object" ? row.counts as Record<string, unknown> : {};
+      const totalErrors = Number(row.errors ?? counts.error ?? 0);
+      // A truncated list may hold errors it could not name: then a file without a listed error is not proven clean.
+      const unattributed = Number.isFinite(totalErrors) && totalErrors > errorRows.length;
+      const overall = typeof row.status === "string" ? row.status : "unknown";
+      const coverage = { passed: [] as string[], failed: [] as string[], unchecked: [] as string[] };
+      for (const file of outstanding) {
+        if (!requested.has(file)) continue;
+        const state = states.get(file) ?? overall;
+        if (state === "no_checker") coverage.unchecked.push(file);
+        else if (state !== "ready" || withErrors.has(file)) coverage.failed.push(file);
+        else if (!unattributed) coverage.passed.push(file);
+      }
+      return coverage;
+    }
+    const covered = outstanding.filter(this._checkScope(toolName, call));
+    return passed ? { passed: covered, failed: [], unchecked: [] } : { passed: [], failed: covered, unchecked: [] };
+  }
+
+  /** The files a test or shell check speaks for: those in the project its working directory (or,
+   *  from the workspace root, its first path argument) belongs to. */
+  private _checkScope(toolName: string, call: Record<string, unknown>): (file: string) => boolean {
+    const everything = (): boolean => true;
+    if (toolName !== "test_run" && toolName !== "shell_run") return everything;
+    const provider = this.opts.graphProvider;
+    if (!provider || typeof provider.projectRootOf !== "function") return everything;
+    const projectOf = (value: string): string | undefined => provider.projectRootOf!(value);
+    const isWorkspaceWide = (project: string | undefined): boolean => project === undefined || project === "" || project === ".";
+
+    let project: string | undefined;
+    const cwd = [call.cwd, call.root].find((value): value is string => typeof value === "string" && value.trim().length > 0);
+    if (cwd) {
+      const canonical = this._canonicalPath(cwd);
+      if (canonical && canonical !== ".") project = projectOf(canonical);
+    }
+    if (isWorkspaceWide(project) && Array.isArray(call.args)) {
+      for (const arg of call.args) {
+        if (typeof arg !== "string" || arg.startsWith("-")) continue;
+        const candidate = this._canonicalPath(arg);
+        if (!this._pathExists(candidate)) continue;
+        const owner = projectOf(candidate);
+        if (!isWorkspaceWide(owner)) { project = owner; break; }
+      }
+    }
+    if (isWorkspaceWide(project)) return everything;
+    return (file) => projectOf(file) === project;
   }
 
   /** Nothing is left to verify: every file the episode changed was a scratch file the session
@@ -2384,25 +2616,32 @@ export class AgentSession {
    * (map_note_add refuses a missing file, code_diagnostics had nothing to open), so the session
    * spent its whole reminder budget on it.
    *
-   * By default only files this session created are dropped: they net out to no change. A file that
-   * existed before and was deleted is a real change, so its verification stays pending; with
-   * `includePreexisting` (the agent's own workspace_refresh) its map-note debt is dropped too,
-   * since a missing file cannot carry a note.
+   * Verification: only files this session created are dropped, since they net out to no change.
+   * A file that existed before and was deleted is a real change, so its check stays pending.
+   *
+   * Map notes: dropped for any file that is gone, whoever created it. A missing file cannot carry
+   * a note, so the reminder could never be met — a scratch script left over from an earlier
+   * session, rewritten and then removed, used to cost its full reminder budget every time.
    */
-  private _reconcileEditDebtWithDisk(options: { includePreexisting?: boolean } = {}): string[] {
+  private _reconcileEditDebtWithDisk(options: { includeUnseen?: boolean } = {}): string[] {
     const dropped = new Set<string>();
     const outstanding = this._outstandingVerificationFiles();
     const vanishedCreations = outstanding.filter((file) => this._createdFiles.has(file) && !this._pathExists(file));
     if (vanishedCreations.length > 0) {
       for (const file of vanishedCreations) dropped.add(file);
-      const files = outstanding.filter((file) => !vanishedCreations.includes(file));
-      if (files.length === 0) this._settleVerification();
-      else this._verification = { ...this._verification, files, updatedAt: Date.now() };
+      const next = withoutFiles(this._verification, vanishedCreations, Date.now());
+      if (outstandingFiles(next).length === 0) this._settleVerification();
+      else this._verification = next;
     }
+    /* Positive evidence only: a file this session created, or one that was on disk when it was
+       edited and is gone now. workspace_refresh (the agent saying the lists look wrong) drops any
+       missing entry, including debt restored from a checkpoint that predates the record. */
     for (const entry of [...this._dirtyMapFiles]) {
       const file = this._canonicalPath(entry);
-      if ((options.includePreexisting || this._createdFiles.has(file)) && !this._pathExists(entry)) {
+      const knownToHaveExisted = this._createdFiles.has(file) || this._noteDebtSeenOnDisk.has(entry);
+      if ((options.includeUnseen || knownToHaveExisted) && !this._pathExists(entry)) {
         this._dirtyMapFiles.delete(entry);
+        this._noteDebtSeenOnDisk.delete(entry);
         dropped.add(file);
       }
     }
@@ -3426,7 +3665,17 @@ export class AgentSession {
     const issues = validateToolInput(tc.name, tc.input);
     if (issues.length === 0) return null;
     const detail = issues.map((i) => i.message).join(" ");
-    return { ok: false, error: `Invalid arguments for ${tc.name}: ${detail} Correct the arguments and call the tool again.` };
+    /* Name the shape that works, and any key the tool does not have. Without it the same wrong
+       guess recurred across sessions, and the model abandoned the tool for a cruder one. */
+    const unknown = unknownToolArguments(tc.name, tc.input);
+    const shape = describeExpectedToolShape(tc.name);
+    return {
+      ok: false,
+      error: `Invalid arguments for ${tc.name}: ${detail}`
+        + (unknown.length > 0 ? ` Not arguments of this tool: ${unknown.join(", ")}.` : "")
+        + (shape ? ` Expected: ${shape}.` : "")
+        + " Correct the arguments and call the tool again.",
+    };
   }
 
   /**
@@ -3465,6 +3714,14 @@ export class AgentSession {
     }
     if (!key) return null;
 
+    const alternative = this._missingCommandAlternatives.get(key);
+    if (alternative) {
+      return {
+        ok: false,
+        error: `\`${key}\` is not on PATH on this machine — this was already established earlier in this turn. `
+          + `Use \`${alternative}\` instead, as the earlier result said.`,
+      };
+    }
     return {
       ok: false,
       error: `\`${key}\` is still not installed on this machine — this was already established `
@@ -3473,16 +3730,23 @@ export class AgentSession {
     };
   }
 
+  /** Forget what this session learned was missing: something was installed since. */
+  forgetMissingCommands(): void {
+    this._missingCommands.clear();
+    this._missingCommandAlternatives.clear();
+  }
+
   /** Records an executable the runtime reported as missing, so later calls are refused
    *  outright (see _missingCommandError). Returns true when this is a newly-seen miss. */
   private _recordMissingCommand(result: unknown): boolean {
     if (!result || typeof result !== "object") return false;
-    const hint = (result as { missingCommand?: { command?: unknown } }).missingCommand;
+    const hint = (result as { missingCommand?: { command?: unknown; alternative?: { command?: unknown } } }).missingCommand;
     const command = typeof hint?.command === "string" ? hint.command.trim() : "";
     if (!command) return false;
     const key = normalizeExecutableName(command);
     if (this._missingCommands.has(key)) return false;
     this._missingCommands.add(key);
+    if (typeof hint?.alternative?.command === "string") this._missingCommandAlternatives.set(key, hint.alternative.command);
     return true;
   }
 
@@ -4102,7 +4366,7 @@ export class AgentSession {
         yield {
           type: "execution_diagnostic",
           level: "info",
-          message: `Dropped completion reminders for files this session created and has since deleted: ${reconciled.join(", ")}.`,
+          message: `Dropped completion reminders for files that are no longer on disk: ${reconciled.join(", ")}.`,
         };
       }
 
@@ -4481,14 +4745,22 @@ export class AgentSession {
            continuations, each costing a round trip and each ending in another closing line. */
         let noteReminderPaths: string[] | undefined;
         let verificationReminder: { paths: string[]; failedDetail?: string } | undefined;
+        /* A delegated lane never spends its small budget on closing reminders: its edits and checks
+           are relayed into the parent's own tracking, and the parent clears them once for the
+           combined work. The lane still sees the checklist, so it can do them when they are cheap. */
+        const forceCompletion = this.opts.delegatedLane !== true;
 
         if (turnResult.stopReason === "end_turn" && this._dirtyMapFiles.size > 0) {
           /* Never nag for a tool this session doesn't have. Without a graph
              provider GRAPH_TOOLS are never advertised, and the user can disable
              the note tools from settings — in either case the reminder asks for
              something impossible and burns the full continuation budget doing
-             it. Drop the debt instead of spending turns on it. */
-          if (!this._mapNoteToolUsable()) {
+             it. Drop the debt instead of spending turns on it.
+
+             Outside "require" mode a note is a suggestion: it was listed in the checklist while
+             the turn ran, and the turn ends without a forced continuation for it. What changed
+             is recorded on the map automatically either way. */
+          if (!this._mapNoteToolUsable() || this._mapNotesMode() !== "require" || !forceCompletion) {
             this._dirtyMapFiles.clear();
             this._noteEnforcementCount = 0;
           } else if (this._noteEnforcementCount < MAX_NOTE_ENFORCEMENT_CONTINUATIONS) {
@@ -4515,9 +4787,8 @@ export class AgentSession {
            against the post-edit state. Immediate diagnostics attached to mutation results do
            not count: the agent must deliberately choose the smallest relevant
            test/diagnostic/evidence pass after its final edit. */
-        if (turnResult.stopReason === "end_turn"
-          && (this._verification.status === "pending" || this._verification.status === "failed")
-          && this._verification.files.length > 0) {
+        const owedChecks = this._outstandingVerificationFiles();
+        if (turnResult.stopReason === "end_turn" && owedChecks.length > 0 && forceCompletion) {
           if (!this._verificationToolUsable()) {
             this._verification = {
               ...this._verification,
@@ -4528,13 +4799,13 @@ export class AgentSession {
           } else if (this._verificationEnforcementCount < MAX_VERIFICATION_ENFORCEMENT_CONTINUATIONS) {
             this._verificationEnforcementCount += 1;
             verificationReminder = {
-              paths: this._describeDebtPaths(this._verification.files),
+              paths: this._groupDebtByProject(this._describeDebtPaths(owedChecks)),
               failedDetail: this._verification.status === "failed" ? this._verification.detail : undefined,
             };
             yield {
               type: "execution_diagnostic",
               level: this._verification.status === "failed" ? "warn" : "info",
-              message: `Edit verification ${this._verification.status} for ${this._verification.files.join(", ")} — issuing internal continuation ${this._verificationEnforcementCount}/${MAX_VERIFICATION_ENFORCEMENT_CONTINUATIONS}.`,
+              message: `Edit verification ${this._verification.status} for ${owedChecks.join(", ")} — issuing internal continuation ${this._verificationEnforcementCount}/${MAX_VERIFICATION_ENFORCEMENT_CONTINUATIONS}.`,
             };
           } else {
             this._verification = {
@@ -4546,7 +4817,7 @@ export class AgentSession {
             yield {
               type: "execution_diagnostic",
               level: "warn",
-              message: `Finishing with unverified edits: ${this._verification.files.join(", ")}.`,
+              message: `Finishing with unverified edits: ${owedChecks.join(", ")}.`,
             };
           }
         }
@@ -4632,6 +4903,8 @@ export class AgentSession {
             }
             const resolution = await resolutionPromise;
             if (!resolution?.ok) continue;
+            // A call that will be refused for its arguments must not reach a review either.
+            if (runtimeType === "mcp.call_tool" && mcpArgumentError(resolution, payload)) continue;
             const url = resolution.server.url;
             const destination = /^https?:\/\//i.test(url)
               ? (() => { try { return new URL(url).origin; } catch { return url; } })()
@@ -4719,6 +4992,7 @@ export class AgentSession {
                 finalResult = { ok: false, error: `Linked plan step is not ready to delegate: ${planStepStart.error ?? "execution is not approved."}` };
               } else {
                 try {
+                  const laneInputs = new Map<string, Record<string, unknown>>();
                   for await (const subEvent of self.opts.subagentProvider.spawn({
                     parentSessionId: self.sessionId,
                     requestMode: self._activeRequestMode,
@@ -4729,17 +5003,7 @@ export class AgentSession {
                     if (subEvent.type === "subagent_tool_result") {
                       finalResult = subEvent.result;
                     } else {
-                      /* A subagent's own edits/notes are still this session's
-                         responsibility — relay them into the same tracker used
-                         for direct tool calls (see _trackToolResultForNotes). */
-                      if (subEvent.type === "subagent_lane_event" && subEvent.event.type === "tool_call_result") {
-                        self._trackToolResultForNotes(subEvent.event.toolName, subEvent.event.result);
-                        self._trackVerification(subEvent.event.toolName, {}, subEvent.event.result, subEvent.event.ok);
-                        /* A lane's edit invalidates whatever this session is
-                           holding just as much as its own would. Keyed off the
-                           result, since relayed lane events carry no input. */
-                        self._freshness.recordWriteFromResult(subEvent.event.toolName, subEvent.event.result);
-                      }
+                      if (subEvent.type === "subagent_lane_event") self._relayLaneToolEvent(subEvent.event, laneInputs);
                       yield subEvent;
                     }
                   }
@@ -4840,6 +5104,25 @@ export class AgentSession {
                   ok: false,
                   summary: resolutionError.error,
                   result: resolutionError,
+                  elapsedMs: Math.max(Date.now() - toolStartedAt, 0),
+                };
+                continue;
+              }
+              const argumentError = runtimeType === "mcp.call_tool" ? mcpArgumentError(resolution, payload) : undefined;
+              if (argumentError) {
+                const invalid = { ok: false, error: argumentError };
+                toolResults[idx] = {
+                  type: "tool_result",
+                  tool_use_id: tc.id,
+                  content: this._capToolResult(tc.id, JSON.stringify(invalid)),
+                };
+                yield {
+                  type: "tool_call_result",
+                  toolCallId: tc.id,
+                  toolName: tc.name,
+                  ok: false,
+                  summary: argumentError,
+                  result: invalid,
                   elapsedMs: Math.max(Date.now() - toolStartedAt, 0),
                 };
                 continue;
@@ -5181,6 +5464,7 @@ export class AgentSession {
                     finalResult = { ok: false, error: `Linked plan step is not ready to delegate: ${planStepStart.error ?? "execution is not approved."}` };
                   } else {
                     try {
+                      const laneInputs = new Map<string, Record<string, unknown>>();
                       for await (const subEvent of this.opts.subagentProvider.spawn({
                         parentSessionId: this.sessionId,
                         requestMode: this._activeRequestMode,
@@ -5191,12 +5475,7 @@ export class AgentSession {
                         if (subEvent.type === "subagent_tool_result") {
                           finalResult = subEvent.result;
                         } else {
-                          if (subEvent.type === "subagent_lane_event" && subEvent.event.type === "tool_call_result") {
-                            this._trackToolResultForNotes(subEvent.event.toolName, subEvent.event.result);
-                            this._trackVerification(subEvent.event.toolName, {}, subEvent.event.result, subEvent.event.ok);
-                            // See the parallel lane above: a lane's edit makes this session's copy stale too.
-                            this._freshness.recordWriteFromResult(subEvent.event.toolName, subEvent.event.result);
-                          }
+                          if (subEvent.type === "subagent_lane_event") this._relayLaneToolEvent(subEvent.event, laneInputs);
                           yield subEvent;
                         }
                       }
@@ -5232,6 +5511,7 @@ export class AgentSession {
                     nextStep: "The lane produced no result. Spawn a fresh lane with the context you already have.",
                   };
                   try {
+                    const laneInputs = new Map<string, Record<string, unknown>>();
                     for await (const subEvent of this.opts.subagentProvider.followUp({
                       parentSessionId: this.sessionId,
                       requestMode: this._activeRequestMode,
@@ -5242,11 +5522,7 @@ export class AgentSession {
                       if (subEvent.type === "subagent_tool_result") {
                         finalResult = subEvent.result;
                       } else {
-                        if (subEvent.type === "subagent_lane_event" && subEvent.event.type === "tool_call_result") {
-                          this._trackToolResultForNotes(subEvent.event.toolName, subEvent.event.result);
-                          this._trackVerification(subEvent.event.toolName, {}, subEvent.event.result, subEvent.event.ok);
-                          this._freshness.recordWriteFromResult(subEvent.event.toolName, subEvent.event.result);
-                        }
+                        if (subEvent.type === "subagent_lane_event") this._relayLaneToolEvent(subEvent.event, laneInputs);
                         yield subEvent;
                       }
                     }
@@ -5515,12 +5791,19 @@ export class AgentSession {
             // say so once in the transcript — the user has to install it for the run to make
             // progress, which is not something to leave buried in a failed tool card.
             if (this._recordMissingCommand(result)) {
-              const hint = (result as { missingCommand?: { command?: string } }).missingCommand;
-              yield {
-                type: "execution_diagnostic",
-                level: "warn",
-                message: `\`${hint?.command}\` is not installed on this machine. The agent will avoid it for the rest of this turn — install it to unblock commands that need it.`,
-              };
+              const hint = (result as { missingCommand?: { command?: string; alternative?: { command?: string; certain?: boolean } } }).missingCommand;
+              const alternative = hint?.alternative;
+              yield alternative?.certain
+                ? {
+                  type: "execution_diagnostic",
+                  level: "info",
+                  message: `\`${hint?.command}\` is not on PATH here, but \`${alternative.command}\` is installed; the agent will use that instead.`,
+                }
+                : {
+                  type: "execution_diagnostic",
+                  level: "warn",
+                  message: `\`${hint?.command}\` is not installed on this machine. The agent will avoid it for the rest of this turn — install it to unblock commands that need it.`,
+                };
             }
           }
         }

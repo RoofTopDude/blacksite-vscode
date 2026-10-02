@@ -4,6 +4,7 @@ import os from "os";
 import path from "path";
 import { buildSanitizedProcessEnv } from "./process-env.js";
 import { planSpawn } from "./security.js";
+import { findProjectVenv, venvExecutable } from "./project-interpreter.js";
 
 /**
  * Extract the reporter JSON object from mixed stdout. With `--reporter=json` and
@@ -115,7 +116,7 @@ export function runTests(root: string, opts: TestRunOptions = {}): TestResult {
   switch (framework) {
     case "jest":    return _runJest(cwd, framework, opts.filter, timeoutMs, start);
     case "vitest":  return _runVitest(cwd, framework, opts.filter, timeoutMs, start);
-    case "pytest":  return _runPytest(cwd, framework, opts.filter, timeoutMs, start);
+    case "pytest":  return _runPytest(cwd, framework, opts.filter, timeoutMs, start, root);
     case "go":      return _runGo(cwd, framework, opts.filter, timeoutMs, start);
     default:        return _unknownFramework(root, start);
   }
@@ -263,9 +264,19 @@ function _runVitest(cwd: string, fw: TestFramework, filter: string | undefined, 
 
 // ── Pytest ─────────────────────────────────────────────────────────────────────
 
-function _runPytest(cwd: string, fw: TestFramework, filter: string | undefined, timeout: number, start: number): TestResult {
+function _runPytest(cwd: string, fw: TestFramework, filter: string | undefined, timeout: number, start: number, root: string): TestResult {
   const args = ["-m", "pytest", "--tb=short", "-q"];
   if (filter) args.push("-k", filter);
+
+  /* The project's own environment first: that is where its pytest and its dependencies are. The
+     machine's interpreter usually has neither, and ran the suite into import errors. */
+  const venv = findProjectVenv(cwd, root);
+  const projectPython = venv ? venvExecutable(venv, "python") : undefined;
+  if (projectPython) {
+    const res = _spawnRunner(projectPython, args, cwd, timeout);
+    if (res.error) return _spawnFailure(fw, projectPython, res, start);
+    return _parsePytest(((res.stdout ?? "") + (res.stderr ?? "")).slice(0, 32_000), fw, start);
+  }
 
   // Prefer "python" (the common Windows install name) but fall back to "python3": current
   // macOS ships no bare "python" at all (removed from /usr/bin since roughly macOS 12.3),

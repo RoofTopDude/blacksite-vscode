@@ -580,10 +580,77 @@ type OneEditOutcome =
  * matching/authorization semantics — applyEdit and applyBatchEdits both call it, so file_edit
  * and file_edit_batch can never drift into behaving differently on the same input.
  */
+const MAX_HINT_LINES = 40;
+const MAX_HINT_CHARS = 3_000;
+
+/** Character-bigram similarity of two strings, 0..1 (Sørensen–Dice). */
+function lineSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return 0;
+  const grams = new Map<string, number>();
+  for (let i = 0; i < a.length - 1; i += 1) {
+    const gram = a.slice(i, i + 2);
+    grams.set(gram, (grams.get(gram) ?? 0) + 1);
+  }
+  let shared = 0;
+  for (let i = 0; i < b.length - 1; i += 1) {
+    const gram = b.slice(i, i + 2);
+    const count = grams.get(gram) ?? 0;
+    if (count > 0) { shared += 1; grams.set(gram, count - 1); }
+  }
+  return (2 * shared) / (a.length + b.length - 2);
+}
+
+/**
+ * Where in the file the text an edit was looking for most likely is now, so a stale oldString can
+ * be corrected from the error alone instead of costing a separate file_read. Undefined when
+ * nothing in the file is close enough to be worth showing.
+ */
+export function closestRegion(text: string, oldString: string): { startLine: number; endLine: number; snippet: string } | undefined {
+  const fileLines = text.split(/\r?\n/);
+  const wanted = oldString.split(/\r?\n/).map((line) => line.trim());
+  const firstIndex = wanted.findIndex(Boolean);
+  if (firstIndex < 0 || fileLines.length === 0) return undefined;
+  const span = Math.min(Math.max(wanted.length, 1), MAX_HINT_LINES);
+  const trimmed = fileLines.map((line) => line.trim());
+
+  /* Anchor on the most similar line to the first non-blank wanted line, then score the window
+     that would follow it. Linear in file size per anchor candidate, and anchors are capped. */
+  const anchor = wanted[firstIndex]!;
+  const candidates = trimmed
+    .map((line, index) => ({ index, score: lineSimilarity(anchor, line) }))
+    .filter((entry) => entry.score >= 0.5)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 20);
+  let best: { start: number; score: number } | undefined;
+  for (const candidate of candidates) {
+    const start = Math.max(0, candidate.index - firstIndex);
+    let total = 0;
+    let counted = 0;
+    for (let offset = 0; offset < span; offset += 1) {
+      const want = wanted[offset];
+      if (!want) continue;
+      counted += 1;
+      total += lineSimilarity(want, trimmed[start + offset] ?? "");
+    }
+    const score = counted > 0 ? total / counted : 0;
+    if (!best || score > best.score) best = { start, score };
+  }
+  if (!best || best.score < 0.6) return undefined;
+  const endIndex = Math.min(fileLines.length, best.start + span);
+  let snippet = fileLines.slice(best.start, endIndex).join("\n");
+  if (snippet.length > MAX_HINT_CHARS) snippet = `${snippet.slice(0, MAX_HINT_CHARS)}\n…`;
+  return { startLine: best.start + 1, endLine: endIndex, snippet };
+}
+
 function applyOneEdit(text: string, edit: EditInput, rel: string, fileEol: "\n" | "\r\n"): OneEditOutcome {
   const { old: oldString, count: occurrences, deguttered } = resolveOldString(text, edit.oldString);
   if (occurrences === 0) {
-    return { ok: false, error: `oldString was not found in ${rel} (also tried EOL-converted, whitespace-tolerant, and line-number-stripped matches). Read the file and copy the exact text (including whitespace, and without any line-number prefixes).` };
+    const near = closestRegion(text, edit.oldString);
+    const hint = near
+      ? ` The closest text in the file now is at lines ${near.startLine}–${near.endLine} (shown without line numbers; copy from it exactly):\n${near.snippet}`
+      : " Read the file and copy the exact text (including whitespace, and without any line-number prefixes).";
+    return { ok: false, error: `oldString was not found in ${rel} (also tried EOL-converted, whitespace-tolerant, and line-number-stripped matches).${hint}` };
   }
   const expected = normalizeExpectedReplacements(edit.expectedReplacements);
   if (expected === "invalid") return { ok: false, error: `expectedReplacements must be a positive integer (edit in ${rel}).` };

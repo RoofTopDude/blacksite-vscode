@@ -54,6 +54,9 @@ import {
 import { reviewChatApproval, reviewChatApprovalGroups } from "./continuation/approval-review.js";
 import { describeRewind, RewindRegistry, rewindNote, untrackedEffect, type RewindScope } from "./rewind.js";
 import { EditDiffJournal } from "./edit-diff-journal.js";
+import type { ToolDiffSummary } from "./edit-diff-stats.js";
+import type { ChangeLog } from "./graph/change-log.js";
+import { ToolchainInventoryCache, environmentsInPlay, formatToolchainSummary } from "./toolchains/inventory.js";
 import { SecretStore } from "./secret-store.js";
 import { SessionStore } from "./session-store.js";
 import { MemoryStore } from "./memory-store.js";
@@ -1142,11 +1145,30 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     snapshot.localMapContext = await (this._graphAnnotations?.localOverview?.(focusFiles) ?? Promise.resolve(""));
     snapshot.mcpServers = this._enabledMcpServers();
     snapshot.skillRoster = this._buildSkillRoster(focusFiles);
+    snapshot.toolchainSummary = this._buildToolchainSummary(focusFiles);
     const workspaceBlock = buildWorkspaceContextBlock(snapshot);
     const runSummary = this._sequences?.buildWorkspaceContextSummary?.() ?? "";
     return runSummary
       ? `${workspaceBlock}\n\nExecution Runs (up to three context-relevant retained runs; inspect by run ID instead of rerunning):\n${runSummary}`
       : workspaceBlock;
+  }
+
+  /** The toolchains section of the workspace block: the machine inventory as of its last probe
+   *  (never waited for — a stale one refreshes in the background) and the environments of the
+   *  projects the open files belong to. Fail-soft. */
+  private _buildToolchainSummary(focusFiles: string[]): string {
+    try {
+      return formatToolchainSummary(this._toolchains.current(), environmentsInPlay(this._workspaceRoot, focusFiles));
+    } catch {
+      return "";
+    }
+  }
+
+  /** Probe installed toolchains again now (after an install, say) and clear what sessions
+   *  remembered as missing. */
+  async refreshToolchains(): Promise<void> {
+    await this._toolchains.refresh();
+    this._session?.forgetMissingCommands();
   }
 
   /**
@@ -1271,6 +1293,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       modelSupportedParameters: this._cachedSupportedParameters(settings.provider, pSettings.model),
       cacheTtl: pSettings.cacheTtl,
       bedrockExtendedStopReasons: () => this._readCfgBedrockExtendedStopReasons(),
+      mapNotes: () => this._readCfgAgentNotes(),
+      refreshToolchains: async () => { await this._toolchains.refresh(); },
       fastMode: pSettings.fastMode,
       taskBudgetTokens: pSettings.taskBudgetTokens,
       contextEditingEnabled: pSettings.contextEditingEnabled,
@@ -2009,9 +2033,19 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    */
   private _lastConfiguredServices: ReadonlySet<string> = new Set();
   private _onSkillsChanged?: () => void;
+  private _changeLog?: ChangeLog;
+  private _toolchainCache?: ToolchainInventoryCache;
+  /** What is installed on this machine, for the agent's per-turn context (see toolchains/inventory.ts). */
+  private get _toolchains(): ToolchainInventoryCache {
+    this._toolchainCache ??= new ToolchainInventoryCache(this._context.globalState);
+    return this._toolchainCache;
+  }
 
   /** Lets the Skills panel refresh after the agent writes a skill with skill_write. */
   setSkillsChangedListener(listener: () => void): void { this._onSkillsChanged = listener; }
+
+  /** Where each finished turn records the files it changed, for the Codebase Map's Activity tab. */
+  setChangeLog(log: ChangeLog): void { this._changeLog = log; }
 
   private _enabledMcpServers(): McpServerInfo[] {
     return this._mcp.enabledEntries()
@@ -2037,7 +2071,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    */
   private async _resolveMcpServer(serverId: string): Promise<McpServerResolution> {
     const resolution = await this._mcp.resolveForAgent(serverId);
-    if (resolution.ok) return { ok: true, server: resolution.server };
+    if (resolution.ok) {
+      return {
+        ok: true,
+        server: resolution.server,
+        toolSchema: (toolName) => this._mcp.cachedTools(serverId).find((tool) => tool.name === toolName)?.inputSchema,
+      };
+    }
     if (resolution.reason === "auth_required") this._promptMcpSignIn(serverId, resolution.message);
     return { ok: false, message: resolution.message };
   }
@@ -2377,6 +2417,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         modelSupportedParameters: this._cachedSupportedParameters(subProvider, subPSettings.model),
         cacheTtl: subPSettings.cacheTtl,
         bedrockExtendedStopReasons: () => this._readCfgBedrockExtendedStopReasons(),
+        mapNotes: () => this._readCfgAgentNotes(),
+        delegatedLane: true,
         fastMode: subPSettings.fastMode,
         taskBudgetTokens: subPSettings.taskBudgetTokens,
         contextEditingEnabled: subPSettings.contextEditingEnabled,
@@ -4164,11 +4206,23 @@ ${this._pendingRewindNote}`;
     this._liveTurnId = turnId;
 
     let turnError: string | undefined;
+    // Files this turn changed, with line counts, for the map's change log (see change-log.ts).
+    const changed = new Map<string, { additions: number; deletions: number }>();
+    const noteChanges = (diffs: readonly ToolDiffSummary[] | undefined): void => {
+      for (const diff of diffs ?? []) {
+        const entry = changed.get(diff.path) ?? { additions: 0, deletions: 0 };
+        entry.additions += diff.additions;
+        entry.deletions += diff.deletions;
+        changed.set(diff.path, entry);
+      }
+    };
     try {
       await this._runner.runWithProgress(
         session,
         content,
         (event: AgentEvent) => {
+          if (event.type === "tool_call_result" && event.ok) noteChanges(event.diffs);
+          else if (event.type === "subagent_lane_event" && event.event.type === "tool_call_result" && event.event.ok) noteChanges(event.event.diffs);
           if (event.type === "text_delta") summary.text += event.text;
           // The deltas accumulated so far came from a generation that failed and is being
           // retried — drop them, or the summary reports the dead partial concatenated with the
@@ -4212,11 +4266,21 @@ ${this._pendingRewindNote}`;
       this._persistSession(session);
       const logSettings = this._readSettings();
       const logPSettings = this._providerSettings(logSettings.provider, logSettings);
-      this._persistConversationLog(session, "assistant", summary.text, {
+      /* A turn that failed before writing anything still records why: an empty assistant row with
+         stop_reason "error" told anyone reading the conversation log nothing about what went wrong. */
+      const loggedText = summary.text.trim() || !turnError ? summary.text : `[error] ${turnError}`;
+      this._persistConversationLog(session, "assistant", loggedText, {
         provider: logSettings.provider,
         model: logPSettings.model,
         stopReason: summary.stopReason || (turnError ? "error" : undefined),
       });
+      if (changed.size > 0) {
+        this._changeLog?.record({
+          sessionId: session.sessionId,
+          request: meta?.promptPreview ?? content,
+          files: [...changed].map(([file, counts]) => ({ path: file, ...counts })),
+        });
+      }
     } catch (err) {
       this._post({ type: "stream_diagnostic", id: turnId, level: "warn", message: `Post-turn bookkeeping failed (session/log persistence): ${err instanceof Error ? err.message : String(err)}` });
     } finally {
@@ -4271,6 +4335,8 @@ ${this._pendingRewindNote}`;
     if (!result || typeof result !== "object") return;
     const hint = (result as { missingCommand?: InstallHint }).missingCommand;
     if (!hint?.command || this._offeredInstalls.has(hint.command)) return;
+    // Something installed already does the job (`python3` for `python`): nothing to install.
+    if (hint.alternative?.certain) return;
 
     const actions = hint.options.map((option) => `Install with ${option.manager}`);
     if (hint.docsUrl) actions.push("Open install page");
@@ -4747,6 +4813,12 @@ ${this._pendingRewindNote}`;
   /** `blacksite.bedrock.extendedStopReasons` — default on. */
   private _readCfgBedrockExtendedStopReasons(): boolean {
     return vscode.workspace.getConfiguration("blacksite").get<boolean>("bedrock.extendedStopReasons", true) !== false;
+  }
+
+  /** `blacksite.graph.agentNotes` — how hard the agent is pushed to leave a map note after an edit. */
+  private _readCfgAgentNotes(): "suggest" | "require" | "off" {
+    const value = vscode.workspace.getConfiguration("blacksite").get<string>("graph.agentNotes", "suggest");
+    return value === "require" || value === "off" ? value : "suggest";
   }
 
   /** `blacksite.bedrock.latestDefaultModel` — default on. Governs only the default model, never

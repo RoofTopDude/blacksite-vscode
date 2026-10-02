@@ -98,6 +98,16 @@ export interface GraphAnnotationProvider {
   /** Bring the map index up to date with the disk now instead of after the watcher's debounce.
    *  Resolves with how many changed paths were waiting. */
   syncIndex?(): Promise<{ appliedChanges: number }>;
+  /**
+   * Root of the project that owns a workspace-relative path: the deepest project the Map found
+   * (a package.json, pyproject.toml, go.mod, … folder) containing it, as a map id. "" when the
+   * path belongs to no project; undefined when the Map has no topology yet. Lets per-project
+   * work (a check run inside one project) be told apart in a workspace holding many.
+   */
+  projectRootOf?(path: string): string | undefined;
+  /** Whether the Map would index this path, so it can carry a note. A scratch folder, a dot
+   *  directory or a virtualenv never can. */
+  isMapIndexable?(path: string): boolean;
 }
 
 function defaultDocument(): GraphAnnotationDocument {

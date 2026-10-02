@@ -295,6 +295,9 @@ export interface SessionRuntime {
   verification?: {
     status: "idle" | "pending" | "passed" | "failed" | "skipped";
     files: string[];
+    pendingFiles?: string[];
+    failedFiles?: string[];
+    uncheckedFiles?: string[];
     method?: string;
     detail?: string;
     updatedAt?: number;

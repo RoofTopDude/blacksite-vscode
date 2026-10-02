@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import { isInsideToolchainRoot } from "@blacksite/local-runtime";
+import { findProjectVenv, isInsideToolchainRoot } from "@blacksite/local-runtime";
+import * as path from "node:path";
 import { editRouting, type EditRouting, type WorkspaceEditApplier } from "./workspace-edit-applier.js";
 import { captureDiagnosticBaseline, collectDiagnosticSnapshot, collectForUris, isStaleDiagnosticUri, workspaceRootPaths } from "./post-edit-diagnostics.js";
 import { formatActiveSignature } from "./lsp-signature-format.js";
@@ -88,6 +89,73 @@ const MAX_HIERARCHY_DEPTH = 4;
 const HIERARCHY_TOTAL_TIMEOUT_MS = 15_000;
 const DIAGNOSTIC_SOURCE_GLOB = "**/*.{ts,tsx,js,jsx,mjs,cjs,py,pyi,rs,go,java,kt,kts,cs,cpp,cc,cxx,c,h,hpp,swift,rb,php,vue,svelte}";
 const DIAGNOSTIC_EXCLUDE_GLOB = "**/{node_modules,.git,out,dist,build,coverage,vendor,target,.venv,venv}/**";
+/** Enough for a whole change set in one call; past it, the wait and the result both get unwieldy. */
+const MAX_DIAGNOSTIC_PATHS = 50;
+
+/** Plain words for a snapshot that is not a clean, current answer, so the agent knows what it may
+ *  conclude from it instead of re-running the same call. */
+function diagnosticStatusNotice(snapshot: { status: string; freshness: { files?: Record<string, string> } }): string | undefined {
+  const files = snapshot.freshness.files ?? {};
+  const named = (state: string): string => Object.entries(files).filter(([, value]) => value === state).map(([key]) => key.replace(/^[^:]*:/, "")).join(", ");
+  if (snapshot.status === "no_checker") {
+    return "No language server or linter has reported on these files, so an empty result says nothing about them. "
+      + "Check them another way (a parser, a test, or reading them back) or say they are unverified. Running this again will not change the answer.";
+  }
+  if (snapshot.status === "timed_out") {
+    const stale = named("timed_out");
+    return `The language server has not caught up with the latest content${stale ? ` of ${stale}` : ""}; what is shown may be out of date. `
+      + "Try again in a moment, or verify with the project's own checker (tests, a type checker, a linter).";
+  }
+  if (snapshot.status === "ready") {
+    const unchecked = named("no_checker");
+    if (unchecked) return `No language server or linter covers ${unchecked}; nothing was checked there.`;
+  }
+  return undefined;
+}
+
+/** Diagnostics that say an import could not be found — Pylance/Pyright, mypy, and the runtime's own wording. */
+const UNRESOLVED_IMPORT = /could not be resolved|Cannot find implementation or library stub|No module named/i;
+
+/** The interpreter the Python extension analyses `uri` with, when it is installed and says. */
+async function selectedPythonInterpreter(uri: vscode.Uri): Promise<string | undefined> {
+  try {
+    const extension = vscode.extensions.getExtension("ms-python.python");
+    if (!extension) return undefined;
+    const api = (extension.isActive ? extension.exports : await extension.activate()) as {
+      environments?: { getActiveEnvironmentPath?(resource?: vscode.Uri): { path?: string } | undefined };
+    } | undefined;
+    return api?.environments?.getActiveEnvironmentPath?.(uri)?.path;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * When import errors in a Python file come from VS Code analysing it with a different interpreter
+ * than its project's own virtualenv — the usual state of a folder holding many projects, since
+ * the Python extension picks one interpreter per workspace folder — say so, so the agent verifies
+ * with the project's tools instead of chasing imports that are fine.
+ */
+async function pythonEnvironmentNote(
+  workspaceRoot: string,
+  problems: ReadonlyArray<{ path: string; message: string }>,
+  uris: readonly vscode.Uri[],
+): Promise<string | undefined> {
+  if (!problems.some((problem) => UNRESOLVED_IMPORT.test(problem.message))) return undefined;
+  for (const uri of uris) {
+    if (!/\.pyi?$/i.test(uri.fsPath)) continue;
+    const venv = findProjectVenv(path.dirname(uri.fsPath), workspaceRoot);
+    if (!venv) continue;
+    const selected = await selectedPythonInterpreter(uri);
+    const sameEnvironment = !!selected && path.resolve(selected).toLowerCase().startsWith(path.resolve(venv).toLowerCase());
+    if (sameEnvironment) continue;
+    const venvLabel = path.relative(workspaceRoot, venv).split(path.sep).join("/");
+    return `Import errors here may not be real: VS Code is checking this file with ${selected ? `the interpreter at ${selected}` : "its default interpreter"}, `
+      + `but its project uses ${venvLabel}. Verify with the project's own tools instead — pytest or mypy through shell_run in that project run from ${venvLabel} automatically.`;
+  }
+  return undefined;
+}
+
 const NAV_COMMANDS: Record<string, string> = {
   definition:     "vscode.executeDefinitionProvider",
   typeDefinition: "vscode.executeTypeDefinitionProvider",
@@ -560,32 +628,51 @@ export class LspService implements LspProvider {
   // ── code_diagnostics ───────────────────────────────────────────────────────
 
   private async _diagnostics(payload: Record<string, unknown>, ctx: LspContext): Promise<LspResult> {
-    const p = typeof payload["path"] === "string" ? payload["path"] : "";
+    const single = typeof payload["path"] === "string" ? payload["path"].trim() : "";
+    const listed = Array.isArray(payload["paths"])
+      ? payload["paths"].filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim())
+      : [];
+    const requested = [...new Set([...(single ? [single] : []), ...listed])];
+    if (requested.length > MAX_DIAGNOSTIC_PATHS) {
+      return { ok: false, error: `Pass at most ${MAX_DIAGNOSTIC_PATHS} paths per call; split the rest into another call.` };
+    }
     const severity = typeof payload["severity"] === "string" ? payload["severity"].toLowerCase() : "";
     if (severity && !["error", "warning", "info", "hint"].includes(severity)) {
       return { ok: false, error: "severity must be error, warning, info, or hint." };
     }
     const limit = clamp(num(payload["limit"]) ?? MAX_RESULTS, 1, HARD_MAX);
-    const activateWorkspace = payload["activateWorkspace"] === true;
-    if (p && activateWorkspace) return { ok: false, error: "Use either path or activateWorkspace, not both." };
+    // Named files win over a workspace sweep: asking for both almost always means "check these".
+    const activateWorkspace = payload["activateWorkspace"] === true && requested.length === 0;
+    const notices: string[] = [];
+    if (payload["activateWorkspace"] === true && requested.length > 0) {
+      notices.push("Checked the named files only; activateWorkspace is ignored when paths are given.");
+    }
     let uris: vscode.Uri[] | undefined;
     let coverageCapped = false;
-    if (p) {
-      const identity = this._identity.resolve(p, stringValue(payload["rootId"]));
-      if (!identity.ok) return identity;
-      /* Checked before opening: a document still held in memory opens fine after its file is
-         deleted, and would hand back the stale diagnostics of a file that no longer exists. */
-      if (isStaleDiagnosticUri(identity.value.uri, workspaceRootPaths(this._workspaceRoot))) {
+    if (requested.length > 0) {
+      uris = [];
+      const missing: string[] = [];
+      const roots = workspaceRootPaths(this._workspaceRoot);
+      for (const p of requested) {
+        const identity = this._identity.resolve(p, stringValue(payload["rootId"]));
+        if (!identity.ok) return identity;
+        /* Checked before opening: a document still held in memory opens fine after its file is
+           deleted, and would hand back the stale diagnostics of a file that no longer exists. */
+        if (isStaleDiagnosticUri(identity.value.uri, roots)) { missing.push(p); continue; }
+        try { await vscode.workspace.openTextDocument(identity.value.uri); }
+        catch { return { ok: false, error: `Could not open ${p}.` }; }
+        uris.push(identity.value.uri);
+      }
+      if (uris.length === 0) {
+        const named = missing.join(", ");
         return {
           ok: false,
           code: "file_missing",
-          error: `${p} no longer exists on disk, so there is nothing to check; any diagnostics VS Code still shows for it are stale. `
+          error: `${named} no longer ${missing.length === 1 ? "exists" : "exist"} on disk, so there is nothing to check; any diagnostics VS Code still shows for ${missing.length === 1 ? "it" : "them"} are stale. `
             + "If you deleted it on purpose (a temporary script, say), check the files that remain instead, or call workspace_refresh to re-sync pending checks with the disk.",
         };
       }
-      try { await vscode.workspace.openTextDocument(identity.value.uri); }
-      catch { return { ok: false, error: `Could not open ${p}.` }; }
-      uris = [identity.value.uri];
+      if (missing.length > 0) notices.push(`Skipped files that no longer exist on disk: ${missing.join(", ")}.`);
     } else if (activateWorkspace) {
       const activationLimit = clamp(num(payload["activationLimit"]) ?? 200, 1, HARD_MAX);
       const discovered = await vscode.workspace.findFiles(DIAGNOSTIC_SOURCE_GLOB, DIAGNOSTIC_EXCLUDE_GLOB, activationLimit + 1);
@@ -603,11 +690,22 @@ export class LspService implements LspProvider {
       limit,
       signal: ctx.signal,
       waitForChange: !!uris,
-      scope: p ? "file" : activateWorkspace ? "activated_workspace" : "published_workspace",
+      scope: requested.length > 0 ? "file" : activateWorkspace ? "activated_workspace" : "published_workspace",
       coverageCapped,
     });
-    const notice = p && snapshot.problems.length === 0 ? this._noProviderHint(p, "diagnostics") : undefined;
-    return { ok: true, ...snapshot, notice };
+    const statusNotice = diagnosticStatusNotice(snapshot);
+    if (statusNotice) notices.push(statusNotice);
+    else if (requested.length === 1 && snapshot.problems.length === 0) {
+      const hint = this._noProviderHint(requested[0]!, "diagnostics");
+      if (hint) notices.push(hint);
+    }
+    const environmentNote = uris?.length ? await pythonEnvironmentNote(this._workspaceRoot, snapshot.problems, uris) : undefined;
+    return {
+      ok: true,
+      ...snapshot,
+      notice: notices.length > 0 ? notices.join(" ") : undefined,
+      ...(environmentNote ? { environmentNote } : {}),
+    };
   }
 
   // ── code_rename ────────────────────────────────────────────────────────────

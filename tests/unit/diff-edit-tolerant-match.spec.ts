@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dominantEol, findWhitespaceTolerantMatch, normalizeEol, resolveNewString, resolveOldString } from "../../src/diff-edit-service.js";
+import { closestRegion, dominantEol, findWhitespaceTolerantMatch, normalizeEol, resolveNewString, resolveOldString } from "../../src/diff-edit-service.js";
 
 // Regression for the recurring "oldString was not found" failures — the cause was
 // cosmetic whitespace drift, not genuinely absent code.
@@ -166,5 +166,30 @@ describe("resolveNewString — don't write line numbers into the file", () => {
 
   it("leaves an unnumbered newString alone even when a repair happened", () => {
     expect(resolveNewString("const a = 1;", true)).toBe("const a = 1;");
+  });
+});
+
+/* A genuinely stale oldString (the file changed since it was read) used to cost a separate
+   file_read. The error now shows where the wanted text most likely is. */
+describe("closestRegion", () => {
+  const file = [
+    "def load(path):",
+    "    with open(path) as handle:",
+    "        data = json.load(handle)",
+    "    return validate(data)",
+    "",
+    "def save(path, data):",
+    "    write(path, data)",
+  ].join("\n");
+
+  it("finds the edited version of the text the edit was looking for", () => {
+    const stale = "    with open(path) as fh:\n        data = json.load(fh)\n    return data";
+    const near = closestRegion(file, stale);
+    expect(near).toMatchObject({ startLine: 2, endLine: 4 });
+    expect(near?.snippet).toContain("json.load(handle)");
+  });
+
+  it("offers nothing when no part of the file resembles it", () => {
+    expect(closestRegion(file, "class Totally {\n  unrelated(): void {}\n}")).toBeUndefined();
   });
 });

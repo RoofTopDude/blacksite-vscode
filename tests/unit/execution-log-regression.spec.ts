@@ -55,8 +55,8 @@ describe("execution-log regressions — Tier 2 (tool friction)", () => {
     expect(isAllowedCommand("cut")).toBe(true);
   });
 
-  it("shell_run: blocked eval flags still tell the model what to do instead", () => {
-    expect(() => validateArgs("node", ["-e", "x"])).toThrowError(/Write the snippet to a file/i);
+  it("shell_run: a refused argument still tells the model what to do instead", () => {
+    expect(() => validateArgs("node", ["-r", "x"])).toThrowError(/Run what you need directly instead/i);
   });
 });
 

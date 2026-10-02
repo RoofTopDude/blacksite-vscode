@@ -633,7 +633,7 @@
         "blacksite.permissions.allowEvalFlags": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "⚠️ Advanced & unsafe. Permit inline-eval arguments (`node -e`, `python -c`, `ruby -e`, …) that are blocked by default. Enabling this lets the agent execute arbitrary code passed directly on the command line. Read from user settings only.",
+          "markdownDescription": "⚠️ Advanced & unsafe. Inline code (`node -e`, `python -c`, `ruby -e`, …) always shows you an approval prompt with the code, even for programs you always allow. Enabling this runs it without asking, and also permits the arguments that make a program launch another one (`find -exec`, `git --upload-pack`, `node -r`, …), which are otherwise refused. Read from user settings only.",
           "scope": "resource"
         },
         "blacksite.permissions.readToolchains": {
@@ -797,6 +797,21 @@
           "type": "boolean",
           "default": true,
           "description": "Skip directories whose name begins with a dot (.vscode-test, .pytest_cache, .gradle, .idea …) when indexing the Codebase Map. These hold tooling state rather than authored source. Dot-FILES such as .env and .eslintrc.json are always kept. Turning this off does not re-enable .git, .blacksite, .next, or .venv."
+        },
+        "blacksite.graph.agentNotes": {
+          "type": "string",
+          "enum": [
+            "suggest",
+            "require",
+            "off"
+          ],
+          "enumDescriptions": [
+            "After editing, the agent is invited to leave a Codebase Map note when it learned something non-obvious. It is never made to.",
+            "The agent must leave a Codebase Map note on every file it edits, and is reminded before it finishes if it has not.",
+            "The agent is never asked to leave Codebase Map notes."
+          ],
+          "default": "suggest",
+          "markdownDescription": "Whether the agent leaves a Codebase Map note after editing a file. What each change touched is recorded on the map automatically either way, so a note is for knowledge that is not obvious from the code: a constraint, a gotcha, or why something is built the way it is."
         },
         "blacksite.graph.respectGitignore": {
           "type": "boolean",

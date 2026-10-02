@@ -20,6 +20,7 @@ import type {
   MapHierarchy,
   MapReferenceLink,
   MapRunTouch,
+  MapChangeTouch,
 } from "./protocol";
 import {
   DEFAULT_FOCUS_BUDGET,
@@ -421,7 +422,7 @@ export interface GraphViewState {
   indexingPhase: string | null;
   indexingProgress: number | null;
   /** Inspector host context for the current selection. */
-  context: { requestId: number; runs: MapRunTouch[]; references: MapReferenceLink[] } | null;
+  context: { requestId: number; runs: MapRunTouch[]; references: MapReferenceLink[]; changes: MapChangeTouch[] } | null;
   /** Host corpus search results (files beyond the render sample). */
   corpusSearch: { query: string; requestId: number; results: Array<{ id: string; dir: string; codebase?: string }> } | null;
 }
@@ -1503,7 +1504,7 @@ export function applyMessage(state: GraphViewState, msg: GraphHostMessage, now: 
     case "search_results":
       return { ...state, corpusSearch: { query: msg.query, requestId: msg.requestId, results: msg.results } };
     case "context_state":
-      return { ...state, context: { requestId: msg.requestId, runs: msg.runs, references: msg.references } };
+      return { ...state, context: { requestId: msg.requestId, runs: msg.runs, references: msg.references, changes: msg.changes ?? [] } };
     case "annotations_changed":
       return { ...state, annotations: msg.annotations };
     case "tickets_state":

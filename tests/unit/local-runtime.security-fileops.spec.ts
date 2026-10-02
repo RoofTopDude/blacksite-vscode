@@ -13,6 +13,7 @@ import {
   buildDescription,
   validateArgs,
   externalPathArgs,
+  inlineCodeSnippet,
 } from "../../packages/local-runtime/src/security.js";
 import { handleShell, runShellCommand } from "../../packages/local-runtime/src/shell.js";
 import { LocalRuntime } from "../../packages/local-runtime/src/index.js";
@@ -273,22 +274,39 @@ describe("command policy — harmless waits and instructive eval blocks", () => 
     expect(isAllowedCommand("sleep")).toBe(true);
   });
 
-  it("blocks node -e but tells the model what to do instead", () => {
-    expect(() => validateArgs("node", ["-e", "console.log(1)"]))
-      .toThrowError(/Write the snippet to a file/i);
+  /* Inline code used to be refused, which only sent the agent to write a scratch file and run it
+     unprompted. It now always asks, with the code in the prompt, even for an always-allowed binary. */
+  it("asks before running inline code, with the code in the prompt", () => {
+    expect(() => validateArgs("node", ["-e", "console.log(1)"])).not.toThrow();
+    const outcome = resolveShellConfirmation("python", ["-c", "print(1)"], false, undefined, { autoApprove: ["python"] });
+    expect(outcome).toMatchObject({ kind: "confirm" });
+    expect(outcome.kind === "confirm" && outcome.description).toContain("print(1)");
+    expect(resolveShellConfirmation("python", ["-c", "print(1)"], true, undefined, { autoApprove: ["python"] })).toMatchObject({ kind: "proceed" });
   });
 
-  it("blocks the other spellings of an inline-eval flag", () => {
+  it("runs inline code without a prompt only when allowEvalFlags is on", () => {
+    expect(resolveShellConfirmation("python", ["-c", "print(1)"], false, undefined, { autoApprove: ["python"], allowEvalFlags: true }))
+      .toMatchObject({ kind: "proceed" });
+  });
+
+  it("finds the snippet in every spelling of an inline-eval flag", () => {
+    expect(inlineCodeSnippet("node", ["-p", "process.exit()"])).toBe("process.exit()");
+    expect(inlineCodeSnippet("node", ["-pe", "1"])).toBe("1");
+    expect(inlineCodeSnippet("node", ["--eval=1+1"])).toBe("1+1");
+    expect(inlineCodeSnippet("python", ["-Ic", "import os"])).toBe("import os");
+    expect(inlineCodeSnippet("python", ["-cimport os"])).toBe("import os");
+    expect(inlineCodeSnippet("perl", ["-le", "print 1"])).toBe("print 1");
+    expect(inlineCodeSnippet("ruby", ["-we", "1"])).toBe("1");
+    expect(inlineCodeSnippet("python", ["main.py"])).toBeUndefined();
+    expect(inlineCodeSnippet("git", ["commit", "-m", "-e"])).toBeUndefined();
+  });
+
+  it("still refuses flags that launch another program or load hidden code", () => {
     for (const [command, args] of [
-      ["node", ["-p", "process.exit()"]],
-      ["node", ["-pe", "1"]],
       ["node", ["--import=data:text/javascript,1"]],
-      ["python", ["-Ic", "import os"]],
-      ["python", ["-cimport os"]],
-      ["perl", ["-le", "print 1"]],
-      ["perl", ["-e'print 1'"]],
-      ["ruby", ["-we", "1"]],
+      ["node", ["-r", "./hook.js", "app.js"]],
       ["npx", ["-c", "calc"]],
+      ["find", [".", "-exec", "rm", "{}", ";"]],
     ] as Array<[string, string[]]>) {
       expect(() => validateArgs(command, args), `${command} ${args.join(" ")}`).toThrowError(/not allowed/i);
     }

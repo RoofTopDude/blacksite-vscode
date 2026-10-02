@@ -1,19 +1,36 @@
 import { spawn } from "child_process";
+import path from "path";
 import type { ShellPayload, ShellResult } from "./types.js";
 import {
   externalPathArgs, validateArgs, planSpawn, resolveCommandForSpawn, resolveShellConfirmation,
   type CommandPolicy, type SpawnPlan,
 } from "./security.js";
-import { describeMissingCommand, detectMissingCommand, installHintFor, type InstallHint } from "./missing-command.js";
+import { describeMissingCommand, detectMissingCommand, findInstalledAlternative, installHintFor, type InstallHint } from "./missing-command.js";
 import { ProcessManager } from "./process-manager.js";
 import { resolveWorkspaceCwd } from "./path-policy.js";
 import { buildSanitizedProcessEnv } from "./process-env.js";
+import { resolveProjectPythonTool } from "./project-interpreter.js";
 
 const SHELL_TIMEOUT_MS = 60_000;
 const STDOUT_MAX = 128 * 1024;
 const STDERR_MAX = 32 * 1024;
 
 const buildEnv = buildSanitizedProcessEnv;
+
+/** Where an installed program is, by the same PATH lookup a spawn uses, or undefined. Windows'
+ *  Store aliases for Python are not an installation: they only offer to install one. */
+function locateInstalled(name: string, cwd: string, workspaceRoot: string, env: NodeJS.ProcessEnv): string | undefined {
+  const found = resolveCommandForSpawn(name, cwd, workspaceRoot, env);
+  if (!path.isAbsolute(found) || found === name) return undefined;
+  if (process.platform === "win32" && /[\\/]WindowsApps[\\/]/i.test(found) && /^python/i.test(name)) return undefined;
+  return found;
+}
+
+/** Workspace-relative with forward slashes, for a path inside the workspace. */
+function toDisplayPath(workspaceRoot: string, absolute: string): string {
+  const relative = path.relative(workspaceRoot, absolute);
+  return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? relative.split(path.sep).join("/") : absolute;
+}
 
 /**
  * Run a one-shot command asynchronously and collect its output, mirroring the shape
@@ -189,7 +206,10 @@ export async function handleShell(
   // A path argument outside the workspace no longer fails the command: it is named in the
   // approval prompt, and a read-only look into an installed toolchain needs none.
   const env = buildEnv();
-  const resolvedCommand = resolveCommandForSpawn(command, cwd, workspaceRoot, env);
+  // A Python tool runs from the project's own environment when it has one (see project-interpreter.ts).
+  const projectTool = resolveProjectPythonTool(command, args, cwd, workspaceRoot);
+  const resolvedCommand = projectTool?.executable ?? resolveCommandForSpawn(command, cwd, workspaceRoot, env);
+  const projectEnvironment = projectTool ? toDisplayPath(workspaceRoot, projectTool.venv) : undefined;
   const externalPaths = externalPathArgs(command, args, {
     workspaceRoot, cwd, readableRoots: toolchains.readableRoots, resolvedCommand, env,
   });
@@ -198,7 +218,10 @@ export async function handleShell(
   });
   if (outcome.kind === "denied") return { ok: false, error: outcome.error };
   if (outcome.kind === "confirm") {
-    return { ok: true, requiresConfirmation: true, tier: outcome.tier, description: outcome.description, unrecognizedCommand: outcome.unrecognizedCommand };
+    const description = projectEnvironment
+      ? `${outcome.description} (runs ${command} from the project environment ${projectEnvironment})`
+      : outcome.description;
+    return { ok: true, requiresConfirmation: true, tier: outcome.tier, description, unrecognizedCommand: outcome.unrecognizedCommand };
   }
 
   const plan = planSpawn(resolvedCommand, args);
@@ -227,7 +250,11 @@ export async function handleShell(
     ? detectMissingCommand(result.stderr)
     : null;
   if (missing) {
-    const hint = installHintFor(missing);
+    const base = installHintFor(missing);
+    // Often nothing is missing at all, just named differently here: `python` on a Mac that only
+    // has `python3`, or on Windows where `py` is the launcher.
+    const alternative = findInstalledAlternative(base, (name) => locateInstalled(name, cwd, workspaceRoot, env));
+    const hint = alternative ? { ...base, alternative } : base;
     return { ok: false, error: describeMissingCommand(hint), missingCommand: hint };
   }
 
@@ -239,6 +266,7 @@ export async function handleShell(
     timedOut: result.timedOut,
     tier: outcome.tier,
     cwd,
+    ...(projectEnvironment ? { projectEnvironment } : {}),
   };
 }
 
