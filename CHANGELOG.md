@@ -3,6 +3,30 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.30.0
+
+Stable release. It includes every change from 1.30.0-pre.1 through 1.30.0-pre.4, listed below.
+If you are updating from 1.29.0, the larger changes are:
+
+- **Blacksite now requires VS Code 1.139 or newer** (pre.1). Editors built on an older VS Code base
+  can no longer install it, and the updater tells you so instead of offering an update VS Code
+  would refuse. This is what allowed the Mermaid upgrade below.
+- **A Codebase Map for large and multi-codebase workspaces** (pre.1): it opens on an overview of
+  your codebases, you drill in with a breadcrumb, it finds links between packages and between
+  workspace folders, and it rebuilds in the background without slowing chat.
+- **The agent spends its time on your task** (pre.2): map notes are suggested rather than required,
+  inline `python -c` and `node -e` ask instead of being refused, subagents are not held to the
+  parent's reminders, "Edit verification failed" can now be satisfied, and the agent sees which
+  toolchains are installed.
+- **Talk to the agent while it works** (pre.3): your message reaches it at its next step without
+  cancelling the run.
+- **Project setup** (pre.3): finds the toolchains your projects ask for, compares them with what is
+  installed, and installs what is missing in a terminal you watch and approve.
+- **Richer diagrams and charts** (pre.4): Mermaid's pie, XY, treemap, mind map, radar and Sankey
+  charts are readable on the dark panel; a new `chart` block draws scatter, stacked-bar, histogram,
+  heatmap and box plots; the agent checks a diagram before sending it and keeps a large one as a
+  file it edits in place, which the viewer follows; and Mermaid is upgraded to 12.1.
+
 ## 1.30.0-pre.4
 
 Prerelease. The stable update channel remains on 1.29.0.
