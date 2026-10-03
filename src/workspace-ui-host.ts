@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { isWorkspaceDestination, WORKSPACE_DESTINATIONS, type WorkspaceDestination } from "./shared/workspace-navigation.js";
-import { OPEN_DIAGRAM_COMMAND, openDiagramSource } from "./diagrams/diagram-viewer.js";
+import { OPEN_DIAGRAM_COMMAND, SAVE_DIAGRAM_COMMAND, openDiagramSource } from "./diagrams/diagram-viewer.js";
 
 const peers = new Set<() => void>();
 
@@ -24,6 +24,12 @@ export function bindWorkspaceUi(webview: vscode.Webview, context: vscode.Extensi
       if (msg.type === "open_diagram") {
         const source = openDiagramSource(msg.source);
         if (source) await vscode.commands.executeCommand(OPEN_DIAGRAM_COMMAND, { source });
+      }
+      // Save on the same blocks: keeps the diagram in .blacksite/context/diagrams/, where the
+      // agent can read and patch it instead of redrawing it.
+      if (msg.type === "save_diagram") {
+        const source = openDiagramSource(msg.source);
+        if (source) await vscode.commands.executeCommand(SAVE_DIAGRAM_COMMAND, { source });
       }
       if (msg.type === "workspace_density" && (msg.density === "compact" || msg.density === "comfortable")) {
         await vscode.workspace.getConfiguration("blacksite").update("interface.density", msg.density, vscode.ConfigurationTarget.Global);

@@ -89,6 +89,7 @@ describe("renderMd mermaid fences", () => {
     expect(html).toContain('<div class="cb-diagram"></div>');
     expect(html).toContain('<span class="cb-lang">mermaid</span>');
     expect(html).toContain('class="cb-open"');
+    expect(html).toContain('class="cb-save"');
     expect(html).toContain('class="cb-toggle"');
     expect(html).toContain('class="cb-copy"');
   });
@@ -108,6 +109,28 @@ describe("renderMd mermaid fences", () => {
 
   it("leaves other fences as ordinary code blocks", () => {
     expect(renderMd("```ts\nconst x = 1;\n```")).not.toContain("cb-mermaid");
+  });
+});
+
+describe("renderMd chart fences", () => {
+  const CHART = "```chart\n{\"type\":\"bar\",\"x\":\"w\",\"y\":[\"n\"],\"data\":[{\"w\":\"a\",\"n\":1}]}\n```";
+
+  it("emits a chart block with a slot to draw into, and no diagram-only actions", () => {
+    const html = renderMd(CHART);
+    expect(html).toContain('<div class="cb cb-chart">');
+    expect(html).toContain('<div class="cb-diagram"></div>');
+    expect(html).toContain('<span class="cb-lang">chart</span>');
+    expect(html).toContain('class="cb-toggle"');
+    expect(html).toContain('class="cb-copy"');
+    expect(html).not.toContain("cb-open");
+    expect(html).not.toContain("cb-save");
+    expect(html).not.toContain("cb-mermaid");
+  });
+
+  it("keeps the JSON in the block's own pre, escaped, after the slot", () => {
+    const html = renderMd(CHART);
+    expect(html.indexOf('class="cb-diagram"')).toBeLessThan(html.indexOf("<pre>"));
+    expect(html).toContain("&quot;type&quot;:&quot;bar&quot;");
   });
 });
 

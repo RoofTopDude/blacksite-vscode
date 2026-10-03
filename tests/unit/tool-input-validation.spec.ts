@@ -38,3 +38,31 @@ describe("validateToolInput", () => {
     expect(validateToolInput("totally_made_up_tool", { anything: 1 })).toEqual([]);
   });
 });
+
+describe("the diagram tools", () => {
+  it("accept what a model sends for a patch of several kinds", () => {
+    expect(validateToolInput("diagram_edit", {
+      name: "request-flow",
+      edits: [
+        { find: "A --> B", replace: "A --> C" },
+        { fromLine: 4, toLine: 6, replace: "" },
+        { afterLine: 0, insert: "%% header" },
+      ],
+      open: true,
+    })).toEqual([]);
+  });
+
+  it("require a name and the edits, and a source to save", () => {
+    expect(validateToolInput("diagram_edit", {}).map((issue) => issue.path).sort()).toEqual(["edits", "name"]);
+    expect(validateToolInput("diagram_save", { name: "x" }).map((issue) => issue.path)).toEqual(["source"]);
+    expect(validateToolInput("diagram_check", {})).toEqual([]);
+    expect(validateToolInput("diagram_read", {})).toEqual([]);
+  });
+
+  it("constrain the language of a check", () => {
+    expect(validateToolInput("diagram_check", { source: "{}", language: "chart" })).toEqual([]);
+    expect(validateToolInput("diagram_check", { source: "x", language: "svg" })).toContainEqual(
+      expect.objectContaining({ path: "language", kind: "invalid_enum" }),
+    );
+  });
+});

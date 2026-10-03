@@ -1226,7 +1226,7 @@ export const TRANSCRIPT_DOCUMENT_TOOLS: ToolDefinition[] = [
   tool(
     "transcript_document",
     "transcript.document",
-    "Create a rich Markdown document attached permanently to this conversation. Use this for long reports, runbooks, architecture notes, setup guides, README drafts, and other user-facing deliverables instead of placing the full document in chat text. The chat shows a compact expandable card with copy and open-in-editor actions. ```mermaid blocks in the Markdown are drawn as diagrams.",
+    "Create a rich Markdown document attached permanently to this conversation. Use this for long reports, runbooks, architecture notes, setup guides, README drafts, and other user-facing deliverables instead of placing the full document in chat text. The chat shows a compact expandable card with copy and open-in-editor actions. ```mermaid blocks in the Markdown are drawn as diagrams and ```chart blocks (JSON) as charts.",
     {
       title: str("Document title shown on its transcript card."),
       subtitle: str("Optional one-line context under the title."),
@@ -1247,6 +1247,74 @@ export const TRANSCRIPT_DOCUMENT_TOOLS: ToolDefinition[] = [
       warnings: arr({ type: "string" }, "Optional caveats or incomplete areas."),
     },
     ["title"],
+  ),
+];
+
+/** Diagrams saved with the project (.blacksite/context/diagrams/*.mmd), and a syntax check for
+    diagram and chart source before it reaches the user. See src/diagrams/diagram-tools.ts. */
+export const DIAGRAM_TOOLS: ToolDefinition[] = [
+  tool(
+    "diagram_check",
+    "diagram.check",
+    "Check diagram source before you put it in a reply: runs the same Mermaid parser the chat draws with, and for a `chart` block the same validator. " +
+    "Returns ok, or the parser's error with the line it blames and a numbered excerpt around it. Also reports the diagram's size and, for a large flowchart, whether to switch to the ELK layout or split it. " +
+    "Use it on any diagram that is not small and simple, and on every fix for a diagram that failed to draw. Pass `source`, or the `name` of a saved diagram.",
+    {
+      source: str("The diagram source to check (Mermaid, or the JSON of a chart block). Omit it to check a saved diagram by name."),
+      name: str("Name of a saved diagram, e.g. request-flow.mmd."),
+      language: enumStr("What the source is: mermaid (default) or chart. A source starting with { is taken as a chart.", ["mermaid", "chart"]),
+    },
+  ),
+  tool(
+    "diagram_read",
+    "diagram.read",
+    "List the diagrams saved with this project, or read one with line numbers. Saved diagrams live in .blacksite/context/diagrams/ as plain .mmd files. " +
+    "Read a large diagram in ranges (fromLine/toLine) and edit only the lines that change with diagram_edit, instead of rewriting it.",
+    {
+      name: str("Diagram to read, e.g. request-flow.mmd. Omit to list every saved diagram."),
+      fromLine: num("First line to return (1-based). Default 1."),
+      toLine: num("Last line to return. At most 400 lines come back per call."),
+    },
+  ),
+  tool(
+    "diagram_save",
+    "diagram.save",
+    "Save a Mermaid diagram with the project, in .blacksite/context/diagrams/<name>.mmd, so it survives the conversation and can be changed in place later with diagram_edit. " +
+    "Use this for any diagram you expect to revise, or that is large (roughly 25+ nodes) — draw it once, save it, then patch it. The diagram is parsed first and refused, unchanged, if it is invalid. " +
+    "Refuses to replace an existing diagram unless overwrite is true; prefer diagram_edit for changes.",
+    {
+      name: str("File name, e.g. request-flow or request-flow.mmd. Letters, digits, dashes and dots."),
+      source: str("The complete Mermaid source."),
+      overwrite: bool("Replace an existing diagram of this name whole. Default false."),
+      open: bool("Open the diagram in the viewer (pan, zoom, minimap), which then redraws as the file changes. Worth doing for a large diagram."),
+      allowInvalid: bool("Save even though it does not parse, to stage work in progress. Default false."),
+    },
+    ["name", "source"],
+  ),
+  tool(
+    "diagram_edit",
+    "diagram.edit",
+    "Change a saved diagram without rewriting it. Each edit is one of: { find, replace, all? } to replace exact text; { fromLine, toLine?, replace } to replace a line range (replace \"\" deletes it); { afterLine, insert } to add lines (afterLine 0 adds at the top). " +
+    "Edits apply in order, each to the result of the one before, so line numbers refer to the diagram as the previous edit left it. All edits apply or none do: if the result does not parse, or an edit does not match, nothing is saved and you get the reason. " +
+    "Read the lines you are changing with diagram_read first, and prefer find with enough surrounding text to be unique.",
+    {
+      name: str("Saved diagram to change, e.g. request-flow.mmd."),
+      edits: arr(
+        obj("One change.", {
+          find: str("Exact text to replace, including indentation. Must match once unless all is true."),
+          replace: str("Replacement text (with find or fromLine). \"\" deletes."),
+          all: bool("Replace every occurrence of find."),
+          fromLine: num("First line of a range to replace (1-based)."),
+          toLine: num("Last line of the range, inclusive. Defaults to fromLine."),
+          afterLine: num("Insert after this line; 0 inserts before the first line."),
+          insert: str("Lines to insert after afterLine."),
+        }),
+        "The changes, applied in order. Up to 60.",
+      ),
+      open: bool("Open the diagram in the viewer, if it is not already."),
+      allowInvalid: bool("Save even if the result does not parse. Default false."),
+    },
+    ["name", "edits"],
   ),
 ];
 
@@ -2375,6 +2443,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...SUBAGENT_TOOLS,
   ...TRANSCRIPT_TOOLS,
   ...TRANSCRIPT_DOCUMENT_TOOLS,
+  ...DIAGRAM_TOOLS,
   ...AGENT_MEMORY_TOOLS,
   ...SKILL_TOOLS,
   ...RESULT_PAGING_TOOLS,

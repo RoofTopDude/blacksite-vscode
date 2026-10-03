@@ -256,8 +256,18 @@ When a flow, a call sequence, a state machine or a dependency graph explains som
 prose, the agent draws it as a [Mermaid](https://mermaid.js.org) diagram. Diagrams render in replies,
 in transcript documents, and in plan and ticket documents. **Source** switches a diagram to the text
 it was drawn from, and **Copy** copies that text. Wide diagrams scroll sideways instead of shrinking
-past the point where their labels are readable. If the agent writes a diagram Mermaid cannot parse,
-you see the parser's error above the source; ask the agent to fix it.
+past the point where their labels are readable.
+
+The agent picks the kind of diagram for what it is showing, not a flowchart for everything:
+sequence diagrams for calls over time, state diagrams for lifecycles, entity-relationship diagrams
+for schemas, Gantt charts and timelines for plans, mind maps and tree views for hierarchies,
+architecture and C4 diagrams for systems, and pie, Sankey, quadrant, radar, treemap and XY charts
+for quantities. The newer kinds Mermaid has added, such as fishbone, Venn, Wardley map, event model
+and swimlane diagrams, are drawn too.
+
+The agent has a tool that checks a diagram with Mermaid's own parser, and uses it on anything but a
+small diagram, so a typo is usually fixed before you see it. If a diagram still cannot be parsed, you
+see the parser's error above the source; ask the agent to fix it.
 
 ### The diagram viewer
 
@@ -276,6 +286,41 @@ Click a diagram, or its **Open** button, to open it in its own editor tab at ful
 `T` switches between a dark and a light canvas, and exports use the current one. **Export** also
 offers a transparent background. Press `?` for the full list of shortcuts. An edit stays in the tab,
 survives a window reload, and **Revert** in the source panel brings back the original.
+
+### Charts
+
+Mermaid cannot draw every chart, so the agent has its own `chart` block for the rest: grouped and
+stacked bars, several lines with a legend, areas, scatter and bubble plots, histograms, heatmaps,
+donuts and box plots. It describes the chart as data plus a few choices, and Blacksite draws it in
+the same colours as the diagrams. Hover a bar, point, slice or cell to see its exact value. A chart is
+laid out for the width of the panel and redrawn when you resize it, so its labels stay readable.
+**Source** shows the data it was drawn from, and the agent is told, by field name, when a chart's data
+does not fit (a field that is not in the data, text where a number belongs).
+
+Charts draw in Blacksite's own panels. GitHub and VS Code's Markdown preview do not know the `chart`
+block, so for a Markdown file other people will read elsewhere the agent uses a Mermaid chart or a
+table.
+
+### Large diagrams, saved with the project
+
+A large diagram is expensive to redraw in full for every change, and each retyped line is a chance
+to lose another. So the agent keeps a diagram you will revise, or one past about 25 nodes, as a file:
+
+- **Where.** `.blacksite/context/diagrams/<name>.mmd`, plain Mermaid text. The folder sits in
+  Blacksite's own `.blacksite/` directory, beside the project context and memory.
+- **Save one yourself.** Every diagram in the chat has a **Save** button, and the viewer has **Save
+  to project**. The agent can then read and change it.
+- **The agent edits in place.** It reads only the lines it needs and sends exact-text replacements,
+  line ranges or insertions. All the edits apply or none do, and each result is parsed before it is
+  saved, so a change that breaks the diagram is refused and the file stays as it was. The previous
+  version is kept next to the file as `<name>.mmd.bak`.
+- **The viewer follows the file.** A diagram opened from a saved file redraws as soon as the file
+  changes, keeping the zoom and position you chose. If you have unsaved edits in the source panel they
+  are kept, and **Revert** loads the new version. **Save** (or `Ctrl+S`) writes your edits back.
+
+For a flat flowchart with many cross-links, the agent can switch on Mermaid's ELK layout, which
+routes edges in layers instead of curves. It does not use it for flowcharts built from subgraphs,
+where the default layout reads better.
 
 ### Diagrams in Markdown files
 

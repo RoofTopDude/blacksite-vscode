@@ -210,6 +210,37 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
         state: result?.ok === false ? "fail" : "ok",
         ...none,
       };
+    case "diagram_check":
+      return {
+        label: result?.ok === false ? "Does not parse" : (readStr(result?.kind) || "Diagram"),
+        preview: result?.ok === false
+          ? joinParts([readNum(result?.line) ? `line ${result.line}` : "", shortText(readStr(result?.error), 90)])
+          : joinParts([result?.checked === false ? "not verified" : "valid", readNum(result?.lines) ? `${result.lines} lines` : "", readNum(result?.rows) ? countLabel(result.rows, "row") : "", Array.isArray(result?.advice) && result.advice.length ? "has advice" : ""]),
+        state: result?.ok === false ? "fail" : "ok",
+        ...none,
+      };
+    case "diagram_read":
+      return {
+        label: readStr(result?.name) || "Saved diagrams",
+        preview: result?.name
+          ? `lines ${readNum(result?.fromLine) ?? 1}–${readNum(result?.toLine) ?? "?"} of ${readNum(result?.totalLines) ?? "?"}`
+          : countLabel(readNum(result?.count) ?? 0, "diagram"),
+        state: "ok",
+        ...none,
+      };
+    case "diagram_save":
+    case "diagram_edit":
+      return {
+        label: `${toolName === "diagram_edit" ? "Edited" : "Saved"} ${readStr(result?.name) || "diagram"}`,
+        preview: joinParts([
+          Array.isArray(result?.edits) ? countLabel(result.edits.length, "edit") : "",
+          readStr(result?.kind),
+          readNum(result?.lines) ? `${result.lines} lines` : "",
+          result?.warning ? "does not parse" : "",
+        ]),
+        state: result?.ok === false ? "fail" : "ok",
+        ...none,
+      };
     case "browser_screenshot":
       return { label: "Screenshot captured", preview: joinParts([formatBytes(result?.sizeBytes), hostLabel(result?.url), result?.fullPage ? "full page" : "viewport"]), state: "ok", mediaDataUrl: readStr(result?.dataUrl), mediaLabel: hostLabel(result?.url) || "Screenshot preview" };
     case "ui_preview_render":
@@ -654,6 +685,14 @@ export function toolInputPreview(toolName: string, input: any): string {
       return joinParts([readStr(data.op), shortPath(data.path || data.cwd, 40), readStr(data.branch || data.name)]);
     case "memory_append":
       return shortText(data.note, 70);
+    case "diagram_check":
+      return readStr(data.name) || (readStr(data.language) === "chart" ? "chart block" : "source");
+    case "diagram_read":
+      return data.name ? joinParts([readStr(data.name), data.fromLine ? `from line ${data.fromLine}` : ""]) : "saved diagrams";
+    case "diagram_save":
+      return readStr(data.name);
+    case "diagram_edit":
+      return joinParts([readStr(data.name), Array.isArray(data.edits) ? countLabel(data.edits.length, "edit") : ""]);
     case "report_problems":
       return data.clear ? "clear" : (Array.isArray(data.problems) ? countLabel(data.problems.length, "problem") : "");
     case "code_symbols":
@@ -845,6 +884,10 @@ export function toolIntentPhrase(toolName: string, input: any): { verb: string; 
     case "test_detect": return { verb: "Detecting", target: "test framework" };
     case "subagent_spawn": return { verb: "Delegating", target: shortText(data.label || data.task, 40) };
     case "subagent_followup": return { verb: "Following up", target: shortText(data.message, 40) };
+    case "diagram_check": return { verb: "Checking diagram", target: readStr(data.name) };
+    case "diagram_read": return { verb: "Reading diagram", target: readStr(data.name) };
+    case "diagram_save": return { verb: "Saving diagram", target: readStr(data.name) };
+    case "diagram_edit": return { verb: "Editing diagram", target: readStr(data.name) };
     case "memory_append": return { verb: "Remembering", target: shortText(data.note, 40) };
     case "memory_search": case "memory_read": return { verb: "Recalling", target: shortText(data.query, 40) };
     case "mcp_call_tool": return { verb: "Calling", target: readStr(data.toolName) };

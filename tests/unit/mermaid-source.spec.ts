@@ -80,6 +80,14 @@ describe("describeMermaid", () => {
     expect(describeMermaid("graph LR\n A-->B").kind).toBe("Flowchart");
     expect(describeMermaid("stateDiagram-v2\n [*] --> A").kind).toBe("State diagram");
     expect(describeMermaid("erDiagram\n A ||--o{ B : has").kind).toBe("Entity relationship diagram");
+    expect(describeMermaid("ishikawa-beta\n  Slow").kind).toBe("Fishbone diagram");
+    expect(describeMermaid("venn-beta\n  set A[\"A\"]").kind).toBe("Venn diagram");
+    expect(describeMermaid("treeView-beta\n\"src\"").kind).toBe("Tree view");
+    expect(describeMermaid("cynefin-beta\n  title Where").kind).toBe("Cynefin diagram");
+    expect(describeMermaid("railroad-ebnf-beta\n  a = b;").kind).toBe("Railroad diagram");
+    expect(describeMermaid("eventmodeling\ntf 01 cmd Add").kind).toBe("Event model");
+    expect(describeMermaid("swimlane-beta\n  lane A").kind).toBe("Swimlane diagram");
+    expect(describeMermaid("wardley-beta\ntitle Map").kind).toBe("Wardley map");
     expect(describeMermaid("not a diagram").kind).toBe("Diagram");
   });
 

@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.30.0-pre.3",
+  "version": "1.30.0-pre.4",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -1236,7 +1236,7 @@
     "markdown-it-sub": "^2.0.0",
     "markdown-it-sup": "^2.0.0",
     "markdown-it-task-lists": "^2.1.1",
-    "mermaid": "^11.17.2",
+    "mermaid": "^12.1.0",
     "pau-profiler": "github:RoofTopDude/pau-profiler#c55715d93f94f1d6fd033486e2cef2a252dc1cef",
     "pdfjs-dist": "^6.0.227",
     "pixi.js": "^8.6.6",

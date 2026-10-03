@@ -5,6 +5,7 @@
 
 .md .cb-actions { display: flex; align-items: center; gap: 4px; }
 .md .cb-toggle,
+.md .cb-save,
 .md .cb-open {
   background: transparent;
   border: 1px solid var(--input);
@@ -17,8 +18,10 @@
   transition: all 0.15s;
 }
 .md .cb-toggle:hover,
+.md .cb-save:hover,
 .md .cb-open:hover { color: var(--foreground); background: rgba(255, 255, 255, 0.06); }
 .md .cb-toggle:focus-visible,
+.md .cb-save:focus-visible,
 .md .cb-open:focus-visible,
 .md .cb-copy:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 
@@ -35,6 +38,7 @@
 }
 
 .md .cb-mermaid:not(.is-rendered) .cb-toggle,
+.md .cb-mermaid:not(.is-rendered) .cb-save,
 .md .cb-mermaid:not(.is-rendered) .cb-open { display: none; }
 .md .cb-mermaid > pre { display: none; }
 .md .cb-mermaid.show-source > pre,
@@ -64,3 +68,30 @@
   overflow-wrap: anywhere;
 }
 .md .cb-mermaid.is-failed > .cb-diagram::before { content: "Diagram could not be drawn\A"; font-family: var(--font-sans); font-weight: 600; }
+
+/* ── Charts (```chart) ─────────────────────────────────────────────────────
+   The same block anatomy as a Mermaid diagram — drawn picture over a hidden source, with
+   Source and Copy — drawn by lib/chart.ts. A chart is already sized to its panel, so there
+   is no viewer to open and no minimum scale. */
+
+.md .cb-chart:not(.is-rendered) .cb-toggle { display: none; }
+.md .cb-chart > pre { display: none; }
+.md .cb-chart.show-source > pre,
+.md .cb-chart.is-failed > pre { display: block; }
+.md .cb-chart.show-source > .cb-diagram { display: none; }
+.md .cb-chart > .cb-diagram svg { max-width: 100%; }
+
+.md .cb-chart:not(.is-rendered):not(.is-failed) > .cb-diagram { min-height: 64px; display: flex; align-items: center; justify-content: center; }
+.md .cb-chart:not(.is-rendered):not(.is-failed) > .cb-diagram::before { content: "Drawing chart…"; color: var(--muted-foreground); font-size: var(--text-xs); }
+
+.md .cb-chart.is-failed > .cb-diagram {
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--s-err) 8%, #0d0d0f);
+  color: var(--s-err);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.md .cb-chart.is-failed > .cb-diagram::before { content: "Chart could not be drawn\A"; font-family: var(--font-sans); font-weight: 600; }

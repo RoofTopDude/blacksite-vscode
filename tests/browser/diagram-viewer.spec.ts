@@ -44,9 +44,9 @@ describe("built diagram viewer", () => {
     ? fs.readFileSync(path.join(root, "fonts/lexend-latin.woff2")).toString("base64")
     : "";
 
-  async function openViewer(initialState: unknown = null): Promise<Page> {
+  async function openViewer(initialState: unknown = null, file: { name: string; path: string } | null = null): Promise<Page> {
     const viewer = await browser.newPage({ viewport: { width: 1200, height: 760 } });
-    await viewer.addInitScript(({ source, initialState, font }) => {
+    await viewer.addInitScript(({ source, initialState, font, file }) => {
       const win = window as unknown as FixtureWindow & { acquireVsCodeApi: unknown };
       win.__messages = [];
       win.__violations = [];
@@ -58,13 +58,13 @@ describe("built diagram viewer", () => {
         postMessage: (message: Record<string, unknown>) => {
           win.__messages.push(message);
           if (message.type === "diagram_ready") {
-            setTimeout(() => window.postMessage({ type: "diagram_init", source, fonts: { latin: font } }, "*"), 0);
+            setTimeout(() => window.postMessage({ type: "diagram_init", source, ...(file ? { file } : {}), fonts: { latin: font } }, "*"), 0);
           }
         },
         getState: () => win.__state,
         setState: (state: unknown) => { win.__state = state; },
       });
-    }, { source: SOURCE, initialState, font });
+    }, { source: SOURCE, initialState, font, file });
     await viewer.goto(origin);
     await viewer.locator(".dv-content svg").waitFor({ timeout: 20_000 });
     return viewer;
@@ -265,6 +265,101 @@ describe("built diagram viewer", () => {
     });
     expect(fonts.sans).toContain("Lexend");
     expect(fonts.mono).toContain("Cascadia Code");
+  });
+
+  it("offers to keep an unsaved diagram with the project", async () => {
+    const fresh = await openViewer();
+    await fresh.getByRole("button", { name: /Save to this project/ }).click();
+    expect(await messages("diagram_save_to_project", fresh)).toEqual([{ type: "diagram_save_to_project", source: SOURCE }]);
+    // It saves what is on screen, edits included.
+    await fresh.keyboard.press("s");
+    await fresh.getByLabel("Mermaid source").fill(`${SOURCE}
+  F --> G`);
+    await fresh.getByRole("button", { name: /Save to this project/ }).click();
+    expect((await messages("diagram_save_to_project", fresh)).at(-1)).toMatchObject({ source: `${SOURCE}
+  F --> G` });
+    await fresh.close();
+  });
+
+  const FILE = { name: "request-flow.mmd", path: ".blacksite/context/diagrams/request-flow.mmd" };
+
+  describe("a tab that follows a saved diagram", () => {
+    it("names its file, and saves only when there is something to save", async () => {
+      const saved = await openViewer(null, FILE);
+      expect(await saved.locator(".dv-title-kind", { hasText: "request-flow.mmd" }).getAttribute("title")).toBe(FILE.path);
+      const save = saved.getByRole("button", { name: /up to date/ });
+      expect(await save.isDisabled()).toBe(true);
+      expect(await saved.getByRole("button", { name: /Save to this project/ }).count()).toBe(0);
+
+      await saved.keyboard.press("s");
+      await saved.getByLabel("Mermaid source").fill(`${SOURCE}
+  F --> G`);
+      const dirty = saved.getByRole("button", { name: "Save your changes to request-flow.mmd" });
+      expect(await dirty.isEnabled()).toBe(true);
+      await dirty.click();
+      expect(await messages("diagram_write", saved)).toEqual([{ type: "diagram_write", source: `${SOURCE}
+  F --> G` }]);
+      await saved.close();
+    });
+
+    it("saves on Ctrl+S, including from inside the source editor, and only when edited", async () => {
+      const saved = await openViewer(null, FILE);
+      await saved.keyboard.press("Control+s");
+      expect(await messages("diagram_write", saved)).toEqual([]);
+      await saved.keyboard.press("s");
+      const editor = saved.getByLabel("Mermaid source");
+      await editor.fill(`${SOURCE}
+  F --> G`);
+      await editor.press("Control+s");
+      expect(await messages("diagram_write", saved)).toHaveLength(1);
+      await saved.close();
+    });
+
+    it("redraws when the file changes, keeping the zoom and pan the reader chose", async () => {
+      const saved = await openViewer(null, FILE);
+      await saved.locator(".dv-viewport").focus();
+      await saved.keyboard.press("2");
+      await saved.waitForTimeout(300);
+      const before = await transform(saved);
+      expect(before.scale).toBeCloseTo(2, 2);
+
+      const updated = SOURCE.replace("Final answer", "Final answer, revised");
+      await saved.evaluate((source) => window.postMessage({ type: "diagram_update", source, file: { name: "request-flow.mmd", path: ".blacksite/context/diagrams/request-flow.mmd" } }, "*"), updated);
+      await saved.waitForFunction(() => document.querySelector(".dv-content")?.textContent?.includes("Final answer, revised"));
+      const after = await transform(saved);
+      expect(after.scale).toBeCloseTo(2, 2);
+      expect(await saved.locator(".dv-bar .dv-badge").count()).toBe(0);
+      await saved.close();
+    });
+
+    it("keeps an unsaved edit through an update, and says so", async () => {
+      const saved = await openViewer(null, FILE);
+      await saved.keyboard.press("s");
+      const mine = SOURCE.replace("title: Request lifecycle", "title: My edit");
+      await saved.getByLabel("Mermaid source").fill(mine);
+      await saved.waitForFunction(() => document.querySelector(".dv-title-main")?.textContent === "My edit");
+
+      await saved.evaluate((source) => window.postMessage({ type: "diagram_update", source, file: { name: "request-flow.mmd", path: ".blacksite/context/diagrams/request-flow.mmd" } }, "*"), SOURCE.replace("User message", "Agent changed this"));
+      await saved.getByText("Your edit is kept").waitFor();
+      expect(await saved.getByLabel("Mermaid source").inputValue()).toBe(mine);
+      expect(await saved.locator(".dv-bar .dv-badge").textContent()).toBe("Edited");
+
+      // Reverting loads the new saved version.
+      await saved.getByRole("button", { name: "Revert to the original" }).click();
+      await saved.waitForFunction(() => document.querySelector(".dv-content")?.textContent?.includes("Agent changed this"));
+      await saved.close();
+    });
+
+    it("takes the saved version when its own edit is the one that was just saved", async () => {
+      const saved = await openViewer(null, FILE);
+      await saved.keyboard.press("s");
+      const mine = SOURCE.replace("title: Request lifecycle", "title: My edit");
+      await saved.getByLabel("Mermaid source").fill(mine);
+      await saved.evaluate((source) => window.postMessage({ type: "diagram_update", source, file: { name: "request-flow.mmd", path: ".blacksite/context/diagrams/request-flow.mmd" } }, "*"), mine);
+      await saved.waitForFunction(() => document.querySelectorAll(".dv-bar .dv-badge").length === 0);
+      expect(await saved.getByRole("button", { name: /up to date/ }).isDisabled()).toBe(true);
+      await saved.close();
+    });
   });
 
   it("does all of it without a CSP violation", async () => {

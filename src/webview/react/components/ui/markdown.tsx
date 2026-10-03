@@ -1,6 +1,7 @@
 import { useDeferredValue, useEffect, useMemo, useRef, type MouseEvent } from "react";
 import { post } from "@/lib/bridge";
 import { cn } from "@/lib/utils";
+import { renderChartBlock } from "@/lib/chart";
 import { mermaidBlockSource, renderMermaidBlock } from "@/lib/mermaid";
 import { useMarkdown } from "@/lib/use-markdown";
 import "./markdown-diagrams.css";
@@ -10,6 +11,12 @@ import "./markdown-diagrams.css";
    a callback through to its own provider. */
 function openDiagramInViewer(source: string): void {
   post({ type: "open_diagram", source });
+}
+
+/* Same route as Open: workspace-ui-host.ts saves it to .blacksite/context/diagrams/, where the
+   agent can read and patch it instead of redrawing it. */
+function saveDiagramToProject(source: string): void {
+  post({ type: "save_diagram", source });
 }
 
 /** Beyond this, rich rendering costs more than it returns; the tail is stated, not dropped. */
@@ -176,6 +183,16 @@ export function Markdown({
     return () => { current = false; };
   }, [rendered.html]);
 
+  /* Charts are drawn into the same kind of placeholder, synchronously, and keep watching their
+     width so a resized panel gets a chart laid out for it rather than a scaled one. */
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root || !rendered.html) return;
+    const stops = Array.from(root.querySelectorAll<HTMLElement>(".cb-chart"), (block) => renderChartBlock(block));
+    if (stops.length === 0) return;
+    return () => { for (const stop of stops) stop(); };
+  }, [rendered.html]);
+
   if (streaming || !md || rendered.failed) {
     return <div className={cn("whitespace-pre-wrap", className)}>{deferredRaw}</div>;
   }
@@ -206,11 +223,20 @@ export function Markdown({
       return;
     }
 
+    // Mermaid block: keep it with the project
+    const saveBtn = target.closest(".cb-save") as HTMLElement | null;
+    if (saveBtn) {
+      const block = saveBtn.closest(".cb-mermaid");
+      const source = block ? mermaidBlockSource(block) : "";
+      if (source.trim()) saveDiagramToProject(source);
+      return;
+    }
+
     // Mermaid block: show the diagram or the source it was drawn from
     const toggleBtn = target.closest(".cb-toggle") as HTMLElement | null;
     if (toggleBtn) {
-      const showingSource = toggleBtn.closest(".cb-mermaid")?.classList.toggle("show-source") ?? false;
-      toggleBtn.textContent = showingSource ? "Diagram" : "Source";
+      const showingSource = toggleBtn.closest(".cb-mermaid, .cb-chart")?.classList.toggle("show-source") ?? false;
+      toggleBtn.textContent = showingSource ? (toggleBtn.closest(".cb-chart") ? "Chart" : "Diagram") : "Source";
       toggleBtn.setAttribute("aria-pressed", String(showingSource));
       return;
     }

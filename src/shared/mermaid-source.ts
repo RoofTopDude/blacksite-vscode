@@ -95,12 +95,21 @@ const DIAGRAM_KINDS: Array<[RegExp, string]> = [
   [/^architecture(?:-beta)?$/i, "Architecture diagram"],
   [/^radar(?:-beta)?$/i, "Radar chart"],
   [/^treemap(?:-beta)?$/i, "Treemap"],
+  [/^ishikawa(?:-beta)?$/i, "Fishbone diagram"],
+  [/^venn(?:-beta)?$/i, "Venn diagram"],
+  [/^treeView(?:-beta)?$/i, "Tree view"],
+  [/^cynefin(?:-beta)?$/i, "Cynefin diagram"],
+  [/^railroad(?:-(?:ebnf|abnf|peg))?(?:-beta)?$/i, "Railroad diagram"],
+  [/^eventmodeling$/i, "Event model"],
+  [/^swimlane(?:-beta)?$/i, "Swimlane diagram"],
+  [/^wardley(?:-beta)?$/i, "Wardley map"],
 ];
 
 /** Diagram types whose grammar has a `title` keyword. */
 const TITLE_KEYWORD_KINDS = new Set([
   "Gantt chart", "Pie chart", "User journey", "Quadrant chart", "XY chart", "Timeline",
   "Radar chart", "Packet diagram", "Treemap", "C4 diagram", "Kanban board",
+  "Venn diagram", "Cynefin diagram", "Railroad diagram", "Wardley map",
 ]);
 
 export interface MermaidDescription {

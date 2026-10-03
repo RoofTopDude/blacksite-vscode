@@ -94,6 +94,23 @@ const graphWorkerBuildOptions = {
   logLevel: "info",
 };
 
+/* The diagram checker's worker (src/diagrams/diagram-check-worker.ts): Mermaid's parser run in
+   a thread of its own under a fake DOM, so the agent can check diagram source before sending
+   it. Loads out/markdown-preview/mermaid.min.js at run time rather than bundling Mermaid again. */
+const diagramCheckWorkerBuildOptions = {
+  absWorkingDir: __dirname,
+  entryPoints: [resolve(__dirname, "src/diagrams/diagram-check-worker.ts")],
+  bundle: true,
+  outfile: resolve(__dirname, "out/diagram-check-worker.js"),
+  tsconfig: resolve(__dirname, "tsconfig.json"),
+  external: ["vscode"],
+  format: "cjs",
+  platform: "node",
+  target: "node24",
+  sourcemap: true,
+  logLevel: "info",
+};
+
 const markdownPreviewBuildOptions = {
   absWorkingDir: __dirname,
   entryPoints: [resolve(__dirname, "src/webview/react/markdown-preview/mermaid-preview.ts")],
@@ -159,6 +176,8 @@ if (watchMode) {
   await previewCtx.watch();
   const workerCtx = await esbuild.context(graphWorkerBuildOptions);
   await workerCtx.watch();
+  const diagramWorkerCtx = await esbuild.context(diagramCheckWorkerBuildOptions);
+  await diagramWorkerCtx.watch();
   copyWebviewAssets();
   copyMarkdownPreviewAssets();
   copyBundledSkills();
@@ -169,6 +188,7 @@ if (watchMode) {
   await esbuild.build(buildOptions);
   await esbuild.build(markdownPreviewBuildOptions);
   await esbuild.build(graphWorkerBuildOptions);
+  await esbuild.build(diagramCheckWorkerBuildOptions);
   copyWebviewAssets();
   copyMarkdownPreviewAssets();
   copyBundledSkills();

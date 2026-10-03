@@ -5,7 +5,7 @@ import type { HookInput, HookOutcome, HookProvider } from "./hooks.js";
 import { browserTool, redactBrowserPayload } from "./browser/privacy.js";
 import type { LocalRuntime, McpServer } from "@blacksite/local-runtime";
 import {
-  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, RESEARCH_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS, SKILL_TOOLS,
+  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, RESEARCH_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, DIAGRAM_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS, SKILL_TOOLS,
   resolveToolDispatch,
   validateToolInput,
   describeExpectedToolShape,
@@ -1647,6 +1647,8 @@ export interface AgentSessionOptions {
   transcriptProvider?: TranscriptProvider;
   /** Creates long-form Markdown deliverables as conversation-scoped attachments. */
   transcriptDocumentProvider?: TranscriptDocumentProvider;
+  /** Checks, saves, and edits the diagrams kept with the project. Enables the diagram_* tools. */
+  diagramProvider?: DiagramProvider;
   /** Semantic memory index — enables tool-call similarity injection and rolling transcript chunk search. */
   agentMemoryIndex?: AgentMemoryIndex;
   providerTurnSessionFactory?: (session: AgentSession) => ProviderTurnSession;
@@ -1754,6 +1756,11 @@ export interface TranscriptProvider {
 /** Routes transcript_document to durable storage tied to the current conversation. */
 export interface TranscriptDocumentProvider {
   dispatch(op: string, payload: Record<string, unknown>, ctx: { sessionId: string }): Promise<Record<string, unknown>>;
+}
+
+/** Routes the diagram tools to the project's saved diagrams and the diagram checker. */
+export interface DiagramProvider {
+  dispatch(op: string, payload: Record<string, unknown>): Promise<Record<string, unknown>>;
 }
 
 /** Options for {@link AgentSession.send}. */
@@ -3359,6 +3366,7 @@ export class AgentSession {
     all.push(...RESULT_PAGING_TOOLS);
     if (this.opts.transcriptProvider || this._compressedSummary) all.push(...TRANSCRIPT_TOOLS);
     if (this.opts.transcriptDocumentProvider) all.push(...TRANSCRIPT_DOCUMENT_TOOLS);
+    if (this.opts.diagramProvider) all.push(...DIAGRAM_TOOLS);
     all.push(...WORKTREE_TOOLS);
     if (this.opts.referenceProvider) all.push(...REFERENCE_TOOLS);
     if (this.opts.dataProvider) all.push(...DATA_TOOLS);
@@ -5464,6 +5472,10 @@ export class AgentSession {
                     { sessionId: this.sessionId },
                   );
                 }
+              } else if (runtimeType.startsWith("diagram.")) {
+                result = this.opts.diagramProvider
+                  ? await this.opts.diagramProvider.dispatch(runtimeType.slice("diagram.".length), payload)
+                  : { ok: false, error: "Diagram tools are not available in this workspace." };
               } else if (runtimeType === "session.workspace_refresh") {
                 result = await this._handleWorkspaceRefresh();
               } else if (runtimeType === "session.tool_output_page") {

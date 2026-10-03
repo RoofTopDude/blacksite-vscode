@@ -9,13 +9,12 @@
  */
 
 import type { Mermaid, MermaidConfig } from "mermaid";
+import { mermaidThemeCss, mermaidThemeVariables, type DiagramTheme } from "../../../shared/diagram-theme";
 import { MERMAID_SECURITY_CONFIG, SVG_SANITIZE_CONFIG } from "../../../shared/mermaid-security";
 
 export type MermaidResult = { svg: string } | { error: string };
 
-/** "dark" is the panel palette; "light" is for the viewer's light canvas and for exports
- *  headed into documents with a white page. */
-export type DiagramTheme = "dark" | "light";
+export type { DiagramTheme };
 
 export interface RenderOptions {
   theme?: DiagramTheme;
@@ -23,59 +22,6 @@ export interface RenderOptions {
    *  export fallback in apps/diagram/export.ts. */
   htmlLabels?: boolean;
 }
-
-/* The panel palette is a committed dark one (see the :root block in theme.chat.css), so
-   diagrams in the panels get one fixed theme rather than tracking the editor's. Mermaid
-   derives its remaining colours from these with khroma, which only parses plain hex/rgb —
-   hence literal values here instead of the CSS custom properties they mirror. */
-const THEME_VARIABLES: Record<DiagramTheme, Record<string, string | boolean>> = {
-  dark: {
-    darkMode: true,
-    background: "#0d0d0f",
-    primaryColor: "#1c1830",
-    primaryBorderColor: "#6b56b8",
-    primaryTextColor: "#f4f4f5",
-    secondaryColor: "#17171c",
-    secondaryBorderColor: "#3f3f46",
-    secondaryTextColor: "#e4e4e7",
-    tertiaryColor: "#121216",
-    tertiaryBorderColor: "#3f3f46",
-    tertiaryTextColor: "#e4e4e7",
-    lineColor: "#9a9aa3",
-    textColor: "#e4e4e7",
-    clusterBkg: "#121216",
-    clusterBorder: "#3f3f46",
-    edgeLabelBackground: "#0d0d0f",
-    noteBkgColor: "#1f1c14",
-    noteBorderColor: "#c4b08d",
-    noteTextColor: "#f4f4f5",
-    errorBkgColor: "#2a1a1d",
-    errorTextColor: "#c78b94",
-  },
-  light: {
-    darkMode: false,
-    background: "#ffffff",
-    primaryColor: "#f1edfd",
-    primaryBorderColor: "#8b5cf6",
-    primaryTextColor: "#18181b",
-    secondaryColor: "#f4f4f5",
-    secondaryBorderColor: "#d4d4d8",
-    secondaryTextColor: "#27272a",
-    tertiaryColor: "#fafafa",
-    tertiaryBorderColor: "#d4d4d8",
-    tertiaryTextColor: "#27272a",
-    lineColor: "#71717a",
-    textColor: "#27272a",
-    clusterBkg: "#fafafa",
-    clusterBorder: "#d4d4d8",
-    edgeLabelBackground: "#ffffff",
-    noteBkgColor: "#fdf8e7",
-    noteBorderColor: "#c4a35a",
-    noteTextColor: "#27272a",
-    errorBkgColor: "#fdecee",
-    errorTextColor: "#a4343f",
-  },
-};
 
 function panelFontFamily(): string {
   try {
@@ -89,7 +35,8 @@ function mermaidConfig(theme: DiagramTheme, htmlLabels: boolean, fontFamily: str
   return {
     ...MERMAID_SECURITY_CONFIG,
     theme: "base",
-    themeVariables: { ...THEME_VARIABLES[theme], fontFamily, fontSize: "14px" },
+    themeVariables: { ...mermaidThemeVariables(theme), fontFamily, fontSize: "14px" },
+    themeCSS: mermaidThemeCss(theme),
     fontFamily,
     htmlLabels,
     flowchart: { htmlLabels },

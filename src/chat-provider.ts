@@ -28,6 +28,7 @@ import type {
   CompressionProvider,
   TranscriptProvider,
   TranscriptDocumentProvider,
+  DiagramProvider,
   DataToolProvider,
   ReferenceToolProvider,
   SkillToolProvider,
@@ -65,6 +66,10 @@ import { SessionStore } from "./session-store.js";
 import { MemoryStore } from "./memory-store.js";
 import { ReferenceStore } from "./reference-store.js";
 import { TranscriptDocumentService } from "./transcript-document.js";
+import { DiagramChecker } from "./diagrams/diagram-checker.js";
+import { DiagramStore } from "./diagrams/diagram-store.js";
+import { DiagramToolService } from "./diagrams/diagram-tools.js";
+import { OPEN_DIAGRAM_COMMAND } from "./diagrams/diagram-viewer.js";
 import { showMarkdownPreview } from "./markdown-preview.js";
 import { AgentActivityBus } from "./agent-activity-bus.js";
 import type { PauReceiptBus } from "./pau-receipt-bus.js";
@@ -598,6 +603,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   // Attachment id -> pending attachment metadata, resolved at send time to link
   // core_messages to the files attached in that turn. Reset on "new_chat".
   private _pendingAttachments = new Map<string, PendingAttachmentRecord>();
+  private _diagramChecker?: DiagramChecker;
+  private _diagramService?: DiagramToolService;
   /** Host-priced spend state keyed by conversation, not by webview lifetime. */
   private readonly _sessionSpend = new Map<string, { usd: number; partial: boolean; warned: boolean; exceeded: boolean }>();
 
@@ -640,6 +647,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     }, () => { void this._chromium.dispose(); }, (event) => this._onBrowserGate(event));
     this._chromium.setApprovalCoordinator(this._research.coordinator);
     this._context.subscriptions.push({ dispose: () => this._research.dispose() });
+    this._context.subscriptions.push({ dispose: () => this._diagramChecker?.dispose() });
     this._applier = new WorkspaceEditApplier(_workspaceRoot);
     // Route edit apply/reject through the chat webview instead of a native modal.
     this._applier.setApprovalProvider((req) => this._requestEditApproval(req));
@@ -1296,6 +1304,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       compressionKeepRecent: settings.compression?.keepRecent,
       transcriptProvider,
       transcriptDocumentProvider,
+      diagramProvider: this._diagramProvider(),
       httpReferer: settings.openrouterConfig?.httpReferer,
       xTitle: settings.openrouterConfig?.xTitle,
       openrouterProvider: this._openrouterProviderPreferences(settings),
@@ -1559,6 +1568,21 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   }
 
   /** Create long documents as durable attachment files, not large chat entries. */
+  /** The diagram tools' backing: saved diagrams under .blacksite/context/diagrams and the parser worker. */
+  private _diagramProvider(): DiagramProvider {
+    this._diagramChecker ??= new DiagramChecker(
+      vscode.Uri.joinPath(this._context.extensionUri, "out", "diagram-check-worker.js").fsPath,
+      vscode.Uri.joinPath(this._context.extensionUri, "out", "markdown-preview", "mermaid.min.js").fsPath,
+    );
+    this._diagramService ??= new DiagramToolService({
+      store: new DiagramStore(this._workspaceRoot),
+      checker: this._diagramChecker,
+      openInViewer: (file) => { void vscode.commands.executeCommand(OPEN_DIAGRAM_COMMAND, { file }); },
+    });
+    const service = this._diagramService;
+    return { dispatch: (op, payload) => service.dispatch(op, payload) };
+  }
+
   private _buildTranscriptDocumentProvider(sessionIdOverride?: string): TranscriptDocumentProvider | undefined {
     if (!this._referenceStore) return undefined;
     const service = new TranscriptDocumentService(this._referenceStore);
@@ -2525,6 +2549,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         graphProvider: this._graphAnnotations,
         referenceProvider,
         transcriptDocumentProvider,
+        diagramProvider: this._diagramProvider(),
         supportsVision: () => this._resolveSupportsVision(subProvider, resolvedSubModel),
         visionFallbackProvider: this._buildVisionFallbackProvider(),
         checkpointingEnabled: false,

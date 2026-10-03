@@ -56,6 +56,7 @@ function fullyWiredOverrides(): Partial<Opts> {
     subagentProvider: { spawn: vi.fn(), followUp: vi.fn() } as unknown as Opts["subagentProvider"],
     transcriptProvider: stub(),
     transcriptDocumentProvider: stub(),
+    diagramProvider: stub(),
     referenceProvider: stub(),
     skillProvider: stub(),
     dataProvider: stub(),

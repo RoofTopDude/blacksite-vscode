@@ -1,8 +1,8 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { DropdownMenu, Tooltip } from "radix-ui";
 import {
-  Check, ChevronDown, Code, Copy, Download, Keyboard, Map as MapIcon, Maximize, Minus, Moon, Plus,
-  RotateCcw, Sun, TriangleAlert, Workflow, X,
+  Check, ChevronDown, Code, Copy, Download, FolderPlus, Keyboard, Map as MapIcon, Maximize, Minus, Moon, Plus,
+  RotateCcw, Save, Sun, TriangleAlert, Workflow, X,
 } from "lucide-react";
 import { onMessage, post, readUiState, writeUiState } from "@/lib/bridge";
 import { renderMermaid, type DiagramTheme } from "@/lib/mermaid";
@@ -19,11 +19,26 @@ import { PanZoomController, visibleRegion, type Size, type Transform } from "./p
    needs to actually read a large diagram lives here — pan, zoom, a minimap, the source beside
    it (editable, re-rendering as you type), a light canvas for documents, and export. */
 
+/** The saved diagram (.blacksite/context/diagrams/) this tab follows, when it has one. */
+interface BackingFile {
+  name: string;
+  /** Workspace-relative where it can be, so a restored tab finds it again. */
+  path: string;
+}
+
+function backingFile(value: unknown): BackingFile | null {
+  if (!value || typeof value !== "object") return null;
+  const { name, path } = value as Record<string, unknown>;
+  return typeof name === "string" && typeof path === "string" ? { name, path } : null;
+}
+
 interface ViewerState {
-  /** The diagram as it was opened. */
+  /** The diagram as last opened or saved. For a saved diagram, this follows the file. */
   source: string;
   /** The user's edit of it, or null while unedited. */
   draft: string | null;
+  /** The file this tab follows, or null for a diagram that only lives in this tab. */
+  file: BackingFile | null;
   theme: DiagramTheme;
   showSource: boolean;
   showMinimap: boolean;
@@ -33,6 +48,7 @@ interface ViewerState {
 const DEFAULT_STATE: ViewerState = {
   source: "",
   draft: null,
+  file: null,
   theme: "dark",
   showSource: false,
   showMinimap: true,
@@ -336,6 +352,10 @@ export function DiagramApp() {
   const autoFit = useRef(true);
   const toastId = useRef(0);
 
+  /** The newest state, for message handlers that must not re-subscribe on every change. */
+  const latestState = useRef(state);
+  latestState.current = state;
+
   const current = state.draft ?? state.source;
   const edited = state.draft !== null && state.draft !== state.source;
   /** Nothing to draw yet: a fresh tab waiting on the host's diagram_init. */
@@ -364,12 +384,33 @@ export function DiagramApp() {
     const stop = onMessage((message) => {
       if (message.type === "diagram_init" && typeof message.source === "string") {
         if (message.fonts && typeof message.fonts === "object") setFonts(message.fonts as EmbeddedFonts);
+        const file = backingFile(message.file);
         setState((previous) => {
-          if (previous.source === message.source) return previous;
-          const next = { ...previous, source: message.source as string, draft: null };
+          if (previous.source === message.source && previous.file?.path === file?.path) return previous;
+          const next = { ...previous, source: message.source as string, draft: null, file };
           writeUiState("diagram", next);
           return next;
         });
+      }
+      // The saved file changed (the agent patched it, or a save from this tab landed), or this
+      // tab was just saved as a file. Redraw from it without touching pan, zoom, or an unsaved
+      // edit: the edit is the user's, and the new version is one Revert away.
+      if (message.type === "diagram_update" && typeof message.source === "string") {
+        const incoming = message.source;
+        const file = backingFile(message.file);
+        const before = latestState.current;
+        const keepsEdit = before.draft !== null && before.draft !== before.source && before.draft !== incoming;
+        setState((previous) => {
+          const next = {
+            ...previous,
+            source: incoming,
+            draft: previous.draft !== null && previous.draft !== previous.source && previous.draft !== incoming ? previous.draft : null,
+            file: file ?? previous.file,
+          };
+          writeUiState("diagram", next);
+          return next;
+        });
+        if (keepsEdit) notify("The saved diagram changed. Your edit is kept; Revert loads the new version.");
       }
       if (message.type === "diagram_notice" && typeof message.message === "string") {
         notify(message.message, message.level === "error" ? "error" : "info");
@@ -523,6 +564,17 @@ export function DiagramApp() {
   const resizeSource = useCallback((width: number) => update({ sourceWidth: width }), [update]);
   const copySourceFromPanel = useCallback(() => void copySource(), [copySource]);
 
+  // Saved diagrams: write this tab's edits to its file, or keep an unsaved diagram with the
+  // project so the agent can read and patch it.
+  const saveToFile = useCallback(() => {
+    const { draft, source } = latestState.current;
+    post({ type: "diagram_write", source: draft ?? source });
+  }, []);
+  const saveToProject = useCallback(() => {
+    const { draft, source } = latestState.current;
+    post({ type: "diagram_save_to_project", source: draft ?? source });
+  }, []);
+
   const copyPng = useCallback(async () => {
     try {
       // Hand the clipboard a promise so the write keeps this click's user activation while
@@ -548,6 +600,19 @@ export function DiagramApp() {
       notify(error instanceof Error ? error.message : "The PNG could not be created.", "error");
     }
   }, [fileStem, notify, png]);
+
+  // Ctrl/Cmd+S saves a saved diagram's edits, including from inside the source editor.
+  useEffect(() => {
+    function onSave(event: KeyboardEvent): void {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "s") return;
+      const { draft, source, file } = latestState.current;
+      if (!file) return;
+      event.preventDefault();
+      if (draft !== null && draft !== source) saveToFile();
+    }
+    window.addEventListener("keydown", onSave);
+    return () => window.removeEventListener("keydown", onSave);
+  }, [saveToFile]);
 
   // Keyboard, window-wide except while typing in the source editor or a menu.
   useEffect(() => {
@@ -600,9 +665,24 @@ export function DiagramApp() {
           <div className="dv-title">
             <span className="dv-title-main">{title ?? kind}</span>
             {title && <span className="dv-title-kind">{kind}</span>}
+            {state.file && <span className="dv-title-kind" title={state.file.path}>{state.file.name}</span>}
           </div>
           {edited && <span className="dv-badge">Edited</span>}
           <span className="flex-1" />
+          {state.file ? (
+            <ToolButton
+              label={edited ? `Save your changes to ${state.file.name}` : `${state.file.name} is up to date`}
+              shortcut="Ctrl+S"
+              disabled={!edited}
+              onClick={saveToFile}
+            >
+              <Save className="size-4" /><span className="dv-tool-text">Save</span>
+            </ToolButton>
+          ) : (
+            <ToolButton label="Save to this project, where the agent can read and edit it" onClick={saveToProject} disabled={waiting}>
+              <FolderPlus className="size-4" /><span className="dv-tool-text">Save to project</span>
+            </ToolButton>
+          )}
           <ToolButton label={state.showSource ? "Hide source" : "Show source"} shortcut="S" active={state.showSource} onClick={toggleSource}>
             <Code className="size-4" /><span className="dv-tool-text">Source</span>
           </ToolButton>

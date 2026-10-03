@@ -20,7 +20,7 @@
 
 import type { ToolDefinition } from "../tools/definitions.js";
 import {
-  CODE_INTEL_TOOLS, DATA_TOOLS, DIAGNOSTICS_TOOLS, GIT_TOOLS, GRAPH_TOOLS, LOOP_TOOLS, MEMORY_TOOLS,
+  CODE_INTEL_TOOLS, DATA_TOOLS, DIAGNOSTICS_TOOLS, DIAGRAM_TOOLS, GIT_TOOLS, GRAPH_TOOLS, LOOP_TOOLS, MEMORY_TOOLS,
   AGENT_MEMORY_TOOLS, PLANNING_TOOLS, REFERENCE_TOOLS, RESEARCH_TOOLS, RESULT_PAGING_TOOLS, SEQUENCE_TOOLS,
   SERVICE_TOOLS, SKILL_TOOLS, SUBAGENT_TOOLS, TEST_TOOLS, TICKET_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS,
   TRANSCRIPT_TOOLS, UI_TOOLS, WORKSPACE_TOOLS, WORKTREE_TOOLS, BROWSER_TOOLS,
@@ -53,6 +53,7 @@ const TOOL_FAMILIES: ReadonlyArray<{ label: string; tools: readonly ToolDefiniti
   { label: "Tickets (the follow-up work queue)", tools: TICKET_TOOLS },
   { label: "Codebase Map (overview, find, impact, paths, relationships, notes)", tools: GRAPH_TOOLS },
   { label: "Memory and past context", tools: [...MEMORY_TOOLS, ...AGENT_MEMORY_TOOLS, ...TRANSCRIPT_TOOLS, ...TRANSCRIPT_DOCUMENT_TOOLS] },
+  { label: "Diagrams saved with the project (check, read, save, edit Mermaid and chart source)", tools: DIAGRAM_TOOLS },
   { label: "Skills", tools: SKILL_TOOLS },
   { label: "Subagents", tools: SUBAGENT_TOOLS },
   { label: "Large-result paging", tools: RESULT_PAGING_TOOLS },

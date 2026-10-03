@@ -3,6 +3,63 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.30.0-pre.4
+
+Prerelease. The stable update channel remains on 1.29.0.
+
+Diagrams and charts get richer, and the agent can work on a large one without redrawing it. Charts
+that were already in the box but unreadable on the dark panel now read properly. There is a new
+`chart` block for the plots Mermaid cannot draw. The agent checks a diagram before sending it. And a
+large diagram can be kept as a file, which the agent patches in place and the viewer follows.
+
+### Added
+
+- **Charts Mermaid cannot draw.** The agent can now put a `chart` block in a reply or document:
+  grouped and stacked bars (also as percentages, and sideways), lines and areas with a legend,
+  scatter and bubble plots, histograms, heatmaps, donuts and box plots. Hover any bar, point, slice
+  or cell for its value. A chart is laid out for the width of its panel and redrawn when you resize
+  it. **Source** shows the data. Charts draw in Blacksite's panels; GitHub and VS Code's Markdown
+  preview show the data as a code block, so the agent uses a Mermaid chart or a table in files
+  others will read elsewhere.
+- **The agent checks a diagram before sending it.** A new `diagram_check` tool runs Mermaid's own
+  parser, in a background worker that costs nothing until it is first used, and returns the line it
+  stopped on with a numbered excerpt (Mermaid blames the line after an unclosed bracket or quote, so
+  the agent is told to read the excerpt, not just the number). It checks `chart` blocks too, and names the field that does not
+  fit ("`p99` is not in the data. Fields: week, p50, p95").
+- **Large diagrams are kept as files and edited in place.** `diagram_save` writes a diagram to
+  `.blacksite/context/diagrams/<name>.mmd`; `diagram_read` reads a range of its lines; `diagram_edit`
+  changes it with exact-text replacements, line ranges or insertions. The edits apply together or not
+  at all, and each result is parsed before it is saved, so a change that breaks the diagram is
+  refused and the file stays as it was. The previous version is kept as `<name>.mmd.bak`.
+- **Save a diagram to the project yourself.** Every diagram in a chat reply has a **Save** button, and
+  the viewer has **Save to project**. The agent can then read and change it.
+- **The viewer follows a saved diagram.** When the agent patches the file, the tab redraws, keeping
+  your zoom and position. Unsaved edits in the source panel are kept (**Revert** loads the new
+  version). **Save** or `Ctrl+S` writes your edits back to the file. A tab restored after a reload
+  reopens on the file as it is now.
+- **The agent chooses the right kind of diagram.** Its guidance now names what each Mermaid type is
+  for, including the ones Blacksite did not mention before: Gantt, timeline, mind map, tree view,
+  fishbone, treemap, architecture, C4, block, swimlane, Wardley map, event model, Venn, Sankey,
+  quadrant, radar, packet, and XY charts. These were already drawn; the agent just did not reach for
+  them. They also get proper names in the viewer's tab and in exported file names.
+- **ELK layout is available.** A diagram can ask for it with `layout: elk` in its front matter. On a
+  flat, dense flowchart it gives layered, orthogonal routing; on a flowchart built from subgraphs it
+  is worse than the default, so the agent is told to keep the default there and the checker's advice
+  says which applies.
+
+### Changed
+
+- **Mermaid is upgraded from 11 to 12.1.** Version 12 needs a newer browser engine than old VS Code
+  releases ship; Blacksite has required VS Code 1.139 since 1.30.0-pre.1, which removed the reason
+  for staying on 11.
+- **Mermaid's data charts are readable.** Pie slices, the XY chart's bars and line, treemap tiles,
+  mind map branches, timeline periods, radar curves, Venn sets and git branches took their colours
+  from the panel's near-black tints, so they came out black on black or in one indistinguishable
+  shade. They now use an eight-colour palette checked for colour-blind separation and contrast, in
+  both the dark panel and the light canvas. Sankey ribbons, which were invisible on the dark panel,
+  show. Gantt bars, packet diagrams, tree views, Cynefin, Wardley and event-model diagrams are
+  restyled to match.
+
 ## 1.30.0-pre.3
 
 Prerelease. The stable update channel remains on 1.29.0.

@@ -270,6 +270,21 @@ The paging family is why one enormous grep result cannot exhaust your context wi
 
 ---
 
+## Diagrams
+
+| Tool | Purpose |
+| --- | --- |
+| `diagram_check` | Check Mermaid source, or a `chart` block, and get the parser's line and an excerpt on failure |
+| `diagram_read` | List the diagrams saved with the project, or read one with line numbers |
+| `diagram_save` | Save a diagram to `.blacksite/context/diagrams/`, refused unchanged if it does not parse |
+| `diagram_edit` | Change a saved diagram by exact text, line range or insertion, all-or-nothing and checked before saving |
+
+These keep a large diagram editable without rewriting it. `diagram_check` runs Mermaid's real parser
+in a background worker, so it costs nothing until it is first used. Saving and editing write only
+inside `.blacksite/`, never your source tree, so they stay available in plan mode.
+
+---
+
 ## Service integrations
 
 Read/write operations against external systems, when configured:

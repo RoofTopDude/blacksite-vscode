@@ -20,6 +20,8 @@ const required = [
   "extension/out/extension.js",
   // The Codebase Map's background worker; without it every rebuild falls back to the host thread.
   "extension/out/graph-worker.js",
+  // Mermaid's parser in a worker, so the agent can check a diagram before sending it.
+  "extension/out/diagram-check-worker.js",
   "extension/out/webview/shell.html",
   "extension/out/webview/diagram.js",
   // The Markdown-preview Mermaid fallback: loader, its styles, and the library it loads on demand.

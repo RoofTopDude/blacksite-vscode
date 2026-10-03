@@ -14,6 +14,7 @@ to begin.
 | **Base Context** | Project knowledge injected into every request | `.blacksite/base-context.json` |
 | **Agent memory** | Facts the agent records for itself as it works | `.blacksite/` |
 | **Map notes** | Annotations on files and relationships | `.blacksite/` |
+| **Saved diagrams** | Mermaid diagrams the agent reads and edits in place | `.blacksite/context/diagrams/*.mmd` |
 
 ---
 
@@ -157,11 +158,13 @@ something it retrieves from rather than something that consumes your whole conte
 
 ## Committing them
 
-Everything is plain JSON under `.blacksite/`. Whether to commit it is a real choice:
+Almost everything is plain JSON under `.blacksite/`; saved diagrams are plain Mermaid text. Whether to commit it is a real choice:
 
 - **`planning.json`** — often worth committing. A shared plan is a shared understanding of the work.
 - **`base-context.json`** — worth committing if the topics are team conventions rather than personal
   notes.
+- **`context/diagrams/*.mmd`** — saved diagrams are plain Mermaid text, so a diagram the team relies on
+  is worth committing (or copying out to `docs/`, where GitHub draws it).
 - **Everything else** — the index, logs, database, and attached references — is local working state.
   Ignore it.
 

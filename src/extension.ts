@@ -74,8 +74,9 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
      a diagram tab from the last session, and nothing the setup below does should be able to
      prevent that. */
   const mermaidCodeLens = new MermaidCodeLensProvider();
+  const diagramViewer = new DiagramViewer(context).register();
   context.subscriptions.push(
-    new DiagramViewer(context).register(),
+    diagramViewer,
     mermaidCodeLens,
     vscode.languages.registerCodeLensProvider({ language: "markdown" }, mermaidCodeLens),
   );
@@ -89,6 +90,7 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     openFolders,
     process.cwd(),
   );
+  diagramViewer.setWorkspaceRoot(workspaceRoot);
 
   /* The Codebase Map indexes every open workspace folder (not just the
      first), so it needs the live folder list rather than the single root
