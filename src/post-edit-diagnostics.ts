@@ -125,7 +125,16 @@ interface PublishRecord {
 }
 
 const publishes = new Map<string, PublishRecord>();
+/** File extensions something has published diagnostics for since the tracker started: evidence that a language server for them is running. */
+const publishedExtensions = new Set<string>();
 let trackerStarted = false;
+
+/** Languages that normally have a language server. A file in one of them that nothing has published for
+ *  is more likely waiting on a server that has not started than uncheckable, so it is never "no_checker". */
+const CODE_EXTENSIONS = new Set([
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".pyi", ".rs", ".go", ".java", ".kt", ".kts", ".cs",
+  ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".swift", ".rb", ".php", ".vue", ".svelte",
+]);
 
 function recordPublishes(uris: readonly vscode.Uri[]): void {
   const now = Date.now();
@@ -135,6 +144,7 @@ function recordPublishes(uris: readonly vscode.Uri[]): void {
     const key = uri.toString();
     publishes.delete(key);
     publishes.set(key, { at: now, version: openVersions.get(key) });
+    publishedExtensions.add(path.extname(uri.path).toLowerCase());
   }
   while (publishes.size > MAX_TRACKED_URIS) {
     const oldest = publishes.keys().next().value;
@@ -152,6 +162,7 @@ export function startDiagnosticPublishTracker(): vscode.Disposable {
       subscription.dispose();
       trackerStarted = false;
       publishes.clear();
+      publishedExtensions.clear();
     },
   };
 }
@@ -159,7 +170,13 @@ export function startDiagnosticPublishTracker(): vscode.Disposable {
 /** Read whether the diagnostics VS Code holds for `uri` describe the content it has now. */
 function fileStatusFromHistory(uri: vscode.Uri, currentVersion: number | undefined): FileDiagnosticStatus {
   const record = publishes.get(uri.toString());
-  if (!record) return "no_checker";
+  if (!record) {
+    const extension = path.extname(uri.path).toLowerCase();
+    if (!CODE_EXTENSIONS.has(extension)) return "no_checker";
+    // A code file with no publish: if the language's server has reported on other files it has seen this one
+    // (a clean file may publish nothing); if none has, the server may simply not be up yet, which is not a pass.
+    return publishedExtensions.has(extension) ? "ready" : "timed_out";
+  }
   if (record.version !== undefined) return record.version === currentVersion ? "ready" : "timed_out";
   // Published while the file was closed: current unless the file changed on disk since.
   try {

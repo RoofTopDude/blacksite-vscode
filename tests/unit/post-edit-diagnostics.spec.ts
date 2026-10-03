@@ -76,6 +76,34 @@ describe("diagnostic freshness", () => {
     expect(result.status).toBe("no_checker");
   });
 
+  it("does not call a code file uncheckable while no server has reported for its language", async () => {
+    tracker = startDiagnosticPublishTracker();
+    const uri = open("src/app.py", 1);
+
+    const result = await snapshot([uri]);
+
+    expect(result.status).toBe("timed_out");
+    expect(Object.values(result.freshness.files ?? {})).toEqual(["timed_out"]);
+  });
+
+  it("reads a clean code file as current once its language's server has reported on another file", async () => {
+    tracker = startDiagnosticPublishTracker();
+    languages.__fireDiagnostics([open("src/other.py", 1)]);
+    const clean = open("src/clean.py", 1);
+
+    const result = await snapshot([clean]);
+
+    expect(result.status).toBe("ready");
+  });
+
+  it("still says no checker for prose and config files in a workspace full of code", async () => {
+    tracker = startDiagnosticPublishTracker();
+    languages.__fireDiagnostics([open("src/other.py", 1)]);
+
+    expect((await snapshot([open("README.md", 1)])).status).toBe("no_checker");
+    expect((await snapshot([open("deploy/values.yaml", 1)])).status).toBe("no_checker");
+  });
+
   it("times out when the last publish describes older content", async () => {
     tracker = startDiagnosticPublishTracker();
     const uri = open("src/app.py", 2);

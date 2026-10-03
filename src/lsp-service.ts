@@ -103,7 +103,7 @@ function diagnosticStatusNotice(snapshot: { status: string; freshness: { files?:
   }
   if (snapshot.status === "timed_out") {
     const stale = named("timed_out");
-    return `The language server has not caught up with the latest content${stale ? ` of ${stale}` : ""}; what is shown may be out of date. `
+    return `The language server has not caught up with the latest content${stale ? ` of ${stale}` : ""}, or has not started; what is shown may be out of date. `
       + "Try again in a moment, or verify with the project's own checker (tests, a type checker, a linter).";
   }
   if (snapshot.status === "ready") {

@@ -3,6 +3,61 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.30.0-pre.2
+
+Prerelease. The stable update channel remains on 1.29.0.
+
+This release is about the agent spending its time on your task instead of on the harness around it.
+A review of a long-running log showed about one tool call in six going to compliance: notes the
+agent was required to write after every edit, checks that could not pass, and reminders that forced
+extra rounds. It also showed the agent failing to use tools that were already installed.
+
+### Changed
+
+- **Map notes are suggested, not required.** `blacksite.graph.agentNotes` takes `suggest` (the
+  default), `require` (the old behaviour), or `off`. In every mode Blacksite now records which
+  files each request changed by itself. It shows under **Changed in chat** in the map inspector's
+  Activity tab.
+- **`python -c`, `node -e` and similar inline code ask instead of being refused.** The approval
+  prompt shows the code. Longer snippets go in `.blacksite/scratch/`, which is git-ignored and never
+  triggers a note or check reminder. `blacksite.allowEvalFlags` still removes the prompt.
+- **Subagents are no longer held to the parent's reminders.** They finish the task they were given.
+  Their edits count toward the main agent's verification, and a test run inside a subagent counts
+  for it too.
+- **The agent sees what is installed.** Its context lists the toolchains on your machine with
+  versions (Python, Node, Java, Go, .NET, Rust, C/C++) and the environment of each project it is
+  working in.
+
+### Fixed
+
+- **"Edit verification failed" can be satisfied.** `code_diagnostics` now reads a file whose
+  diagnostics are already current as checked, instead of calling it a timeout unless something
+  changed during a 1.5 s wait. Files no checker covers (Markdown, most YAML) are set aside and
+  reported as unchecked instead of failing. A code file whose language server has not started yet
+  is reported as not caught up, never as having passed.
+- **Real checks count.** `pytest`, `mypy`, `ruff`, `npm test`, `go test`, `cargo test`,
+  `dotnet test`, `mvn`/`gradle`, and `uv run`, `poetry run`, `python -m` and `npx` wrappers around
+  them now count as verification. Each check clears only the files in the project it ran in, so a
+  passing test in one codebase no longer marks an unrelated one as verified. Reminders list the
+  outstanding files by project. `code_diagnostics` also checks many files in one call (`paths`).
+- **Prose and images never owe verification**, and neither do files the map does not index.
+- **A missing `python` points at `python3` or `py`** when one is installed, instead of offering to
+  install Python. The Windows Store's "Python was not found" stub is recognised.
+- **Project tools run in the project's environment.** `pytest`, `mypy`, `ruff`, `pip` and similar
+  use the nearest `.venv` of the project being worked on, in the shell, in background processes and
+  in `test_run`, never a neighbouring project's. `code_diagnostics` also warns when unresolved
+  imports may come from the interpreter VS Code uses rather than from the code.
+- **Wrong tool arguments are cheaper to fix.** Validation errors show the expected shape and any
+  unknown keys, MCP arguments are checked against the tool's schema before you are asked to
+  approve, and a text edit that misses shows where the text is now.
+- **Compaction no longer gives up on very long conversations.** If the summary is too long it
+  summarises each half and merges them.
+- **A turn that errors with no output now leaves the error in the conversation history.**
+- `npm run analyze:execution` reports friction: forced continuations, gates that gave up,
+  bookkeeping's share of tool calls, refusals and cancellations.
+- Updated three transitive dependencies to clear public advisories (`brace-expansion`,
+  `markdown-it`, `dompurify`).
+
 ## 1.30.0-pre.1
 
 Prerelease. The stable update channel remains on 1.29.0.
