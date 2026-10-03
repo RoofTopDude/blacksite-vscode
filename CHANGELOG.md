@@ -3,6 +3,68 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.30.0-pre.3
+
+Prerelease. The stable update channel remains on 1.29.0.
+
+Two additions. You can now talk to the agent while it works, without stopping it. And a guided
+**Project setup** works out which toolchains your projects need, compares that with what is
+installed, and installs what is missing in a terminal you watch and approve.
+
+### Added
+
+- **Tell the agent something mid-run.** While the agent is working, press Enter (or **Send**) and
+  your message reaches it at its next step: after the tool it is running, or before it finishes
+  its answer. The run carries on; nothing is cancelled. @-mentions, attachments and selected
+  context come along, which the old "queue a follow-up" dropped. The message shows under your
+  bubble as *Delivered at the agent's next step*, then *Read by the agent*. The reply continues
+  below it. A message that arrives just as the run ends becomes the next request. If you stop the
+  run first, the message goes back into the composer.
+- **Settings › Project setup.** Also available as *Blacksite: Set Up Toolchains* in the Command
+  Palette, and as **Set up…** on the "is not installed" notice. It walks through five steps:
+  - **We found.** Every project in the workspace, including deeply nested ones in a window that
+    holds many codebases. For each, it shows the toolchains it uses and the version it asks for,
+    with the file and line where it says so. It reads `.python-version`, `requires-python`,
+    `.nvmrc`, `engines.node`, `go.mod`, `global.json`, `<TargetFramework>`,
+    `rust-toolchain.toml`, Maven and Gradle Java versions, and `.tool-versions`. Pins in a parent
+    folder are inherited.
+  - **Your machine.** Every install of Python, Node, Java, Go, .NET, Rust and C/C++, with version,
+    source and path, and how many projects each one satisfies.
+  - **Recommended.** The least work first. An installed version that satisfies most projects is
+    reused, even if it is not first on PATH. Only the projects it does not cover get their own
+    copy. A system install is suggested only when nothing installed fits. Python projects get a
+    `.venv` made from an interpreter that satisfies them, or one uv fetches. Dependency installs
+    and missing editor extensions are listed too. Per-project steps are pre-selected only for the
+    projects you have open.
+  - **Review.** The exact commands, where files go, which steps ask for an administrator password,
+    and how to undo each one.
+  - **Done.** What happened, step by step. A failed step offers **Ask the agent about this
+    failure**.
+- **Installs run in a terminal you start.** The terminal shows the whole plan again and waits for
+  you to type **Y**. Anything else changes nothing. Each step prints a numbered header and echoes
+  every command before running it. A failed project step does not stop the other projects.
+  - **System installs** use winget (per-user for Python), Homebrew, or apt/dnf.
+  - **Project installs** use each toolchain's own mechanism inside the project. Node and the
+    Temurin JDK are unpacked into `.toolchains/` from their official archives, pinned to a
+    SHA-256. The .NET SDK goes into `.dotnet/` through Microsoft's install script. Go and rustup
+    fetch a pinned version by themselves.
+  - **What gets written to your projects:** the new folders are added to `.gitignore`. Nothing
+    else in your repository changes.
+- **The agent knows what the open projects ask for.** Its context now lists each open project's
+  required version and whether something installed fits, for example "asks for Python >=3.11
+  (pyproject.toml:5): 3.12.4 at … fits". It also lists toolchains installed inside a project,
+  which are not on PATH, with their paths. When nothing fits, the agent points you to Project
+  setup.
+
+### Fixed
+
+- **winget is detected on Windows.** It is an App Execution Alias, which the PATH check used to
+  miss.
+- **A restored conversation no longer shows the harness's "[Internal continuation]" reminders as
+  messages you sent.**
+- Updated the packaging tool `@vscode/vsce` to 4.0 to clear a `braces` advisory. It is used only
+  to build the extension and is not part of what you install.
+
 ## 1.30.0-pre.2
 
 Prerelease. The stable update channel remains on 1.29.0.

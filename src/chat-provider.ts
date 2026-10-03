@@ -6,7 +6,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import type { LocalRuntime, InstallHint } from "@blacksite/local-runtime";
-import { AgentSession, stripImagesForPersistence, type ProviderName } from "./agent-session.js";
+import { AgentSession, stripImagesForPersistence, type ProviderName, type SteerMessage } from "./agent-session.js";
 import { resolvePreviewProjectCss } from "./preview-assets.js";
 import type {
   AgentEvent,
@@ -56,7 +56,10 @@ import { describeRewind, RewindRegistry, rewindNote, untrackedEffect, type Rewin
 import { EditDiffJournal } from "./edit-diff-journal.js";
 import type { ToolDiffSummary } from "./edit-diff-stats.js";
 import type { ChangeLog } from "./graph/change-log.js";
-import { ToolchainInventoryCache, environmentsInPlay, formatToolchainSummary } from "./toolchains/inventory.js";
+import { ToolchainInventoryCache, environmentsInPlay, formatLocalToolchains, formatToolchainSummary, localToolchainsInPlay } from "./toolchains/inventory.js";
+import { requirementSummary } from "./toolchains/advisor.js";
+import { needsForFiles } from "./toolchains/project-needs.js";
+import { ToolchainSetupController, toolchainForCommand } from "./toolchains/setup-controller.js";
 import { SecretStore } from "./secret-store.js";
 import { SessionStore } from "./session-store.js";
 import { MemoryStore } from "./memory-store.js";
@@ -554,6 +557,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private readonly _rewind = new RewindRegistry();
   /** Told to the model with the next message after a code-only or conversation-only rewind. */
   private _pendingRewindNote = "";
+  /** The composed content of each mid-run message not yet delivered, logged when the agent reads it. */
+  private readonly _steerLog = new Map<string, string>();
   /** Before/after snapshots per tool call, so any edit the agent made can be reopened as a
    *  real VS Code diff from the transcript row that reported it. */
   private _editDiffs: EditDiffJournal;
@@ -1158,7 +1163,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    *  projects the open files belong to. Fail-soft. */
   private _buildToolchainSummary(focusFiles: string[]): string {
     try {
-      return formatToolchainSummary(this._toolchains.current(), environmentsInPlay(this._workspaceRoot, focusFiles));
+      const inventory = this._toolchains.current();
+      const summary = formatToolchainSummary(inventory, environmentsInPlay(this._workspaceRoot, focusFiles));
+      const folders = (vscode.workspace.workspaceFolders ?? []).filter((folder) => folder.uri.scheme === "file").map((folder) => folder.uri.fsPath);
+      const absolute = focusFiles.map((file) => path.resolve(this._workspaceRoot, file));
+      const requirements = requirementSummary(needsForFiles(folders.length > 0 ? folders : [this._workspaceRoot], absolute), inventory);
+      const locals = formatLocalToolchains(localToolchainsInPlay(this._workspaceRoot, focusFiles));
+      return [summary, ...locals, ...requirements].filter(Boolean).join("\n");
     } catch {
       return "";
     }
@@ -2041,6 +2052,31 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return this._toolchainCache;
   }
 
+  private _setupController?: ToolchainSetupController;
+  /** Set when the setup panel was asked for before the webview was ready to show it. */
+  private _pendingSetupFocus?: { toolchain?: string; project?: string };
+  /** The guided toolchain setup behind Settings › Project setup (see toolchains/setup-controller.ts). */
+  private get _setup(): ToolchainSetupController {
+    this._setupController ??= new ToolchainSetupController({
+      storageDir: this._context.globalStorageUri.fsPath,
+      inventory: this._toolchains,
+      post: (state) => this._post({ type: "project_setup_state", state }),
+      inPlayFiles: () => [
+        ...new Set(vscode.workspace.textDocuments.filter((doc) => doc.uri.scheme === "file" && !doc.isUntitled).map((doc) => doc.uri.fsPath)),
+      ],
+      onInstalled: () => { this._session?.forgetMissingCommands(); },
+    });
+    return this._setupController;
+  }
+
+  /** Open Settings › Project setup, optionally focused on one toolchain or project. */
+  async openProjectSetup(focus?: { toolchain?: string; project?: string }): Promise<void> {
+    await vscode.commands.executeCommand("blacksite.chat.focus");
+    if (this._view) this._post({ type: "open_project_setup", focus });
+    else this._pendingSetupFocus = focus ?? {};
+    void this._setup.scan(focus);
+  }
+
   /** Lets the Skills panel refresh after the agent writes a skill with skill_write. */
   setSkillsChangedListener(listener: () => void): void { this._onSkillsChanged = listener; }
 
@@ -2643,6 +2679,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         // A reconnecting webview has the persisted transcript but not the live turn's open
         // gates — replay them or an in-flight question becomes unanswerable.
         this._replayLiveGates();
+        if (this._pendingSetupFocus) {
+          this._post({ type: "open_project_setup", focus: this._pendingSetupFocus });
+          this._pendingSetupFocus = undefined;
+        }
         break;
 
       case "send_message": {
@@ -2652,6 +2692,40 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const attachments = Array.isArray(p?.attachments) ? p!.attachments.map((a) => String(a)) : [];
         const requestMode = isRequestMode(p?.requestMode) ? p.requestMode : "auto";
         if (content || attachments.length) await this._handleSend(content, p?.context, mentions, attachments, requestMode);
+        break;
+      }
+
+      case "project_setup_scan": {
+        const focus = msg.focus && typeof msg.focus === "object" ? msg.focus as { toolchain?: string; project?: string } : undefined;
+        if (msg.ifIdle === true && this._setup.state.status !== "idle") this._setup.publish();
+        else await this._setup.scan(focus);
+        break;
+      }
+
+      case "project_setup_apply": {
+        const ids = Array.isArray(msg.ids) ? msg.ids.filter((id): id is string => typeof id === "string") : [];
+        await this._setup.apply(ids);
+        break;
+      }
+
+      case "project_setup_preview": {
+        const ids = Array.isArray(msg.ids) ? msg.ids.filter((id): id is string => typeof id === "string") : [];
+        await this._setup.preview(ids);
+        break;
+      }
+
+      case "project_setup_dismiss":
+        this._setup.dismissRun();
+        break;
+
+      case "steer_message": {
+        const p = msg.payload as { steerId?: unknown; content?: string; context?: { text?: string; label?: string }; mentions?: unknown; attachments?: unknown; requestMode?: unknown } | undefined;
+        const steerId = typeof p?.steerId === "string" && p.steerId ? p.steerId : `steer_${Date.now()}`;
+        const content = String(p?.content ?? "").trim();
+        const mentions = Array.isArray(p?.mentions) ? p!.mentions.map((m) => String(m)) : [];
+        const attachments = Array.isArray(p?.attachments) ? p!.attachments.map((a) => String(a)) : [];
+        const requestMode = isRequestMode(p?.requestMode) ? p.requestMode : "auto";
+        if (content || attachments.length) await this._handleSteer(steerId, content, p?.context, mentions, attachments, requestMode);
         break;
       }
 
@@ -3649,7 +3723,97 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
     const settings  = this._readSettings();
     const pSettings = this._providerSettings(settings.provider, settings);
+    const { fullContent, images, withheld, attachmentDocumentIds, attachmentNames } = await this._composeUserMessage(session, content, context, mentions, attachmentIds);
 
+    this._persistConversationLog(session, "user", fullContent, {
+      provider: settings.provider,
+      model: pSettings.model,
+      attachmentDocumentIds,
+    });
+
+    await this._continueSend(fullContent, {
+      inputChars: fullContent.length,
+      promptPreview: content,
+      mentionCount: mentions.length,
+      contextLabel: context?.label,
+    }, images, {
+      requestMode,
+      // The words the user typed, apart from the mentions, context and attachment notes folded in
+      // above — the reviewers that judge intent read these (see AgentSession.send).
+      userText: content.trim() || (attachmentNames.length ? `(sent attachments: ${attachmentNames.join(", ")})` : ""),
+      withheldImages: withheld || undefined,
+    });
+  }
+
+  /**
+   * A message sent while a run is going: delivered to the agent at its next step instead of
+   * waiting for the run to end (AgentSession.enqueueSteer). It carries the same mentions,
+   * attachments and context a normal send does. With no run in progress it is a normal send.
+   */
+  private async _handleSteer(
+    steerId: string,
+    content: string,
+    context: { text?: string; label?: string } | undefined,
+    mentions: string[],
+    attachmentIds: string[],
+    requestMode: RequestMode,
+  ): Promise<void> {
+    const session = this._session;
+    if (!session || !this._liveTurnId) {
+      this._post({ type: "steer_state", ids: [steerId], state: "sent_as_turn" });
+      await this._handleSend(content, context, mentions, attachmentIds, requestMode);
+      return;
+    }
+    const { fullContent, images, attachmentNames } = await this._composeUserMessage(session, content, context, mentions, attachmentIds);
+    // Composing can await (attachments, transcription); the run may have ended meanwhile.
+    if (!this._liveTurnId || this._session !== session) {
+      this._post({ type: "steer_state", ids: [steerId], state: "sent_as_turn" });
+      await this._continueSteersAsTurn(session, [{ id: steerId, text: fullContent, images, userText: content.trim() }]);
+      return;
+    }
+    const userText = content.trim() || (attachmentNames.length ? `(sent attachments: ${attachmentNames.join(", ")})` : "");
+    this._steerLog.set(steerId, fullContent);
+    session.enqueueSteer({ id: steerId, text: fullContent, images, userText });
+    this._post({ type: "steer_state", ids: [steerId], state: "queued" });
+  }
+
+  /** Steers the agent has now read: record them in the conversation log and tell the webview. */
+  private _onSteersDelivered(ids: string[]): void {
+    const session = this._session;
+    if (session) {
+      const settings = this._readSettings();
+      const model = this._providerSettings(settings.provider, settings).model;
+      for (const id of ids) {
+        const text = this._steerLog.get(id);
+        if (text) this._persistConversationLog(session, "user", text, { provider: settings.provider, model });
+      }
+    }
+    for (const id of ids) this._steerLog.delete(id);
+    this._post({ type: "steer_state", ids, state: "delivered" });
+  }
+
+  /** Send steers the run ended without reading as one new turn, so nothing the user typed is lost. */
+  private async _continueSteersAsTurn(session: AgentSession, steers: SteerMessage[]): Promise<void> {
+    if (steers.length === 0 || this._session !== session) return;
+    const settings = this._readSettings();
+    const model = this._providerSettings(settings.provider, settings).model;
+    const text = steers.map((steer) => steer.text).join("\n\n");
+    const images = steers.flatMap((steer) => steer.images ?? []);
+    for (const steer of steers) this._steerLog.delete(steer.id);
+    this._persistConversationLog(session, "user", text, { provider: settings.provider, model });
+    const typed = steers.map((steer) => steer.userText ?? "").filter(Boolean).join("\n\n");
+    await this._continueSend(text, { inputChars: text.length, promptPreview: typed || text, mentionCount: 0 }, images.length ? images : undefined, { userText: typed });
+  }
+
+  /** Fold mentions, selection context, attachments and any rewind note into the message the model
+   *  receives. Shared by a normal send and a mid-run steer, so both carry the same things. */
+  private async _composeUserMessage(
+    session: AgentSession,
+    content: string,
+    context: { text?: string; label?: string } | undefined,
+    mentions: string[],
+    attachmentIds: string[],
+  ): Promise<{ fullContent: string; images: ImageBlock[]; withheld: number; attachmentDocumentIds: string[]; attachmentNames: string[] }> {
     let fullContent = content;
     const mentionBlock = this._readMentionFiles(mentions);
     if (mentionBlock) {
@@ -3708,24 +3872,7 @@ ${this._pendingRewindNote}`;
       .map((a) => a.documentId)
       .filter((id): id is string => Boolean(id));
 
-    this._persistConversationLog(session, "user", fullContent, {
-      provider: settings.provider,
-      model: pSettings.model,
-      attachmentDocumentIds,
-    });
-
-    await this._continueSend(fullContent, {
-      inputChars: fullContent.length,
-      promptPreview: content,
-      mentionCount: mentions.length,
-      contextLabel: context?.label,
-    }, images, {
-      requestMode,
-      // The words the user typed, apart from the mentions, context and attachment notes folded in
-      // above — the reviewers that judge intent read these (see AgentSession.send).
-      userText: content.trim() || (attachmentNames.length ? `(sent attachments: ${attachmentNames.join(", ")})` : ""),
-      withheldImages: withheld || undefined,
-    });
+    return { fullContent, images, withheld, attachmentDocumentIds, attachmentNames };
   }
 
   /** Byte, pixel and format limits live in vision-image.ts, shared with every other path that
@@ -4293,6 +4440,24 @@ ${this._pendingRewindNote}`;
       if (this._liveGates.size > 0) this._expireAllGates("The run ended before this was answered.");
     }
 
+    /* Messages typed while the run was finishing, which it ended without reading. A stopped run
+       gives them back to the composer: the user stopped the agent and should decide whether to
+       send them. Otherwise they become the next turn, and the plan conductor waits — the user
+       has just spoken. */
+    const leftover = session.takePendingSteers();
+    if (leftover.length > 0) {
+      if (summary.stopReason === "cancelled" || summary.errored || turnError) {
+        for (const steer of leftover) this._steerLog.delete(steer.id);
+        this._post({ type: "steer_state", ids: leftover.map((steer) => steer.id), state: "returned" });
+      } else {
+        this._post({ type: "steer_state", ids: leftover.map((steer) => steer.id), state: "sent_as_turn" });
+        void this._continueSteersAsTurn(session, leftover).catch((err: unknown) => {
+          this._post({ type: "stream_error", message: `Could not send your message: ${err instanceof Error ? err.message : String(err)}` });
+        });
+        return;
+      }
+    }
+
     /* Fired after the turn is fully settled — _liveTurnId cleared, gates expired — because a
        continuation starts a new turn, and starting one while the previous is still marked live
        would trip the runner's concurrency guard. Deliberately not awaited: the caller's promise
@@ -4338,7 +4503,10 @@ ${this._pendingRewindNote}`;
     // Something installed already does the job (`python3` for `python`): nothing to install.
     if (hint.alternative?.certain) return;
 
-    const actions = hint.options.map((option) => `Install with ${option.manager}`);
+    // The guided setup covers the common toolchains: it checks what is installed and what the
+    // project asks for, previews everything, and runs in a terminal the user starts with Y.
+    const toolchain = toolchainForCommand(hint.command);
+    const actions = [...(toolchain ? ["Set up…"] : []), ...hint.options.map((option) => `Install with ${option.manager}`)];
     if (hint.docsUrl) actions.push("Open install page");
     // Nothing actionable to offer for a tool we don't recognise — a button-less toast would
     // be pure noise on top of the transcript diagnostic, which already reports the same thing
@@ -4353,6 +4521,10 @@ ${this._pendingRewindNote}`;
       ...actions,
     ).then((choice) => {
       if (!choice) return;
+      if (choice === "Set up…" && toolchain) {
+        void this.openProjectSetup({ toolchain });
+        return;
+      }
       if (choice === "Open install page" && hint.docsUrl) {
         void vscode.env.openExternal(vscode.Uri.parse(hint.docsUrl));
         return;
@@ -4574,6 +4746,9 @@ ${this._pendingRewindNote}`;
           toolRounds: event.toolRounds,
           budget: event.budget,
         });
+        break;
+      case "steer_delivered":
+        this._onSteersDelivered(event.ids);
         break;
       default:
         this._postStreamEvent(turnId, event);

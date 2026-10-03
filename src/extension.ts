@@ -860,6 +860,7 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     vscode.commands.registerCommand("blacksite.openChat", () => {
       void vscode.commands.executeCommand("blacksite.chat.focus");
     }),
+    vscode.commands.registerCommand("blacksite.setupToolchains", () => chatProvider?.openProjectSetup()),
   );
 
   context.subscriptions.push(

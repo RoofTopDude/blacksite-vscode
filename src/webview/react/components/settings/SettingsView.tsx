@@ -5,7 +5,7 @@ import { ResearchPanel } from "./ResearchPanel";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   AudioLines, Binary, Boxes, BrainCircuit, CheckCircle2, ChevronRight, DatabaseZap, Gauge,
-  Layers, ShieldCheck, SlidersHorizontal, Users, Wrench, Zap, type LucideIcon,
+  Hammer, Layers, ShieldCheck, SlidersHorizontal, Users, Wrench, Zap, type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
@@ -21,10 +21,12 @@ import { EmbeddingPanel } from "./EmbeddingPanel";
 import { MultimodalPanel } from "./MultimodalPanel";
 import { AdvancedPanel } from "./AdvancedPanel";
 import { SubagentPanel } from "./SubagentPanel";
+import { ProjectSetupPanel } from "./ProjectSetupPanel";
 
 type WorkflowId = "run" | "agent" | "knowledge" | "system";
 
 const SECTIONS: Record<SectionId, { label: string; description: string; icon: LucideIcon }> = {
+  setup: { label: "Project setup", description: "Check what your projects need and install missing toolchains, guided.", icon: Hammer },
   research: { label: "Browser & Research", description: "Domains, exact input review and search credentials.", icon: ShieldCheck },
   model: { label: "Model & provider", description: "Choose the provider, model, credentials, and routing.", icon: Boxes },
   generation: { label: "Generation", description: "Tune reasoning, output, and service behavior for a run.", icon: SlidersHorizontal },
@@ -40,7 +42,7 @@ const WORKFLOWS: Array<{ id: WorkflowId; label: string; description: string; ico
   { id: "run", label: "Run setup", description: "Model and response quality", icon: Gauge, sections: ["model", "generation"] },
   { id: "agent", label: "Agent & delegation", description: "How work is performed", icon: Zap, sections: ["agent", "subagent", "research"] },
   { id: "knowledge", label: "Context & memory", description: "What the agent can retain", icon: Layers, sections: ["context", "embedding"] },
-  { id: "system", label: "Media & system", description: "Attachments, audio, and maintenance", icon: AudioLines, sections: ["multimodal", "advanced"] },
+  { id: "system", label: "Setup & system", description: "Toolchains, attachments, and maintenance", icon: AudioLines, sections: ["setup", "multimodal", "advanced"] },
 ];
 
 /** One neutral fact in the settings status strip. States are reported, not
@@ -107,6 +109,15 @@ export function SettingsView() {
   const [targetNotice, setTargetNotice] = useState("");
   const results = searchSettings(query);
   useEffect(() => { writeUiState("settings.navigation", { workflow, section: openSection }); }, [workflow, openSection]);
+  // The host asked for a section (the missing-tool offer, the Set Up Toolchains command).
+  const targetNonce = store.settingsTarget?.nonce;
+  const targetSection = store.settingsTarget?.section;
+  useEffect(() => {
+    if (targetNonce === undefined || !targetSection) return;
+    setQuery("");
+    setWorkflow("system");
+    setOpenSection(targetSection);
+  }, [targetNonce, targetSection]);
   useEffect(() => {
     if (!target || query) return;
     const frame = requestAnimationFrame(() => {
@@ -156,6 +167,9 @@ export function SettingsView() {
     embedding: memoryEnabled ? `${store.memoryStats?.total ?? 0} indexed entries` : "semantic memory off",
     multimodal: store.settings.audioTranscription?.enabled === false ? "audio transcription off" : store.settings.visionFallback?.model ? "vision fallback + audio" : "audio transcription ready",
     advanced: `${disabledToolCount || "no"} tools off · diagnostics and keys`,
+    setup: store.projectSetup?.report
+      ? `${store.projectSetup.report.projects.filter((project) => project.needsAttention).length} of ${store.projectSetup.report.projects.length} projects need attention`
+      : "Toolchains your projects need",
   };
 
   function applyPreset(kind: "deep" | "fast"): void {
@@ -194,6 +208,7 @@ export function SettingsView() {
 
   function renderPanel(section: SectionId): ReactNode {
     switch (section) {
+      case "setup": return <ProjectSetupPanel />;
       case "research": return <ResearchPanel />;
       case "model": return <ModelPanel />;
       case "generation": return <GenerationPanel />;

@@ -379,6 +379,12 @@ export interface TranscriptDocumentData {
 }
 
 /** Messages received from the extension host (host → webview). */
+import type { ProjectSetupState } from "../../../toolchains/setup-types.js";
+
+export type { ProjectSetupState } from "../../../toolchains/setup-types.js";
+
+export type SteerState = "sending" | "queued" | "delivered" | "sent_as_turn" | "returned";
+
 export type IncomingMessage =
   | { type: "history_restored"; messages?: ChatMessage[] }
   | { type: "inject_context"; text: string; label: string }
@@ -425,6 +431,12 @@ export type IncomingMessage =
    *  an answer arrives for a gate the host has no record of. */
   | { type: "stream_gate_expired"; kind?: "question" | "approval"; toolCallId: string; reason?: string; laneId?: string }
   | { type: "stream_end"; id: string; stopReason?: string; iterations?: number; laneId?: string }
+  /** Where a message sent mid-run stands: queued for the next step, read by the agent, sent as a new
+   *  turn because the run ended first, or given back because the run was stopped. */
+  | { type: "steer_state"; ids: string[]; state: SteerState }
+  | { type: "project_setup_state"; state: ProjectSetupState }
+  /** Show Settings › Project setup, optionally focused on one toolchain or project. */
+  | { type: "open_project_setup"; focus?: { toolchain?: string; project?: string } }
   | { type: "stream_subagent_lane_end"; id: string; parentToolCallId?: string; laneId?: string; subRequestId?: string; label?: string; ok?: boolean; answer?: string; error?: string; elapsedMs?: number; stopReason?: string; toolRounds?: number; budget?: any }
   | { type: "stream_error"; id?: string; message?: string; laneId?: string }
   | { type: "clear" }
@@ -447,6 +459,11 @@ export type OutgoingMessage =
   | { type: "chatgpt_account"; action: "login" | "logout" | "cancel" | "refresh" }
   | { type: "ready" }
   | { type: "send_message"; payload: { content: string; context?: { text?: string; label?: string } | null; mentions?: string[]; attachments?: string[]; requestMode?: RequestMode } }
+  | { type: "project_setup_scan"; focus?: { toolchain?: string; project?: string }; ifIdle?: boolean }
+  | { type: "project_setup_preview"; ids: string[] }
+  | { type: "project_setup_apply"; ids: string[] }
+  | { type: "project_setup_dismiss" }
+  | { type: "steer_message"; payload: { steerId: string; content: string; context?: { text?: string; label?: string } | null; mentions?: string[]; attachments?: string[]; requestMode?: RequestMode } }
   | { type: "request_files"; query: string }
   | { type: "request_attach_files" }
   | { type: "attach_pasted_file"; payload: { name: string; mimeType: string; base64: string } }

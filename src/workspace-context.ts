@@ -670,6 +670,7 @@ export function buildWorkspaceContextBlock(snapshot: WorkspaceSnapshot): string 
   if (snapshot.toolchainSummary) {
     parts.push("", "Installed toolchains (use these; install nothing without asking the user):");
     for (const line of snapshot.toolchainSummary.split("\n")) parts.push(`  ${line}`);
+    parts.push("  When a toolchain is missing or no installed version fits, say so and point the user to Settings › Project setup (command: \"Blacksite: Set Up Toolchains\"), which checks every project and installs with their approval.");
     parts.push("");
   }
 

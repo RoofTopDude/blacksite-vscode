@@ -9,7 +9,7 @@ import {
   toolDisplayName, toolChangePresentation, type ToolChange, type ToolFileChange, type ToolState,
 } from "./format";
 import { toolInputPreview, toolResultPresentation, parseToolResult } from "./tool-presentation";
-import type { ApprovalDecision, ChatMessage, QCardOption, QCardQuestion, SessionRuntime, ToolDiffInfo } from "./protocol";
+import type { ApprovalDecision, ChatMessage, QCardOption, QCardQuestion, SessionRuntime, SteerState, ToolDiffInfo } from "./protocol";
 import type { BrowserProposal } from "../../../browser/approval-types";
 
 /** "expired" means the host is no longer waiting on this gate — the run was cancelled, the
@@ -158,6 +158,8 @@ export interface Turn {
    *  that actually failed — `ctxLabel` only counts them for display, and
    *  rebuilding the send from text alone silently drops the attached context. */
   mentions?: string[];
+  /** Set on a message sent while the agent was working: it reaches the agent at its next step. */
+  steer?: { id: string; state: SteerState };
   // assistant / subagent turn
   /** Every text delta of the turn, concatenated. Remains the authoritative full text —
    *  copy-to-clipboard, persistence and history restore all read it; `textSegments` is
@@ -400,6 +402,41 @@ export function ensureLaneTurn(state: ChatState, msg: any): Turn | null {
   parentTurn.lanes.push(lane);
   state.byId.set(laneId, lane);
   return lane;
+}
+
+/**
+ * The agent has read these mid-run messages. The live reply is split where it read them: what it
+ * said before stays above the messages, and what it says next starts a new reply below them, so
+ * the transcript shows the order things actually happened in.
+ */
+export function deliverSteers(state: ChatState, ids: readonly string[]): void {
+  const steered = state.turns.filter((turn) => turn.steer && ids.includes(turn.steer.id));
+  if (steered.length === 0) return;
+  for (const turn of steered) turn.steer = { ...turn.steer!, state: "delivered" };
+  const live = state.currentLiveTurnId ? state.byId.get(state.currentLiveTurnId) : undefined;
+  if (!live) return;
+  sealText(live);
+  finalizeThinking(live);
+  finalizeTurn(live, { status: "complete" });
+  // The messages move below everything the agent produced before reading them.
+  state.turns = [...state.turns.filter((turn) => !steered.includes(turn)), ...steered];
+  const next = createAssistantTurn(state, `${live.id}_after_${steered[steered.length - 1]!.steer!.id}`);
+  state.currentLiveTurnId = next.id;
+}
+
+/** Take a mid-run message back out of the transcript (the run was stopped before reading it). */
+export function removeSteers(state: ChatState, ids: readonly string[]): Turn[] {
+  const removed = state.turns.filter((turn) => turn.steer && ids.includes(turn.steer.id));
+  if (removed.length === 0) return [];
+  state.turns = state.turns.filter((turn) => !removed.includes(turn));
+  for (const turn of removed) state.byId.delete(turn.id);
+  return removed;
+}
+
+export function setSteerState(state: ChatState, ids: readonly string[], next: SteerState): void {
+  for (const turn of state.turns) {
+    if (turn.steer && ids.includes(turn.steer.id)) turn.steer = { ...turn.steer, state: next };
+  }
 }
 
 export function resolveStreamTurn(state: ChatState, msg: any): Turn | null {
@@ -1047,6 +1084,20 @@ function extractAssistantBlocks(content: any): { text: string; toolUses: any[]; 
   return { text, toolUses, thinkingBlocks };
 }
 
+/* Mirrors STEER_PREFIX / steerPrompt and the "[Internal continuation]" reminders in agent-session.ts. */
+const STEER_PREFIX = "[Message from the user during the run]\n";
+const STEER_SUFFIX = /\n\nTake this into account from your next step\.[^\n]*$/;
+const HARNESS_CONTINUATION = "[Internal continuation]";
+
+/** What a stored user message shows in a restored transcript. A harness reminder is not something
+ *  the user said, so it is hidden; a mid-run message shows the words without its framing. */
+export function displayedUserText(text: string): string | null {
+  const trimmed = text.trim();
+  if (!trimmed || trimmed.startsWith(HARNESS_CONTINUATION)) return null;
+  if (trimmed.startsWith(STEER_PREFIX)) return trimmed.slice(STEER_PREFIX.length).replace(STEER_SUFFIX, "").trim() || null;
+  return text;
+}
+
 export function restoreConversation(state: ChatState, messages: ChatMessage[]): void {
   resetConversation(state);
   state.hasMessages = true;
@@ -1077,10 +1128,11 @@ export function restoreConversation(state: ChatState, messages: ChatMessage[]): 
         applyToolResult(activeAssistant!, call, toolResult.content, call.elapsedMs);
       });
     }
-    if (text.trim()) {
+    const shown = displayedUserText(text);
+    if (shown) {
       if (activeAssistant) finalizeTurn(activeAssistant, { status: "complete" });
       activeAssistant = null;
-      createUserTurn(state, text, null, true);
+      createUserTurn(state, shown, null, true);
     }
   }
   if (activeAssistant) finalizeTurn(activeAssistant, { status: "complete" });

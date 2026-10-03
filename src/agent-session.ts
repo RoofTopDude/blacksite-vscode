@@ -892,8 +892,28 @@ export type BaseAgentEvent =
   | { type: "approval_review"; toolCallId: string; verdict: "allowed" | "escalated"; reason: string }
   | { type: "question_card_pending"; toolCallId: string; questions: QCardQuestion[] }
   | { type: "question_card_result"; toolCallId: string; answers: string[][] }
+  /** Messages the user sent while the run was going, now in the model's context (see enqueueSteer). */
+  | { type: "steer_delivered"; ids: string[] }
   | { type: "turn_complete"; stopReason: AgentStopReason; iterations: number }
   | { type: "error"; message: string };
+
+/** A message the user sent while a run was in progress, delivered at the run's next step. */
+export interface SteerMessage {
+  id: string;
+  /** The full content as it should reach the model: mentions, context and attachment notes folded in. */
+  text: string;
+  images?: ImageBlock[];
+  /** Only the words the user typed, for the reviewers that judge intent. */
+  userText?: string;
+}
+
+/** Frames a steer so the model reads it as the user speaking mid-run, not as a new request that
+ *  replaces the task. */
+export const STEER_PREFIX = "[Message from the user during the run]";
+
+export function steerPrompt(text: string): string {
+  return `${STEER_PREFIX}\n${text}\n\nTake this into account from your next step. It adds to the current task unless it says otherwise.`;
+}
 
 export type SubagentComplexity = "auto" | "standard" | "complex" | "deep";
 
@@ -1775,6 +1795,8 @@ export class AgentSession {
   private _loadedTools = new Set<string>();
   /** The user's own words, one entry per user message, oldest first. See send(). */
   private _userPrompts: string[] = [];
+  /** Messages the user sent mid-run, waiting for the run's next step. See enqueueSteer. */
+  private _steers: SteerMessage[] = [];
   /** tool_search results, by tool_use id, whose content a native Anthropic request replaces with
    *  `tool_reference` blocks. Stored apart from the message so history stays provider-neutral. */
   private _toolReferenceResults = new Map<string, string[]>();
@@ -2762,6 +2784,50 @@ export class AgentSession {
       : text;
     this.messages.push({ role: "user", content });
     this._fullHistory.push({ role: "user", content });
+  }
+
+  /**
+   * Hand the running loop a message the user sent mid-run. It reaches the model before the next
+   * provider call — after the current tool round's results, or instead of finishing when the model
+   * was about to end its turn — so the user can add a requirement without cancelling.
+   *
+   * Nothing interrupts the step in flight: a tool already running, or an approval the user has not
+   * answered, finishes first. A steer still queued when the run ends is the caller's to send as the
+   * next turn (takePendingSteers).
+   */
+  enqueueSteer(steer: SteerMessage): void {
+    this._steers.push(steer);
+  }
+
+  /** Remove and return steers the run ended without delivering. */
+  takePendingSteers(): SteerMessage[] {
+    return this._steers.splice(0);
+  }
+
+  get pendingSteerCount(): number { return this._steers.length; }
+
+  /** Put queued steers into the conversation. Returns their ids, empty when there were none. */
+  private _deliverSteers(): string[] {
+    if (this._steers.length === 0) return [];
+    const steers = this._steers.splice(0);
+    const supportsVision = this.supportsVision;
+    for (const steer of steers) {
+      this._providerTurnSession.appendUserText(steerPrompt(steer.text), supportsVision ? steer.images : undefined);
+      const typed = steer.userText?.trim();
+      if (typed) {
+        this._userPrompts.push(typed.length > MAX_RECORDED_PROMPT_CHARS ? `${typed.slice(0, MAX_RECORDED_PROMPT_CHARS)}…` : typed);
+        if (this._userPrompts.length > MAX_RECORDED_PROMPTS) this._userPrompts.splice(0, this._userPrompts.length - MAX_RECORDED_PROMPTS);
+      }
+    }
+    /* The user has spoken, so the run is in a new situation: closing reminders already spent and
+       the duplicate-round watch start over. The iteration cap does not — a steer is not a way to
+       run forever. */
+    this._noteEnforcementCount = 0;
+    this._verificationEnforcementCount = 0;
+    this._lastToolRoundFingerprint = "";
+    this._duplicateToolRoundCount = 0;
+    this._duplicateToolRoundNudgeCount = 0;
+    return steers.map((steer) => steer.id);
   }
 
   private _appendAssistantTurn(result: ProviderTurnResult): void {
@@ -4429,6 +4495,13 @@ export class AgentSession {
         return;
       }
 
+      // What the user typed while the last step ran goes in now, after that step's tool results.
+      const steered = this._deliverSteers();
+      if (steered.length > 0) {
+        yield { type: "steer_delivered", ids: steered };
+        yield { type: "runtime_state", state: this.runtimeState };
+      }
+
       let turnResult: ProviderTurnResult;
 
       try {
@@ -4713,6 +4786,17 @@ export class AgentSession {
       }
 
       if (turnResult.toolCalls.length === 0) {
+        /* The model meant to finish, but the user said something while it was answering. Answer
+           that in the same run rather than ending and making them wait for a new one; it also
+           comes ahead of any closing reminder, which the next end_turn will raise if still due. */
+        if (turnResult.stopReason === "end_turn" && this._steers.length > 0) {
+          awaitingPostToolContinuation = false;
+          const ids = this._deliverSteers();
+          yield { type: "steer_delivered", ids };
+          yield { type: "runtime_state", state: this.runtimeState };
+          continue;
+        }
+
         const shouldAutoContinue = awaitingPostToolContinuation
           && turnResult.stopReason === "end_turn"
           && turnResult.empty

@@ -25,15 +25,9 @@ import os from "os";
 import path from "path";
 import { buildSanitizedProcessEnv, findProjectVenv, venvExecutable, venvPythonVersion } from "@blacksite/local-runtime";
 
-export interface ToolchainInstall {
-  toolchain: string;
-  /** The name it answers to on PATH (`python3`), or the path when found off PATH. */
-  command: string;
-  path: string;
-  version?: string;
-  /** Where it came from, in a word: PATH, pyenv, Homebrew, py launcher. */
-  source: string;
-}
+import type { ToolchainInstall } from "./setup-types.js";
+
+export type { ToolchainInstall } from "./setup-types.js";
 
 export interface MachineInventory {
   probedAt: number;
@@ -64,7 +58,7 @@ const PROBES: Probe[] = [
   { toolchain: "C/C++", commands: ["clang", "gcc"], args: ["--version"], version: /([0-9]+\.[0-9]+\.[0-9]+)/ },
 ];
 
-const MANAGERS = ["brew", "winget", "apt-get", "dnf", "uv", "rustup", "pyenv", "pipx", "volta", "fnm"];
+const MANAGERS = ["brew", "winget", "apt-get", "dnf", "uv", "rustup", "pyenv", "pipx", "volta", "fnm", "poetry", "pipenv", "pnpm", "yarn", "corepack"];
 const PROBE_TIMEOUT_MS = 3_000;
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 
@@ -92,7 +86,17 @@ export function whichAll(name: string, env: NodeJS.ProcessEnv = buildSanitizedPr
         if (seen.has(real)) continue;
         seen.add(real);
         found.push(candidate);
-      } catch { /* not here */ }
+      } catch {
+        /* Windows App Execution Aliases (winget, python from the Store) are reparse points that
+           stat cannot follow but that run fine; the link itself existing is enough. */
+        if (process.platform === "win32" && !seen.has(candidate)) {
+          try {
+            fs.lstatSync(candidate);
+            seen.add(candidate);
+            found.push(candidate);
+          } catch { /* not here */ }
+        }
+      }
     }
   }
   return found;
@@ -332,4 +336,68 @@ export class ToolchainInventoryCache {
     this._listeners.add(listener);
     return { dispose: () => { this._listeners.delete(listener); } };
   }
+}
+
+/** A toolchain installed inside a project by the setup guide: not on PATH, so the agent has to be
+ *  told where it is. */
+export interface ProjectLocalToolchain {
+  /** Workspace-relative project directory ("" for the root). */
+  project: string;
+  toolchain: string;
+  /** Workspace-relative path of the executable. */
+  executable: string;
+  version?: string;
+}
+
+function localExecutables(dir: string): Array<{ toolchain: string; file: string; version?: string }> {
+  const found: Array<{ toolchain: string; file: string; version?: string }> = [];
+  const exe = (name: string): string => (process.platform === "win32" ? `${name}.exe` : name);
+  try {
+    for (const entry of fs.readdirSync(path.join(dir, ".toolchains"))) {
+      const base = path.join(dir, ".toolchains", entry);
+      const node = /^node-v(\d+\.\d+\.\d+)/.exec(entry);
+      if (node) {
+        const file = process.platform === "win32" ? path.join(base, "node.exe") : path.join(base, "bin", "node");
+        if (fs.existsSync(file)) found.push({ toolchain: "Node", file, version: node[1] });
+        continue;
+      }
+      const jdk = /^jdk-?(\d+(?:\.\d+)*)/.exec(entry);
+      if (jdk) {
+        const candidates = [path.join(base, "bin", exe("java")), path.join(base, "Contents", "Home", "bin", "java")];
+        const file = candidates.find((candidate) => fs.existsSync(candidate));
+        if (file) found.push({ toolchain: "Java", file, version: jdk[1] });
+      }
+    }
+  } catch { /* no .toolchains here */ }
+  const dotnet = path.join(dir, ".dotnet", exe("dotnet"));
+  if (fs.existsSync(dotnet)) found.push({ toolchain: ".NET", file: dotnet });
+  return found;
+}
+
+/** Project-local toolchains for the projects the given files are in (nearest per toolchain). */
+export function localToolchainsInPlay(workspaceRoot: string, files: readonly string[]): ProjectLocalToolchain[] {
+  const results = new Map<string, ProjectLocalToolchain>();
+  const root = path.resolve(workspaceRoot);
+  for (const file of files) {
+    const seenToolchains = new Set<string>();
+    let dir = path.dirname(path.resolve(workspaceRoot, file));
+    for (;;) {
+      const rel = path.relative(root, dir);
+      if (rel.startsWith("..") || path.isAbsolute(rel)) break;
+      for (const local of localExecutables(dir)) {
+        if (seenToolchains.has(local.toolchain)) continue;
+        seenToolchains.add(local.toolchain);
+        const relative = (value: string): string => path.relative(root, value).split(path.sep).join("/");
+        results.set(local.file, { project: relative(dir), toolchain: local.toolchain, executable: relative(local.file), version: local.version });
+      }
+      if (dir === root) break;
+      dir = path.dirname(dir);
+    }
+  }
+  return [...results.values()];
+}
+
+export function formatLocalToolchains(locals: readonly ProjectLocalToolchain[]): string[] {
+  return locals.slice(0, MAX_PROJECT_LINES).map((local) =>
+    `- Project ${local.project || "(workspace root)"} has its own ${local.toolchain}${local.version ? ` ${local.version}` : ""}: ${local.executable} — not on PATH; call it by this path`);
 }

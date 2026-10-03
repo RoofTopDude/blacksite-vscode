@@ -237,8 +237,9 @@ export function InputDock({ starter }: { starter: StarterPrompt | null }) {
       return;
     }
     if (!text) {
-      // Attachment-only send — no slash command / queue routing applies.
-      actions.sendMessage("", []);
+      // Attachment-only send — no slash command routing applies. Mid-run it reaches the agent at its next step.
+      if (running) actions.steerMessage("", []);
+      else actions.sendMessage("", []);
       setValue("");
       setMention(CLOSED);
       return;
@@ -250,15 +251,11 @@ export function InputDock({ starter }: { starter: StarterPrompt | null }) {
       setMention(CLOSED);
       return;
     }
-    if (running) {
-      actions.queueMessage(text);
-      setValue("");
-      setMention(CLOSED);
-      return;
-    }
     const mentions = [...selected.current].filter((p) => text.includes(`@${p}`));
     selected.current.clear();
-    actions.sendMessage(text, mentions);
+    // While the agent works, a message steers it at its next step instead of waiting for the run to end.
+    if (running) actions.steerMessage(text, mentions);
+    else actions.sendMessage(text, mentions);
     setValue("");
     setMention(CLOSED);
   }
@@ -369,7 +366,7 @@ export function InputDock({ starter }: { starter: StarterPrompt | null }) {
   }
 
   const placeholder = running
-    ? "Agent is working — press Enter to queue a follow-up…"
+    ? "Agent is working — press Enter to tell it something at its next step…"
     : "Ask about your code…  (@ files · / commands · paste or drop images, audio, docs, and more)";
 
   // aria-activedescendant target for whichever completion popover is open.
@@ -561,9 +558,9 @@ export function InputDock({ starter }: { starter: StarterPrompt | null }) {
         )}
         {running ? (
           <div className="flex items-center gap-1">
-            {value.trim() && (
-              <Button type="button" variant="outline" size="sm" title="Queue this message (sends when the current turn ends)" onClick={submit}>
-                Queue
+            {(value.trim() || store.pendingAttachments.length > 0) && (
+              <Button type="button" variant="outline" size="sm" title="Send now: the agent reads it at its next step, without stopping" onClick={submit}>
+                Send
               </Button>
             )}
             <Button type="button" variant="ghost" size="icon-sm" title="Stop response" onClick={() => actions.cancel()}>

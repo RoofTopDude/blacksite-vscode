@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.30.0-pre.2",
+  "version": "1.30.0-pre.3",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -169,6 +169,11 @@
       {
         "command": "blacksite.openChat",
         "title": "Open Chat Panel",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.setupToolchains",
+        "title": "Set Up Toolchains",
         "category": "Blacksite"
       },
       {
@@ -1251,7 +1256,7 @@
     "@types/vscode": "~1.138.0",
     "@vitest/coverage-v8": "^4.1.11",
     "@vscode/test-electron": "^2.5.2",
-    "@vscode/vsce": "^3.9.2",
+    "@vscode/vsce": "^4.0.0",
     "eslint": "^9.39.5",
     "eslint-plugin-jsx-a11y": "^6.10.2",
     "eslint-plugin-react-hooks": "^7.1.1",

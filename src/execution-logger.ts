@@ -251,6 +251,10 @@ export class ExecutionLogger {
         this._write(`${p}   → Selected: ${event.answers.map((keys) => `"${keys.join(", ")}"`).join(", ")}`);
         break;
 
+      case "steer_delivered":
+        this._write(`${p}✉  User message delivered mid-run (${event.ids.length})`);
+        break;
+
       case "turn_complete":
         this._write(`${p}■  Complete  stopReason=${event.stopReason}  iter=${event.iterations}`);
         break;

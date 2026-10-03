@@ -13,7 +13,7 @@ import type {
   ApprovalDecision, ClaudeEffort, ExtendedSettings, HistorySession, IncomingMessage, KeyStatus, LogStats,
   MemoryStats, ModelInfo, OpenRouterConfig, OutgoingMessage, ProviderName, QCardOption, ReasoningEffort,
   ReferenceAttachmentInfo, ServiceTier, SubagentProfile, SubagentSettings, TranscriptDocumentData,
-  RequestMode, SamplingKey,
+  RequestMode, SamplingKey, ProjectSetupState,
 } from "./protocol";
 
 /** Typed post — narrows to the chat webview's outbound protocol. */
@@ -23,9 +23,9 @@ function post(message: OutgoingMessage): void {
 import {
   addQuestionCard, answerQuestionCard, appendText, appendThinking, applyApprovalPending, declineQuestionCard,
   applyApprovalResult, applyApprovalReview, truncateTurnsFrom, applyDiagnostic, applyProviderActivity, applyToolResult, chooseApprovalDecision, createChatState, createUserTurn,
-  checkpointLiveResponse, currentRoundHasText, ensureLaneTurn, ensureParentLiveTurn, ensureToolCall,
+  checkpointLiveResponse, currentRoundHasText, deliverSteers, ensureLaneTurn, ensureParentLiveTurn, ensureToolCall,
   expireApproval, expireOpenGates, expireQuestionCard, finalizeThinking, finalizeTurn, lastUserRequest,
-  resetConversation, resetLiveResponse, resolveStreamTurn, restoreConversation, setQuestionDraft, type ChatState,
+  removeSteers, resetConversation, resetLiveResponse, resolveStreamTurn, restoreConversation, setQuestionDraft, setSteerState, type ChatState,
 } from "./chat-model";
 import { resolveSlashCommand } from "./slash-commands";
 import { emptyCost, emptyUsage, type CostTotals, type UsageTotals } from "./tokens";
@@ -104,6 +104,10 @@ export interface Store {
   attachError: string | null;
   /** Full text is fetched only after a document card expands. */
   transcriptDocuments: Record<string, TranscriptDocumentData>;
+  /** Settings › Project setup, as the host last reported it. */
+  projectSetup: ProjectSetupState | null;
+  /** A request to show one Settings section (from the host), applied once per nonce. */
+  settingsTarget: { section: "setup"; nonce: number; focus?: { toolchain?: string; project?: string } } | null;
 }
 
 const defaultSettings: ExtendedSettings = {
@@ -151,6 +155,8 @@ export const store: Store = {
   attaching: false,
   attachError: null,
   transcriptDocuments: {},
+  projectSetup: null,
+  settingsTarget: null,
 };
 
 let version = 0;
@@ -437,6 +443,26 @@ function handleIncoming(msg: IncomingMessage): void {
       break;
     }
 
+    case "project_setup_state":
+      store.projectSetup = msg.state;
+      break;
+
+    case "open_project_setup":
+      store.view = "settings";
+      store.settingsTarget = { section: "setup", nonce: (store.settingsTarget?.nonce ?? 0) + 1, focus: msg.focus };
+      break;
+
+    case "steer_state": {
+      const ids = Array.isArray(msg.ids) ? msg.ids.map(String) : [];
+      if (msg.state === "delivered") deliverSteers(chat, ids);
+      else if (msg.state === "returned") {
+        // The run was stopped before reading these: give the words back to the composer.
+        const text = removeSteers(chat, ids).map((turn) => turn.text ?? "").filter(Boolean).join("\n\n");
+        if (text) store.composerFill = { text, nonce: (store.composerFill?.nonce ?? 0) + 1 };
+      } else setSteerState(chat, ids, msg.state);
+      break;
+    }
+
     case "stream_subagent_lane_end": {
       const lane = ensureLaneTurn(chat, msg);
       if (lane) {
@@ -626,6 +652,38 @@ export const actions = {
     bump();
     post({ type: "send_message", payload: { content: trimmed, context: ctx, mentions, attachments, requestMode } });
   },
+  /**
+   * Send a message while the agent is working. It goes to the agent at its next step — after the
+   * tool it is running, or before it finishes its answer — rather than waiting for the run to end,
+   * and keeps its @-mentions, attachments and selection context like any other message.
+   */
+  steerMessage(text: string, mentions: string[]): void {
+    const trimmed = text.trim();
+    const attachments = store.pendingAttachments.map((a) => a.id);
+    if (!trimmed && attachments.length === 0) return;
+    if (!store.chat.running) { actions.sendMessage(text, mentions); return; }
+    const ctx = store.pendingCtx;
+    store.pendingCtx = null;
+    store.pendingAttachments = [];
+    steerSeq += 1;
+    const steerId = `steer_${Date.now()}_${steerSeq}`;
+    const labelParts = [
+      ctx?.label,
+      mentions.length ? countLabel(mentions.length, "file") : null,
+      attachments.length ? countLabel(attachments.length, "attachment") : null,
+    ].filter(Boolean);
+    const turn = createUserTurn(store.chat, trimmed, labelParts.length ? labelParts.join(", ") : null, false, mentions);
+    turn.steer = { id: steerId, state: "sending" };
+    bump();
+    post({ type: "steer_message", payload: { steerId, content: trimmed, context: ctx, mentions, attachments, requestMode: store.requestMode } });
+  },
+  /** Scan the workspace and machine for the setup panel. `ifIdle`: only when nothing is known yet. */
+  scanProjectSetup(options: { ifIdle?: boolean; focus?: { toolchain?: string; project?: string } } = {}): void {
+    post({ type: "project_setup_scan", ifIdle: options.ifIdle, focus: options.focus });
+  },
+  previewProjectSetup(ids: string[]): void { post({ type: "project_setup_preview", ids }); },
+  applyProjectSetup(ids: string[]): void { post({ type: "project_setup_apply", ids }); },
+  dismissProjectSetupRun(): void { post({ type: "project_setup_dismiss" }); },
   setRequestMode(requestMode: RequestMode): void { store.requestMode = requestMode; bump(); },
   /** Ask the host to rewind to before this assistant turn; the host confirms what will change. */
   rewindTo(turnId: string): void { post({ type: "rewind_request", turnId }); },
@@ -1028,6 +1086,8 @@ export const actions = {
     post({ type: "delete_subagent_profile", profileId });
   },
 };
+
+let steerSeq = 0;
 
 /** Send the queued follow-up once the run has settled. No-op if empty or still running. */
 function flushQueuedMessage(): void {

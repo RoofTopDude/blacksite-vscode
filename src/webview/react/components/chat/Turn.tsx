@@ -3,7 +3,7 @@ import { Bot, Check, ChevronRight, Copy, Undo2, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { countLabel, formatClock, formatDuration, liveElapsedMs } from "@/lib/format";
 import {
-  artifactCallsOf, placeholderText, questionCardSettled, rewindTargetFor, turnChrome, turnIsLive, turnNarrative,
+  artifactCallsOf, pendingItemsOf, placeholderText, questionCardSettled, rewindTargetFor, turnChrome, turnIsLive, turnNarrative,
   type TextSegment, type Turn as TurnModel,
 } from "@/lib/chat-model";
 import { actions, useStore } from "@/lib/store";
@@ -235,6 +235,23 @@ function RewindButton({ userTurnId }: { userTurnId: string }) {
   );
 }
 
+/** Where a message sent mid-run stands, in the words the user needs: will the agent see it, and when. */
+function SteerChip({ state }: { state: NonNullable<TurnModel["steer"]>["state"] }) {
+  const store = useStore();
+  const waiting = (state === "sending" || state === "queued") && pendingItemsOf(store.chat).length > 0;
+  const label = state === "delivered" ? "Read by the agent"
+    : state === "sent_as_turn" ? "Sent as a new message"
+    : state === "returned" ? "Not sent"
+    : waiting ? "Delivered after you answer the pending request"
+    : "Delivered at the agent's next step";
+  const done = state === "delivered" || state === "sent_as_turn";
+  return (
+    <span className={cn("text-2xs", done ? "text-muted-foreground/80" : "text-[color:var(--s-warn)] live-breathe")} role="status">
+      {label}
+    </span>
+  );
+}
+
 export function Turn({ turn }: { turn: TurnModel }) {
   const animate = !turn.historical;
   // Called unconditionally (Rules of Hooks) even for user turns, which are always
@@ -256,6 +273,7 @@ export function Turn({ turn }: { turn: TurnModel }) {
             conversation carry a time reference and the same copy affordance.
             Restored history has no reliable per-message stamp, so it stays clean. */}
         <div className="flex items-center gap-1">
+          {turn.steer && <SteerChip state={turn.steer.state} />}
           <RewindButton userTurnId={turn.id} />
           {turn.text && <CopyReplyButton raw={turn.text} title="Copy message" />}
           {turn.startedAt != null && (
