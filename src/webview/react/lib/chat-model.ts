@@ -1260,6 +1260,7 @@ export function browserGateTitle(proposal: BrowserProposal): string {
       ? `Allow research access to ${hosts.length} domains`
       : `Allow research access to ${hosts[0] || proposal.title}`;
   }
+  if (proposal.kind === "search") return `Let ${proposal.title} search the web`;
   if (proposal.kind === "script") return `Run a privileged test script on ${hosts[0] || proposal.title}`;
   if (proposal.kind === "input") return `Send ${proposal.fields.length === 1 ? "this exact value" : `these ${proposal.fields.length} exact values`} to ${hosts[0] || proposal.title}`;
   return `Approve a browser action on ${hosts[0] || proposal.title}`;

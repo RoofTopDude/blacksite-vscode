@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.30.0",
+  "version": "1.31.0-pre.1",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -402,6 +402,11 @@
         "title": "Open Mermaid Diagram",
         "category": "Blacksite",
         "icon": "$(preview)"
+      },
+      {
+        "command": "blacksite.openRunTheater",
+        "title": "Open Run in Editor",
+        "category": "Blacksite"
       }
     ],
     "menus": {
@@ -410,11 +415,6 @@
           "command": "blacksite.explainSelection",
           "when": "editorHasSelection",
           "group": "blacksite@1"
-        },
-        {
-          "command": "blacksite.openRunTheater",
-          "title": "Open Run in Editor",
-          "category": "Blacksite"
         },
         {
           "command": "blacksite.askAboutFile",
@@ -1148,10 +1148,29 @@
           "type": "string",
           "enum": [
             "none",
+            "hosted",
             "brave"
           ],
+          "enumDescriptions": [
+            "No search set up yet. On Claude (Anthropic API), OpenRouter or ChatGPT sign-in, the agent's first search asks once whether the provider's built-in search may run.",
+            "The model provider's built-in web search, run on its servers inside the model's reply and billed there.",
+            "Brave Search API with your key (stored in SecretStorage). Each query is reviewed before it is sent."
+          ],
           "default": "none",
-          "description": "Configure and confirm in Browser & Research. API key is stored in SecretStorage."
+          "markdownDescription": "Where the agent's `web_search` runs. Configure and confirm in **Browser & Research**: editing this file alone cannot turn search on."
+        },
+        "blacksite.research.searchScope": {
+          "type": "string",
+          "enum": [
+            "any",
+            "approved"
+          ],
+          "enumDescriptions": [
+            "Results from any site except denied domains (ChatGPT search cannot exclude sites).",
+            "Results only from allowed and session-approved domains."
+          ],
+          "default": "any",
+          "description": "Which sites built-in search results may come from. Narrowing to approved domains takes effect from this file; widening needs Browser & Research."
         },
         "blacksite.browser.inputApprovalMode": {
           "type": "string",

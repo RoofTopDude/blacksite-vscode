@@ -401,3 +401,28 @@ export function stripUnsignedThinking(messages: AgentMessage[]): AgentMessage[] 
     return { ...msg, content: kept };
   });
 }
+
+/**
+ * Resolve provider-executed blocks for an Anthropic-format request (direct or Mantle).
+ *
+ * With `expand`, Anthropic's own search blocks are unwrapped back into the exact content blocks
+ * the API sent, in place, which is the only form it accepts them in. Without it — a request that
+ * does not carry the web search tool, or one bound for Mantle, which has none — every
+ * provider-native block is dropped, because a `server_tool_use` the API cannot account for is a
+ * 400. Codex blocks (a conversation that switched providers) are always dropped. A turn left
+ * with nothing gets the empty-turn placeholder so alternation survives.
+ */
+export function resolveAnthropicNativeBlocks(messages: AgentMessage[], expand: boolean): AgentMessage[] {
+  if (!messages.some((m) => Array.isArray(m.content) && (m.content as ContentBlock[]).some((b) => b.type === "provider_native"))) return messages;
+  return messages.map((msg) => {
+    if (typeof msg.content === "string") return msg;
+    const blocks = msg.content as ContentBlock[];
+    if (!blocks.some((b) => b.type === "provider_native")) return msg;
+    const out: ContentBlock[] = [];
+    for (const block of blocks) {
+      if (block.type !== "provider_native") out.push(block);
+      else if (expand && block.provider === "anthropic") out.push(structuredClone(block.block) as unknown as ContentBlock);
+    }
+    return { ...msg, content: out.length ? out : [{ type: "text", text: EMPTY_TURN_PLACEHOLDER }] };
+  });
+}

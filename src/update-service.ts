@@ -23,6 +23,12 @@ export const UPDATE_CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000;
  * while still being long enough to keep a burst of window reloads from each firing a check.
  */
 const UPDATE_CHECK_MIN_ELAPSED_MS = UPDATE_CHECK_INTERVAL_MS - 5 * 60 * 1000;
+/**
+ * How soon an automatic check that failed (rate limit, offline, a proxy) is tried again. Waiting a
+ * full interval after a failure is how a prerelease user — whose only source is the rate-limited
+ * GitHub API — could go days without being offered a release, with nothing on screen to say why.
+ */
+export const FAILED_CHECK_RETRY_MS = 30 * 60 * 1000;
 const RELEASES_PAGE_SIZE = 10;
 const API_TIMEOUT_MS = 15_000;
 /**
@@ -85,6 +91,8 @@ interface GithubRelease {
 }
 
 interface UpdateInfo {
+  /** Where this answer came from, for the update log. */
+  source?: "manifest" | "github";
   version: string;
   asset: GithubReleaseAsset;
   releaseUrl: string;
@@ -103,6 +111,8 @@ interface CommandResult {
 type CommandRunner = (command: string, args: string[]) => Promise<CommandResult>;
 type Fetcher = (input: string | URL, init?: RequestInit) => Promise<Response>;
 type VsixInstaller = (vsixPath: string) => Promise<void>;
+/** One line per update check, written to the "Blacksite Updates" output channel. */
+type UpdateLog = (line: string) => void;
 
 export function validateReleaseAssetMetadata(asset: GithubReleaseAsset, version: string): string {
   if (!UPDATE_VERSION_RE.test(version)) throw new Error("The update has an invalid version.");
@@ -186,6 +196,7 @@ export function parseReleaseManifest(payload: unknown, extensionPackageName = ""
       digest,
       ...(typeof manifest.size === "number" && Number.isSafeInteger(manifest.size) ? { size: manifest.size } : {}),
     },
+    source: "manifest",
     releaseUrl: typeof manifest.releaseUrl === "string" && manifest.releaseUrl ? manifest.releaseUrl : DEFAULT_MANIFEST_URL,
     releaseTitle: typeof manifest.name === "string" && manifest.name ? manifest.name : `Blacksite ${rawVersion}`,
     ...(typeof manifest.minimumVscodeVersion === "string" && manifest.minimumVscodeVersion.trim()
@@ -461,7 +472,14 @@ export class ExtensionUpdater {
     private readonly installFromVsix: VsixInstaller = defaultVsixInstaller,
     /** The running VS Code version; injectable so the engine gate is testable. */
     private readonly runningVscodeVersion: string = vscode.version ?? "0.0.0",
+    /** Where each check's outcome is written. Automatic checks never show a failure, so without
+     *  this a check that kept failing left no trace anywhere. */
+    private readonly log: UpdateLog = () => {},
   ) {}
+
+  /** The version whose update prompt is on screen now, so a later tick does not stack a second. */
+  private promptOpenFor?: string;
+  private retryTimer?: ReturnType<typeof setTimeout>;
 
   /**
    * The throttled, automatic check — run once at activation and then on every tick of
@@ -503,7 +521,24 @@ export class ExtensionUpdater {
     }, UPDATE_CHECK_INTERVAL_MS);
     // A background poll must never be the reason the host process stays alive.
     timer.unref?.();
-    return new vscode.Disposable(() => clearInterval(timer));
+    return new vscode.Disposable(() => {
+      clearInterval(timer);
+      if (this.retryTimer) clearTimeout(this.retryTimer);
+    });
+  }
+
+  /** After an automatic check fails, try again in {@link FAILED_CHECK_RETRY_MS} rather than at
+   *  the next interval. The throttle is set back to match, so the retry is not turned away. */
+  private async scheduleRetryAfterFailure(): Promise<void> {
+    await this.context.globalState.update(LAST_CHECK_KEY, Date.now() - UPDATE_CHECK_MIN_ELAPSED_MS + FAILED_CHECK_RETRY_MS);
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = undefined;
+      void this.maybeCheckForUpdates().catch((error: unknown) => {
+        console.error("Blacksite: update check retry failed", error);
+      });
+    }, FAILED_CHECK_RETRY_MS);
+    this.retryTimer.unref?.();
   }
 
   async checkForUpdates(options: { manual: boolean }): Promise<void> {
@@ -512,34 +547,60 @@ export class ExtensionUpdater {
     const extensionPackageName = String(extensionPackage.name ?? "");
     const repositorySlug = resolveRepositorySlug(config.repository, extensionPackage);
     const currentVersion = String(extensionPackage.version ?? "0.0.0");
+    const channel = config.includePrerelease ? "prerelease" : "stable";
+    const kind = options.manual ? "manual" : "automatic";
 
+    let updateInfo: UpdateInfo | null;
     try {
-      const updateInfo = await this.resolveLatestRelease(config, repositorySlug, extensionPackageName);
-      if (!updateInfo || compareVersions(updateInfo.version, currentVersion) <= 0) {
-        if (options.manual) {
-          void vscode.window.showInformationMessage(`Blacksite ${currentVersion} is up to date.`);
-        }
-        return;
-      }
-
-      if (!options.manual) {
-        const dismissedVersion = this.context.globalState.get<string>(DISMISSED_VERSION_KEY);
-        if (dismissedVersion === updateInfo.version) return;
-      }
-
-      if (!engineSatisfied(updateInfo.minimumVscodeVersion, this.runningVscodeVersion)) {
-        await this.promptEngineTooOld(updateInfo, options.manual);
-        return;
-      }
-
-      await this.promptForUpdate(currentVersion, updateInfo, options.manual);
+      updateInfo = await this.resolveLatestRelease(config, repositorySlug, extensionPackageName);
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.log(`${kind} check failed (${channel} channel, installed ${currentVersion}): ${message}`);
       if (options.manual) {
-        const message = error instanceof Error ? error.message : String(error);
         void vscode.window.showWarningMessage(`Blacksite: Update check failed. ${message}`);
+        await this.context.globalState.update(LAST_CHECK_KEY, Date.now());
+      } else {
+        await this.scheduleRetryAfterFailure();
       }
+      return;
+    }
+    // Stamped before any prompt, not after it: a prompt nobody has answered yet must not hold the
+    // throttle open so that every later tick checks — and prompts — again.
+    await this.context.globalState.update(LAST_CHECK_KEY, Date.now());
+
+    const found = updateInfo ? `${updateInfo.version} from ${updateInfo.source ?? "github"}` : "no release";
+    if (!updateInfo || compareVersions(updateInfo.version, currentVersion) <= 0) {
+      this.log(`${kind} check (${channel} channel): ${found}; installed ${currentVersion} is up to date.`);
+      if (options.manual) {
+        void vscode.window.showInformationMessage(`Blacksite ${currentVersion} is up to date.`);
+      }
+      return;
+    }
+
+    if (!options.manual) {
+      const dismissedVersion = this.context.globalState.get<string>(DISMISSED_VERSION_KEY);
+      if (dismissedVersion === updateInfo.version) {
+        this.log(`${kind} check (${channel} channel): ${found}; not offered again, it was dismissed. Use "Blacksite: Check for Updates" to see it.`);
+        return;
+      }
+      if (this.promptOpenFor === updateInfo.version) {
+        this.log(`${kind} check (${channel} channel): ${found}; its update prompt is still open.`);
+        return;
+      }
+    }
+
+    if (!engineSatisfied(updateInfo.minimumVscodeVersion, this.runningVscodeVersion)) {
+      this.log(`${kind} check (${channel} channel): ${found} needs VS Code ${engineFloorLabel(updateInfo.minimumVscodeVersion ?? "")}; this is ${this.runningVscodeVersion}.`);
+      await this.promptEngineTooOld(updateInfo, options.manual);
+      return;
+    }
+
+    this.log(`${kind} check (${channel} channel): offering ${found} over installed ${currentVersion}.`);
+    this.promptOpenFor = updateInfo.version;
+    try {
+      await this.promptForUpdate(currentVersion, updateInfo, options.manual);
     } finally {
-      await this.context.globalState.update(LAST_CHECK_KEY, Date.now());
+      if (this.promptOpenFor === updateInfo.version) this.promptOpenFor = undefined;
     }
   }
 
@@ -564,7 +625,18 @@ export class ExtensionUpdater {
         "The release manifest was unavailable and no GitHub repository is configured as a fallback (blacksite.updates.repository).",
       );
     }
-    return this.fetchLatestRelease(repositorySlug, config.includePrerelease, extensionPackageName);
+    try {
+      return await this.fetchLatestRelease(repositorySlug, config.includePrerelease, extensionPackageName);
+    } catch (error) {
+      // Prereleases are only listed by the GitHub API, whose unauthenticated budget is per IP.
+      // When it fails, the stable manifest still answers whether a newer stable release exists,
+      // so a prerelease user is never left with no update source at all.
+      if (!config.includePrerelease) throw error;
+      const fromManifest = await this.fetchReleaseManifest(config.manifestUrl, extensionPackageName);
+      if (!fromManifest) throw error;
+      this.log(`GitHub releases unavailable (${error instanceof Error ? error.message : String(error)}); checked the stable manifest instead.`);
+      return fromManifest;
+    }
   }
 
   /** Never throws: the manifest is an optimisation, and any failure falls back to the API. */
@@ -602,6 +674,11 @@ export class ExtensionUpdater {
     const payload = await response.json() as unknown;
     if (!Array.isArray(payload)) throw new Error("GitHub returned an invalid releases payload.");
 
+    // The highest eligible version, not the first listed. GitHub orders this list by each
+    // release's created_at, which is the date of its tagged commit rather than of publishing, so
+    // the order says nothing about versions: two releases tagged on the same commit tie, and a tag
+    // placed on an older commit sorts below releases older than it.
+    let best: UpdateInfo | null = null;
     for (const item of payload) {
       if (!item || typeof item !== "object") continue;
       const release = item as GithubRelease;
@@ -615,15 +692,18 @@ export class ExtensionUpdater {
       const version = extractReleaseVersion(release, asset, extensionPackageName);
       if (!version) continue;
 
-      return {
-        version,
-        asset,
-        releaseUrl: release.html_url,
-        releaseTitle: release.name?.trim() || release.tag_name,
-      };
+      if (!best || compareVersions(version, best.version) > 0) {
+        best = {
+          source: "github",
+          version,
+          asset,
+          releaseUrl: release.html_url,
+          releaseTitle: release.name?.trim() || release.tag_name,
+        };
+      }
     }
 
-    return null;
+    return best;
   }
 
   /**

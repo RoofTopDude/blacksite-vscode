@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import type { HookInput, HookOutcome, HookProvider } from "./hooks.js";
 import { browserTool, redactBrowserPayload } from "./browser/privacy.js";
+import type { HostedSearchPolicy, HostedSearchRoute } from "./browser/approval-types.js";
 import type { LocalRuntime, McpServer } from "@blacksite/local-runtime";
 import {
   WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, RESEARCH_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, DIAGRAM_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS, SKILL_TOOLS,
@@ -123,6 +124,7 @@ import {
   fillEmptyMessageContent,
   nonEmptyAssistantContent,
   normalizeForProvider,
+  resolveAnthropicNativeBlocks,
   safeRecentStart,
   sanitizeOversizedToolInputs,
   sanitizePendingGateForPersistence,
@@ -241,6 +243,14 @@ import {
 // Re-exported: the webview UI gates the new beta-feature toggles on these.
 export { recommendsRefusalFallback, supportsFastMode, supportsTaskBudget };
 import type { RetryPolicy } from "./provider-retry.js";
+import {
+  anthropicSearchResults,
+  anthropicWebSearchTool,
+  hostedSearchSummary,
+  openRouterCitations,
+  openRouterServerToolCall,
+  openRouterWebSearchTool,
+} from "./agent/hosted-search.js";
 import type {
   BedrockCredentials,
   BedrockConverseStreamEvent,
@@ -262,6 +272,14 @@ import type {
 
 const DEFAULT_MAX_TOKENS = 32768;
 const DEFAULT_MAX_ITER   = 40;
+/** How many times one reply may be resumed after the API pauses a long server-side search. */
+const MAX_PAUSE_TURN_RESUMES = 5;
+/** What one Anthropic response stream ended with, for the caller that may have to resume it. */
+interface AnthropicParseResult {
+  rawStopReason: string;
+  /** Every completed block in Anthropic wire form, in order: a paused reply's exact content. */
+  wireBlocks: Array<Record<string, unknown>>;
+}
 /**
  * Conservative context-window assumed when a model's real window is unknown (not in the
  * static table, absent from the live model catalog, and the catalog fetch failed). Its
@@ -1473,8 +1491,13 @@ export interface AgentSessionOptions {
   /** Chromium runner — enables browser_* tools via local Playwright instance. */
   browserRunner?: BrowserRunner;
   /** Backs the web_* research tools. `anchor` identifies the tool call on whose behalf the work
-   *  runs, so an approval it raises is shown as that call's own gate in the transcript. */
-  researchProvider?: { dispatch(action: string, payload: Record<string, unknown>, signal?: AbortSignal, anchor?: { toolCallId: string; toolName: string }): Promise<unknown> };
+   *  runs, so an approval it raises is shown as that call's own gate in the transcript.
+   *  `context` carries facts only the session knows (which provider route is running). */
+  researchProvider?: {
+    dispatch(action: string, payload: Record<string, unknown>, signal?: AbortSignal, anchor?: { toolCallId: string; toolName: string }, context?: { hostedRoute?: HostedSearchRoute }): Promise<unknown>;
+    /** The model provider's own web search, when it is on for this chat. */
+    hostedSearch?(): HostedSearchPolicy | undefined;
+  };
   /** Retained execution-run coordinator backing the sequence_* tool family. */
   sequenceProvider?: SequenceToolProvider;
   /** Parent-only supervised ticket-loop proposal and control surface. */
@@ -2844,9 +2867,15 @@ export class AgentSession {
     // before generating the rest of the turn), so it belongs before whatever came out of that
     // later generation.
     if (result.compactionBlock) assistantBlocks.push(result.compactionBlock);
-    for (const thinking of result.thinkingBlocks) assistantBlocks.push(thinking);
-    if (result.text) assistantBlocks.push({ type: "text", text: result.text });
-    for (const toolCall of result.toolCalls) assistantBlocks.push(toolCall);
+    if (result.orderedBlocks) {
+      // A hosted search sits between the reasoning and text around it; replayed anywhere else,
+      // the thinking it interleaves would be out of place.
+      assistantBlocks.push(...result.orderedBlocks);
+    } else {
+      for (const thinking of result.thinkingBlocks) assistantBlocks.push(thinking);
+      if (result.text) assistantBlocks.push({ type: "text", text: result.text });
+      for (const toolCall of result.toolCalls) assistantBlocks.push(toolCall);
+    }
     // An empty turn (the model returned nothing at all) must still occupy a slot in the
     // transcript: the empty-post-tool recovery below answers it with a continuation *user*
     // message, and dropping the assistant turn would leave two consecutive user messages —
@@ -2949,7 +2978,7 @@ export class AgentSession {
       const traceInput = format === "anthropic"
         ? {
             system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary, this.opts.cacheTtl),
-            messages: appendWorkspaceContextTail(stripUnsignedThinking(normalized), this._dynamicContext()),
+            messages: appendWorkspaceContextTail(stripUnsignedThinking(resolveAnthropicNativeBlocks(normalized, this.provider === "anthropic" && this._hostedSearch()?.provider === "anthropic")), this._dynamicContext()),
           }
         // toOpenAIMessages folds the system prompt in as the first message; also used as the
         // best available approximation for the Responses API path, which sends a differently
@@ -3031,6 +3060,15 @@ export class AgentSession {
       const thinkingBlocks: ReasoningBlock[] = [];
       const toolCalls: ToolUseBlock[] = [];
       let text = "";
+      // The same turn in arrival order. Used only when it holds provider-executed work, which
+      // must replay exactly where it happened; otherwise the canonical order below is kept.
+      const ordered: ContentBlock[] = [];
+      let pendingText = "";
+      let hasNative = false;
+      const flushText = (): void => {
+        if (pendingText) ordered.push({ type: "text", text: pendingText });
+        pendingText = "";
+      };
       let stopReason: AgentStopReason | undefined;
       let compactionBlock: CompactionBlock | undefined;
       let usage:
@@ -3044,6 +3082,7 @@ export class AgentSession {
         | undefined;
 
       const subscriptionContext = this.opts.subscriptionStream ? this._dynamicContext() : "";
+      const hostedForChatGpt = this.opts.subscriptionStream ? this._hostedSearch() : undefined;
       const stream = this.opts.subscriptionStream
         ? this.opts.subscriptionStream({
           model: this.opts.model,
@@ -3052,6 +3091,7 @@ export class AgentSession {
             : this.opts.systemPrompt,
           messages: [...normalizeForProvider(this.messages), ...(subscriptionContext ? [{ role: "user" as const, content: subscriptionContext }] : [])],
           tools: this._toolPlan().wire,
+          ...(hostedForChatGpt ? { hostedSearch: { scope: hostedForChatGpt.scope, allowedDomains: hostedForChatGpt.allowedDomains, deniedDomains: hostedForChatGpt.deniedDomains } } : {}),
           signal: this._signal,
           reasoningEffort: this.opts.reasoningEffort,
           // Codex names the tiers "priority" (Fast) and "default" (Standard); anything else
@@ -3080,18 +3120,30 @@ export class AgentSession {
           sink.emit(event);
           if (event.type === "text_delta") {
             text += event.text;
+            pendingText += event.text;
           } else if (event.type === "thinking_block") {
-            thinkingBlocks.push({
+            const block: ReasoningBlock = {
               type: "thinking",
               thinking: event.text,
               ...(event.signature ? { signature: event.signature } : {}),
               ...(event.encryptedContent ? { encryptedContent: event.encryptedContent } : {}),
               ...(event.reasoningItemId ? { reasoningItemId: event.reasoningItemId } : {}),
-            });
+            };
+            thinkingBlocks.push(block);
+            flushText();
+            ordered.push(block);
           } else if (event.type === "redacted_thinking_block") {
             thinkingBlocks.push({ type: "redacted_thinking", data: event.data });
+            flushText();
+            ordered.push({ type: "redacted_thinking", data: event.data });
           } else if (event.type === "tool_use_block") {
             toolCalls.push(event.block);
+            flushText();
+            ordered.push(event.block);
+          } else if (event.type === "provider_native_block") {
+            flushText();
+            ordered.push(event.block);
+            hasNative = true;
           } else if (event.type === "compaction_block") {
             compactionBlock = { type: "compaction", content: event.content };
           } else if (event.type === "stop_reason") {
@@ -3139,6 +3191,7 @@ export class AgentSession {
       } else if (toolCalls.length === 0 && normalizedStopReason === "tool_use") {
         normalizedStopReason = "protocol_violation";
       }
+      flushText();
       return {
         text,
         thinkingBlocks,
@@ -3151,6 +3204,7 @@ export class AgentSession {
         // truly blank one, so counting their reasoning as content disabled the recovery for them.
         empty: text.trim().length === 0 && toolCalls.length === 0 && !compactionBlock,
         compactionBlock,
+        ...(hasNative ? { orderedBlocks: ordered } : {}),
       };
     }
 
@@ -3373,7 +3427,11 @@ export class AgentSession {
     if (this.opts.sequenceProvider) all.push(...SEQUENCE_TOOLS);
     if (this.opts.loopProvider) all.push(...LOOP_TOOLS);
     if (this._browserToolsUsable()) all.push(...BROWSER_TOOLS);
-    if (this.opts.researchProvider) all.push(...RESEARCH_TOOLS);
+    // With the provider's own search on, its tool takes the web_search name and slot; offering
+    // ours as well would be two search tools, one of which only explains how to reach the other.
+    if (this.opts.researchProvider) {
+      all.push(...(this._hostedSearch() ? RESEARCH_TOOLS.filter((tool) => tool.name !== "web_search") : RESEARCH_TOOLS));
+    }
     // Integrations last, and only the configured ones.
     all.push(...this._advertisedServiceTools());
     // editor-backed edit tools only work with an editProvider — drop them otherwise.
@@ -3400,6 +3458,27 @@ export class AgentSession {
 
   private _onDemandTools(): boolean {
     return this.opts.toolLoading?.() === "on_demand";
+  }
+
+  /**
+   * The provider route this session runs on, when that route has a web search of its own:
+   * Claude through the Anthropic API, any model through OpenRouter, and ChatGPT sign-in. Claude on
+   * Bedrock has none (Converse or Mantle), and a custom base URL may be a gateway that rejects
+   * server tools, so neither is offered.
+   */
+  private _hostedSearchRoute(): HostedSearchRoute | undefined {
+    if (this.opts.subscriptionStream) return { provider: "chatgpt", label: "ChatGPT" };
+    const base = this.opts.baseUrl;
+    if (this.provider === "anthropic" && (!base || /^https:\/\/api\.anthropic\.com\//i.test(base))) return { provider: "anthropic", label: "Claude" };
+    if (this.provider === "openrouter" && (!base || /^https:\/\/openrouter\.ai\//i.test(base))) return { provider: "openrouter", label: "OpenRouter" };
+    return undefined;
+  }
+
+  /** The provider's search to declare on this request: on for this chat, on a route that has one. */
+  private _hostedSearch(): (HostedSearchPolicy & HostedSearchRoute) | undefined {
+    const route = this._hostedSearchRoute();
+    const policy = route ? this.opts.researchProvider?.hostedSearch?.() : undefined;
+    return route && policy ? { ...route, ...policy } : undefined;
   }
 
   /** The Anthropic API can defer definitions itself (see agent/tool-loading.ts). Direct API only:
@@ -3512,9 +3591,9 @@ export class AgentSession {
   }
 
   /** Anthropic-format history for the wire, with tool_search results expanded natively. */
-  private _anthropicWireMessages(sentToolNames: ReadonlySet<string>): unknown[] {
+  private _anthropicWireMessages(sentToolNames: ReadonlySet<string>, expandNative = false): unknown[] {
     const messages = appendWorkspaceContextTail(
-      withRollingCacheBreakpoint(stripUnsignedThinking(normalizeForProvider(this.messages)), this.opts.cacheTtl),
+      withRollingCacheBreakpoint(stripUnsignedThinking(resolveAnthropicNativeBlocks(normalizeForProvider(this.messages), expandNative)), this.opts.cacheTtl),
       this._dynamicContext(),
     );
     return this._nativeToolSearch()
@@ -4554,6 +4633,19 @@ export class AgentSession {
               toolName: ev.block.name,
               inputPreview: browserTool(ev.block.name) ? "Browser/research parameters (exact values shown only during review)" : JSON.stringify(ev.block.input).slice(0, 120),
               input: (browserTool(ev.block.name) ? redactBrowserPayload(ev.block.input) : ev.block.input) as Record<string, unknown>,
+            };
+          } else if (ev.type === "hosted_search") {
+            const label = this._hostedSearchRoute()?.label ?? this.provider;
+            const input = { query: ev.query };
+            yield { type: "tool_call_start", toolCallId: ev.id, toolName: "web_search", inputPreview: JSON.stringify(input).slice(0, 120), input };
+            yield {
+              type: "tool_call_result",
+              toolCallId: ev.id,
+              toolName: "web_search",
+              ok: !ev.error,
+              summary: hostedSearchSummary(label, ev.results.length, ev.error),
+              result: ev.error ? { ok: false, hosted: label, query: ev.query, error: ev.error } : { ok: true, hosted: label, query: ev.query, results: ev.results },
+              elapsedMs: 0,
             };
           } else if (ev.type === "usage_update") {
             this._recordUsage(ev);
@@ -5684,7 +5776,7 @@ export class AgentSession {
                   }
                 }
               } else if (runtimeType.startsWith("research.") && this.opts.researchProvider) {
-                result = await this.opts.researchProvider.dispatch(runtimeType.slice("research.".length), payload, this._signal, { toolCallId: tc.id, toolName: tc.name });
+                result = await this.opts.researchProvider.dispatch(runtimeType.slice("research.".length), payload, this._signal, { toolCallId: tc.id, toolName: tc.name }, { hostedRoute: this._hostedSearchRoute() });
               } else if (runtimeType.startsWith("browser.") && this.opts.browserRunner) {
                 const browserAction = runtimeType.slice("browser.".length);
                 const urlValidation = validateBrowserActionUrls(browserAction, payload);
@@ -6070,7 +6162,7 @@ export class AgentSession {
 
   /** Build the Anthropic wire tool list — strict-marked where the schema qualifies, unless the
    *  session already learned strict isn't accepted — with the trailing cache breakpoint. */
-  private _buildAnthropicWireTools(plan = this._toolPlan()): Array<Record<string, unknown>> {
+  private _buildAnthropicWireTools(plan = this._toolPlan(), hosted?: HostedSearchPolicy): Array<Record<string, unknown>> {
     const tools = this._strictToolsUnsupported
       ? plan.wire.map(({ name, description, input_schema }) =>
           ({ name, description, input_schema }) as Record<string, unknown>)
@@ -6086,6 +6178,9 @@ export class AgentSession {
     // four breakpoints a request may carry; see withRollingCacheBreakpoint for the other two.
     const lastLoaded = tools.map((tool) => tool["defer_loading"] !== true).lastIndexOf(true);
     if (lastLoaded >= 0) tools[lastLoaded]!["cache_control"] = cacheControlFor(this.opts.cacheTtl);
+    // After the breakpoint: the search tool comes and goes with consent, and keeping it out of the
+    // cached prefix means switching it on does not rewrite every tool schema at the write premium.
+    if (hosted) tools.push(anthropicWebSearchTool(hosted));
     return tools;
   }
 
@@ -6104,12 +6199,13 @@ export class AgentSession {
 
     const makeBody = (): Record<string, unknown> => {
       const toolPlan = this._toolPlan();
+      const hosted = this._hostedSearch();
       const body: Record<string, unknown> = {
         model: this.opts.model,
         max_tokens: plan.maxTokens,
         system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary, this.opts.cacheTtl),
-        messages: this._anthropicWireMessages(new Set(toolPlan.wire.map((tool) => tool.name))),
-        tools: this._buildAnthropicWireTools(toolPlan),
+        messages: this._anthropicWireMessages(new Set(toolPlan.wire.map((tool) => tool.name)), hosted?.provider === "anthropic"),
+        tools: this._buildAnthropicWireTools(toolPlan, hosted?.provider === "anthropic" ? hosted : undefined),
         stream: true,
       };
       if (plan.temperature !== undefined) body["temperature"] = plan.temperature;
@@ -6164,7 +6260,23 @@ export class AgentSession {
     }
     if (!response.body) throw new Error("No response body from Anthropic");
 
-    yield* this._parseAnthropicSSE(response.body);
+    let parsed = yield* this._parseAnthropicSSE(response.body);
+    // A long server-side search can pause the turn. The API continues it when the paused content
+    // comes back as the final assistant message, unchanged; what streams next is the rest of the
+    // same reply, so it lands in the same turn here too.
+    const paused: Array<Record<string, unknown>> = [];
+    for (let resumes = 0; parsed.rawStopReason === "pause_turn" && resumes < MAX_PAUSE_TURN_RESUMES; resumes++) {
+      paused.push(...parsed.wireBlocks);
+      const resumed = makeBody();
+      body = { ...resumed, messages: [...(resumed["messages"] as unknown[]), { role: "assistant", content: [...paused] }] };
+      response = yield* this._fetchWithRetry("Anthropic", doFetch);
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new Error(`Anthropic ${response.status}: ${text.slice(0, 400)}`);
+      }
+      if (!response.body) throw new Error("No response body from Anthropic");
+      parsed = yield* this._parseAnthropicSSE(response.body);
+    }
   }
 
   /**
@@ -6189,7 +6301,7 @@ export class AgentSession {
     return { input, output };
   }
 
-  private async *_parseAnthropicSSE(body: ReadableStream<Uint8Array>): AsyncGenerator<ProviderTurnStreamEvent> {
+  private async *_parseAnthropicSSE(body: ReadableStream<Uint8Array>): AsyncGenerator<ProviderTurnStreamEvent, AnthropicParseResult> {
     const reader = response_body_reader(body, { idleMs: STREAM_IDLE_TIMEOUT_MS });
     const textAcc     = new Map<number, string>();
     const thinkingAcc = new Map<number, string>();
@@ -6197,6 +6309,14 @@ export class AgentSession {
     const redactedAcc = new Map<number, string>();
     const jsonAcc     = new Map<number, string>();
     const blockMeta   = new Map<number, { type: string; id: string; name: string }>();
+    // Provider-executed blocks (server_tool_use, web_search_tool_result) exactly as sent, the query
+    // behind each server call, and every completed block in wire form: what a paused turn must
+    // send back unchanged to be continued.
+    const nativeAcc   = new Map<number, Record<string, unknown>>();
+    const citationAcc = new Map<number, unknown[]>();
+    const searchQueries = new Map<string, string>();
+    const wireBlocks: Array<Record<string, unknown>> = [];
+    let rawStop = "";
     let inputTokens = 0;
     let cacheReadTokens = 0;
     let cacheWriteTokens = 0;
@@ -6238,6 +6358,15 @@ export class AgentSession {
         // at all, so it was dropped, and the assistant turn it belonged to replayed leading with
         // tool_use instead of its reasoning — a 400 on the next request.
         if (cbType === "redacted_thinking") redactedAcc.set(idx, String(cb["data"] ?? ""));
+        // The provider's own search. The call's input streams in like a tool_use's; its result
+        // block arrives complete, encrypted content and all, and is kept byte for byte.
+        if (cbType === "server_tool_use") {
+          jsonAcc.set(idx, "");
+          nativeAcc.set(idx, { ...cb });
+          yield { type: "provider_activity", phase: "tool_input", message: `${this.provider} is searching the web` };
+        } else if (cbType !== "tool_result" && cbType.endsWith("_tool_result")) {
+          nativeAcc.set(idx, { ...cb });
+        }
         // A refusal-fallback switch point (only appears when the session opted into
         // server-side fallbacks — see resolveAnthropicBetaExtras). Purely informational: the
         // block itself is an "ignored audit marker" per Anthropic's docs, so it needs no
@@ -6268,6 +6397,9 @@ export class AgentSession {
           signatureAcc.set(idx, (signatureAcc.get(idx) ?? "") + String(delta["signature"] ?? ""));
         } else if (dType === "input_json_delta") {
           jsonAcc.set(idx, (jsonAcc.get(idx) ?? "") + String(delta["partial_json"] ?? ""));
+        } else if (dType === "citations_delta") {
+          // Kept only for continuing a paused turn, which must resend the text as it came.
+          if (delta["citation"]) citationAcc.set(idx, [...(citationAcc.get(idx) ?? []), delta["citation"]]);
         } else if (dType === "compaction_delta") {
           // Server-side compaction (beta compact-2026-01-12) is documented as non-incremental —
           // the full summary arrives in exactly one delta event, unlike text/thinking which
@@ -6285,6 +6417,7 @@ export class AgentSession {
           let input: Record<string, unknown> = {};
           try { input = JSON.parse(jsonAcc.get(idx) ?? "{}") as Record<string, unknown>; } catch { /* ignore */ }
           yield { type: "tool_use_block", block: { type: "tool_use", id: meta.id, name: meta.name, input } };
+          wireBlocks.push({ type: "tool_use", id: meta.id, name: meta.name, input });
         } else if (meta?.type === "thinking") {
           const thinkingText = thinkingAcc.get(idx) ?? "";
           const signature = signatureAcc.get(idx) || undefined;
@@ -6292,14 +6425,42 @@ export class AgentSession {
           // streams thinking blocks whose text is empty — but the block is still a structural part
           // of the turn, and an assistant turn that made tool calls must lead with its reasoning on
           // replay. Requiring text here silently dropped it and earned a 400 on the next request.
-          if (thinkingText || signature) yield { type: "thinking_block", text: thinkingText, signature };
+          if (thinkingText || signature) {
+            yield { type: "thinking_block", text: thinkingText, signature };
+            wireBlocks.push({ type: "thinking", thinking: thinkingText, ...(signature ? { signature } : {}) });
+          }
         } else if (meta?.type === "redacted_thinking") {
           const data = redactedAcc.get(idx) ?? "";
-          if (data) yield { type: "redacted_thinking_block", data };
+          if (data) {
+            yield { type: "redacted_thinking_block", data };
+            wireBlocks.push({ type: "redacted_thinking", data });
+          }
+        } else if (meta?.type === "text") {
+          // The API rejects an empty text block, so one that never received a delta is left out.
+          const citations = citationAcc.get(idx);
+          const blockText = textAcc.get(idx) ?? "";
+          if (blockText) wireBlocks.push({ type: "text", text: blockText, ...(citations?.length ? { citations } : {}) });
+        } else if (meta?.type === "server_tool_use") {
+          let input: Record<string, unknown> = {};
+          try { input = JSON.parse(jsonAcc.get(idx) || "{}") as Record<string, unknown>; } catch { /* keep {} */ }
+          const block: Record<string, unknown> = { ...nativeAcc.get(idx), input };
+          if (typeof input["query"] === "string") searchQueries.set(String(block["id"] ?? ""), input["query"]);
+          wireBlocks.push(block);
+          yield { type: "provider_native_block", block: { type: "provider_native", provider: "anthropic", block } };
+        } else if (meta && nativeAcc.has(idx)) {
+          const block = nativeAcc.get(idx)!;
+          wireBlocks.push(block);
+          yield { type: "provider_native_block", block: { type: "provider_native", provider: "anthropic", block } };
+          if (meta.type === "web_search_tool_result") {
+            const id = String(block["tool_use_id"] ?? "");
+            const { results, error } = anthropicSearchResults(block["content"]);
+            yield { type: "hosted_search", id, query: searchQueries.get(id) ?? this._priorSearchQuery(id), results, ...(error ? { error } : {}) };
+          }
         }
       } else if (evType === "message_delta") {
         const delta = ev["delta"] as Record<string, unknown>;
         const rawStopReason = String(delta["stop_reason"] ?? "end_turn");
+        rawStop = rawStopReason;
         // stop_details is populated only on a refusal, and rides the same delta object as
         // stop_reason/stop_sequence. Surface it as a preceding notice so the generic "declined
         // to complete this response" diagnostic gets a specific category/explanation in front
@@ -6343,6 +6504,26 @@ export class AgentSession {
     if (inputTokens > 0 || outputTokens > 0) {
       yield { type: "usage_update", inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
     }
+    return { rawStopReason: rawStop, wireBlocks };
+  }
+
+  /**
+   * The query of a search the model asked for in an earlier response. A server call made in the
+   * same parallel group as a client tool runs only on the next request, so its result arrives in
+   * a later response than the call that named the query.
+   */
+  private _priorSearchQuery(id: string): string {
+    for (let i = this.messages.length - 1; i >= 0; i--) {
+      const content = this.messages[i]!.content;
+      if (typeof content === "string") continue;
+      for (const block of content) {
+        if (block.type === "provider_native" && block.block["type"] === "server_tool_use" && block.block["id"] === id) {
+          const input = block.block["input"] as Record<string, unknown> | undefined;
+          return typeof input?.["query"] === "string" ? input["query"] : "";
+        }
+      }
+    }
+    return "";
   }
 
   // ── Bedrock (Converse) streaming ───────────────────────────────────────────
@@ -6667,10 +6848,15 @@ export class AgentSession {
     const explicitCache = this.provider === "openai" && openAISupportsExplicitPromptCache(this.opts.model);
     if (explicitCache) msgs = withOpenAICacheBreakpoints(msgs);
     msgs = appendOpenAIWorkspaceContextTail(msgs, this._dynamicContext());
-    const tools = this._toolPlan().wire.map(t => ({
+    const tools: Array<Record<string, unknown>> = this._toolPlan().wire.map(t => ({
       type: "function" as const,
       function: { name: t.name, description: t.description, parameters: t.input_schema },
     }));
+    // OpenRouter's server tool: the model decides when to search, OpenRouter runs it inside this
+    // request, and the sources come back as url_citation annotations.
+    const hosted = this.provider === "openrouter" ? this._hostedSearch() : undefined;
+    const hostedHere = hosted?.provider === "openrouter";
+    if (hosted && hostedHere) tools.push(openRouterWebSearchTool(hosted));
 
     const extraHeaders: Record<string, string> = {};
     if (this.provider === "openrouter") {
@@ -6857,6 +7043,9 @@ export class AgentSession {
     // (which the old index-keyed map collapsed into one corrupt call) — see the accumulator.
     const toolCalls = new OpenAIToolCallAccumulator();
     let stopReason: string | undefined;
+    // Sources OpenRouter attached to the reply, and the search calls it reported itself.
+    let citations: unknown[] = [];
+    const reportedSearches = new Set<string>();
     let oaiInputTokens = 0;
     let oaiOutputTokens = 0;
     let oaiCachedTokens = 0;
@@ -6931,6 +7120,18 @@ export class AgentSession {
       const content = delta["content"];
       if (typeof content === "string" && content) yield { type: "text_delta", text: content };
 
+      if (hostedHere) {
+        const annotations = delta["annotations"];
+        if (Array.isArray(annotations)) citations = citations.concat(annotations);
+        const details = delta["reasoning_details"];
+        for (const detail of Array.isArray(details) ? details : []) {
+          const call = openRouterServerToolCall(detail);
+          if (!call || reportedSearches.has(call.id)) continue;
+          reportedSearches.add(call.id);
+          yield { type: "hosted_search", id: call.id, query: call.query, results: call.results.length ? call.results : openRouterCitations(citations) };
+        }
+      }
+
       const toolCallDeltas = delta["tool_calls"] as Array<Record<string, unknown>> | undefined;
       if (toolCallDeltas) {
         yield { type: "provider_activity", phase: "tool_input", message: `${this.provider} is preparing tool calls` };
@@ -6940,9 +7141,26 @@ export class AgentSession {
 
     if (stopReason === undefined) throw new ProviderStreamError(`${this.provider} stream ended before a finish reason`, true);
 
-    // Emit reassembled tool calls
-    for (const block of toolCalls.finish()) {
+    // Emit reassembled tool calls. With OpenRouter's search on, a web_search call is the server
+    // tool, already run — never ours to execute (our own web_search is off the list then).
+    const finished = toolCalls.finish();
+    let serverSearches = 0;
+    for (const block of finished) {
+      if (hostedHere && block.name === "web_search") {
+        serverSearches++;
+        if (!reportedSearches.has(block.id)) {
+          reportedSearches.add(block.id);
+          yield { type: "hosted_search", id: block.id, query: String(block.input["query"] ?? ""), results: openRouterCitations(citations) };
+        }
+        continue;
+      }
       yield { type: "tool_use_block", block };
+    }
+    if (serverSearches > 0 && serverSearches === finished.length && stopReason === "tool_calls") stopReason = "stop";
+    // No call was reported, but the reply cites what it found: one row for the search's sources.
+    if (hostedHere && reportedSearches.size === 0) {
+      const sources = openRouterCitations(citations);
+      if (sources.length) yield { type: "hosted_search", id: `openrouter-search-${this.sessionId}-${this._iteration}`, query: "", results: sources };
     }
 
     yield { type: "stop_reason", reason: normalizeOpenAIStopReason(stopReason) };

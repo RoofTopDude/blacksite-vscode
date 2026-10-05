@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ContinuationModel } from "../continuation/continuation-model.js";
-import { BrowserPolicyError, cancelled, type BrowserAnchor, type BrowserAudit, type BrowserDecision, type BrowserDelegation, type BrowserField, type BrowserProposal } from "./approval-types.js";
+import { BrowserPolicyError, cancelled, type BrowserAnchor, type BrowserAudit, type BrowserDecision, type BrowserDelegation, type BrowserField, type BrowserProposal, type HostedSearchRoute } from "./approval-types.js";
 import { baseDomain, DomainPolicy, redactedUrl, researchUrl } from "./domain-policy.js";
 import { reviewInput, withinDelegation } from "./input-reviewer.js";
 
@@ -36,7 +36,22 @@ export class BrowserApprovalCoordinator {
     const p = { ...structuredClone(input), id: randomUUID(), session: this.session, version: this.policy.version, expiresAt: Date.now() + 300_000 };
     return Object.freeze({ ...p, digest: createHash("sha256").update(JSON.stringify(p)).digest("hex") });
   }
+  /**
+   * Ask once whether the model provider's own search may run for this chat, and return the
+   * scope the human chose. Always a human decision: a delegated reviewer only ever clears input
+   * values (see withinDelegation), and turning on a billed provider feature is not one of those.
+   */
+  async hostedSearch(route: HostedSearchRoute, purpose: string, signal?: AbortSignal, anchor?: BrowserAnchor): Promise<"session" | "global"> {
+    const { decision } = await this.decide({
+      kind: "search", operation: "hosted_search", origin: "", url: "", title: route.label, document: "", purpose, fields: [],
+      ...(anchor ? { anchor } : {}),
+    }, signal);
+    return decision === "global" ? "global" : "session";
+  }
   async approve(input: ProposalInput, signal?: AbortSignal): Promise<BrowserProposal> {
+    return (await this.decide(input, signal)).proposal;
+  }
+  private async decide(input: ProposalInput, signal?: AbortSignal): Promise<{ proposal: BrowserProposal; decision: BrowserDecision["decision"] }> {
     cancelled(signal);
     let proposal = this.proposal(input);
     const epoch = this.epoch;
@@ -57,7 +72,10 @@ export class BrowserApprovalCoordinator {
     if (!decision) decision = await this.host.ask(structuredClone(proposal), signal);
     assertCurrent();
     if (decision.id !== proposal.id) throw new BrowserPolicyError("stale_target", "Approval identity does not match.");
-    const allowed = proposal.kind === "domain" ? ["page", "session", "workspace", "global"] : proposal.kind === "input" ? ["allow", "edit"] : ["allow"];
+    const allowed = proposal.kind === "domain" ? ["page", "session", "workspace", "global"]
+      : proposal.kind === "input" ? ["allow", "edit"]
+      : proposal.kind === "search" ? ["session", "global"]
+      : ["allow"];
     if (!allowed.includes(decision.decision)) {
       this.host.audit?.({ id: proposal.id, digest: proposal.digest, kind: proposal.kind, operation: proposal.operation, approver, decision: "deny", reason, elapsedMs: Date.now() - started });
       throw new BrowserPolicyError("denied", "Browser proposal denied. Do not retry through another tool.");
@@ -78,7 +96,7 @@ export class BrowserApprovalCoordinator {
       for (const target of targets) this.policy.grant(target, decision.decision === "page" ? "page" : "session");
     }
     this.host.audit?.({ id: proposal.id, digest: proposal.digest, kind: proposal.kind, operation: proposal.operation, approver, decision: "allow", reason, model: approver === "reviewer" ? this.delegation?.model : undefined, elapsedMs: Date.now() - started });
-    return proposal;
+    return { proposal, decision: decision.decision };
   }
   /**
    * Authorize one or more research URLs with a single human decision.

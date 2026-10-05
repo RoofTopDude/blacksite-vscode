@@ -3,7 +3,7 @@ import { onMessage, post } from "./bridge";
 import { nextPendingSeq, type BrowserGate } from "./chat-model";
 import type { ResearchUiState } from "../../../browser/approval-types";
 
-const empty = { allowedDomains: [], deniedDomains: [], unknownDomainPolicy: "ask" as const, searchProvider: "none" as const };
+const empty = { allowedDomains: [], deniedDomains: [], unknownDomainPolicy: "ask" as const, searchProvider: "none" as const, searchScope: "any" as const };
 let state: ResearchUiState = { policy: empty, configured: empty, keyConfigured: false, audits: [], pending: [] };
 let gates: BrowserGate[] = [];
 /** Arrival order per proposal id, so re-sending the same pending set (every audit entry and

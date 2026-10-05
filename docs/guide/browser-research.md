@@ -1,6 +1,6 @@
 # Browser & Research
 
-Open **Settings → Agent & delegation → Browser & Research**. Confirm the allowed and denied source hostnames and, optionally, Brave as the search provider. The Brave key lives in VS Code SecretStorage. Direct `web_read` needs no search key.
+Open **Settings → Agent & delegation → Browser & Research**. Confirm the allowed and denied source hostnames and, optionally, a search provider: your model provider's built-in search, or Brave with your own key. The Brave key lives in VS Code SecretStorage. Direct `web_read` needs no search setup.
 
 An allowed hostname includes its dot-delimited descendants. `docs.example.com` does not authorize `example.com`. Public suffixes, shared-hosting suffixes such as `github.io`, wildcards, paths and IP literals are rejected. Names are normalized to lowercase ASCII, including internationalized names. Denies override every grant. Workspace lists replace user lists; the panel shows the effective policy. A user-level grant can therefore be shadowed by a workspace list.
 
@@ -12,7 +12,23 @@ Editing settings files can restrict access but cannot create new grants, remove 
 | --- | --- |
 | `web_request_access` | Requests human approval for up to ten candidate URLs, with a purpose. Choices are page once, domain for this session, always in workspace, always for user, or deny. URLs are redacted in the card. |
 | `web_read` | Retrieves HTML/plain text using HTTPS on port 443. Returns source ID, requested/final citation URLs, title, retrieval time, bounded text, candidate links and `nextOffset`. Links are not automatically fetched. |
-| `web_search` | Sends an exact reviewed query to the configured Brave API, including source restrictions. Returns only snippets whose domains independently pass the local policy. An empty source list never becomes unrestricted search. |
+| `web_search` | Searches the web. With nothing set up, the first call asks once whether your model provider's built-in search may run (see below). With Brave, sends an exact reviewed query including source restrictions and returns only snippets whose domains pass the local policy. |
+
+## Web search
+
+Search works out of the box on three routes, using the search your model provider already runs:
+
+| Route | What runs the search | Cost |
+| --- | --- | --- |
+| Claude through the Anthropic API | Anthropic's web search, on Anthropic's servers | $10 per 1,000 searches, plus result tokens, on your Anthropic account |
+| OpenRouter (any model) | The model's own search where it has one, otherwise Exa | About $0.005–$0.015 per search, from your OpenRouter credits |
+| ChatGPT sign-in | OpenAI's cached web index; no page is fetched live | Counts toward your ChatGPT plan's usage |
+
+The first time the agent searches in a chat, a card asks whether to let the provider search. **Allow this session** lasts until the chat changes or you revoke session grants; **Always allow** saves the choice as `blacksite.research.searchProvider: "hosted"` in your user settings. After that the provider's tool replaces Blacksite's `web_search`: the model decides when to search, the provider runs it inside the reply, and each search appears in the transcript as a finished `web_search` row with its results. Claude and OpenRouter make at most five searches per model request.
+
+**Search results from** decides where results may come from. *Any site except denied domains* is the default; ChatGPT search cannot exclude sites, so denied domains may still appear in its results. *Approved domains only* limits results to the allowed and session-approved sites, and search stays off until at least one site is approved. Either way, reading a full page with `web_read` still asks per site.
+
+Because the provider runs these searches, Blacksite cannot review the query before it is sent the way it does for Brave. The query goes to the provider that already has the conversation. Claude on Bedrock, direct OpenAI, and a custom Anthropic or OpenRouter endpoint have no built-in search here; use Brave or name sources for `web_read`. Claude's and ChatGPT's search results are kept in the transcript so the model can refer back to them in later steps; OpenRouter's are not, so the model keeps only what it wrote about them. Only the provider that produced the results reads them back: switching providers mid-chat keeps the model's answers, not the raw results.
 
 Source content is untrusted evidence, never an instruction channel. Cite the returned URLs and distinguish search snippets from pages actually retrieved. URL query values also require exact input review, including query-bearing redirects; domain approval alone does not approve transmitting those values. GET requests can have side effects on poorly designed services.
 

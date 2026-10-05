@@ -531,7 +531,7 @@ export function toResponsesTools(
  * compatible paths do not round-trip foreign thinking" behavior, narrowed to recognize this
  * path's own reasoning items as the one exception worth replaying.
  */
-export function toResponsesInputItems(messages: AgentMessage[]): Array<Record<string, unknown>> {
+export function toResponsesInputItems(messages: AgentMessage[], options: { codexNative?: boolean } = {}): Array<Record<string, unknown>> {
   const items: Array<Record<string, unknown>> = [];
   // Same defense-in-depth as toOpenAIMessages: never emit a function_call_output whose call_id
   // wasn't actually emitted by a function_call item in this same converted array, and never
@@ -583,6 +583,13 @@ export function toResponsesInputItems(messages: AgentMessage[]): Array<Record<st
           summary,
           ...(block.encryptedContent ? { encrypted_content: block.encryptedContent } : {}),
         });
+      }
+      // A Codex search ran after the reasoning and before the reply it informed. Only Codex can
+      // read these items back; the direct Responses path never asks for them.
+      if (options.codexNative) {
+        for (const block of blocks) {
+          if (block.type === "provider_native" && block.provider === "codex") items.push(structuredClone(block.block));
+        }
       }
       const textBlocks = blocks.filter((b): b is TextBlock => b.type === "text");
       if (textBlocks.length) items.push({ type: "message", role: "assistant", content: textBlocks.map((t) => t.text).join("\n") });

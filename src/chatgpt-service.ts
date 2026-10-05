@@ -1,6 +1,8 @@
 import { mkdir } from "node:fs/promises";
 import type { AgentMessage, ProviderTurnStreamEvent, ToolUseBlock } from "./agent-loop-contract.js";
 import { toResponsesInputItems } from "./agent/wire/openai.js";
+import { codexSearchResults, codexWebSearchConfig, isCodexSearchCell } from "./agent/hosted-search.js";
+import type { HostedSearchPolicy } from "./browser/approval-types.js";
 import { CodexAppServer, type CodexMessage } from "./codex-app-server.js";
 import type { ChatGptLimit, ChatGptState } from "./chatgpt-types.js";
 import { modelFamilySupportsVision, type ModelInfo } from "./model-fetcher.js";
@@ -18,6 +20,8 @@ export interface SubscriptionRequest {
   /** A one-shot helper call (compaction, summaries): shallow reasoning, no reasoning summary,
    *  and no reasoning state carried to or from the conversation. */
   utility?: boolean;
+  /** Codex's own web search, when it is on for this chat (ResearchHost decides). */
+  hostedSearch?: HostedSearchPolicy;
 }
 export type SubscriptionStream = (request: SubscriptionRequest) => AsyncGenerator<ProviderTurnStreamEvent>;
 
@@ -92,13 +96,13 @@ function execSource(tool: string, args: unknown): string {
 export function toCodexInputItems(messages: AgentMessage[], continuity: boolean): Array<Record<string, unknown>> {
   const codeCalls = new Set<string>();
   const items: Array<Record<string, unknown>> = [];
-  const source = toResponsesInputItems(messages);
+  const source = toResponsesInputItems(messages, { codexNative: continuity });
   source.forEach((item, index) => {
     if (item.type === "reasoning") {
       // A reasoning item is only valid in front of what it led to. Compaction or a cancelled tool
       // can leave one with nothing after it, and the API rejects that, so it is left out.
       const next = source[index + 1];
-      const leadsSomewhere = next?.type === "function_call" || (next?.type === "message" && next.role === "assistant");
+      const leadsSomewhere = next?.type === "function_call" || next?.type === "custom_tool_call" || (next?.type === "message" && next.role === "assistant");
       if (continuity && leadsSomewhere) items.push(item);
     } else if (item.type === "function_call") {
       const callId = String(item.call_id ?? "");
@@ -370,13 +374,20 @@ export class ChatGptService {
     const tools = request.tools.map((tool) => ({ type: "function", name: `blacksite_${tool.name}`, description: tool.description, inputSchema: tool.input_schema }));
     const effort = resolveCodexEffort(request.utility ? "low" : request.reasoningEffort, info?.reasoningEfforts);
     const summary = request.utility ? "none" : this.summaryRejected.has(request.model) ? undefined : options.reasoningSummary;
-    const config: Record<string, unknown> = { "features.shell_tool": false, "features.unified_exec": false, "features.apps": false, "features.multi_agent": false, web_search: "disabled", project_doc_max_bytes: 0 };
+    const config: Record<string, unknown> = {
+      "features.shell_tool": false, "features.unified_exec": false, "features.apps": false, "features.multi_agent": false, project_doc_max_bytes: 0,
+      // Codex's own search stays off unless the user turned it on for this chat; a helper call
+      // never searches.
+      ...codexWebSearchConfig(request.utility ? undefined : request.hostedSearch),
+    };
     if (options.extendedContext && !request.utility) config.model_context_window = CODEX_EXTENDED_WINDOW;
     const result = await this.startThread({
       model: request.model || null, modelProvider: "openai", ephemeral: true,
       cwd: this.home, environments: [], sandbox: "read-only", approvalPolicy: "never",
       baseInstructions: request.systemPrompt,
-      developerInstructions: "Use only the blacksite_ tools. Blacksite executes tools and owns the conversation history.",
+      developerInstructions: config["web_search"] === "cached"
+        ? "Use only the blacksite_ tools and web search. Blacksite executes the blacksite_ tools and owns the conversation history."
+        : "Use only the blacksite_ tools. Blacksite executes tools and owns the conversation history.",
       dynamicTools: tools,
       ...(request.serviceTier ? { serviceTier: request.serviceTier } : {}),
       config,
@@ -421,6 +432,20 @@ export class ChatGptService {
       this.activeTurns.set(threadId, turnId);
       const reasoningSeen = new Set<string>();
       let thinking = false;
+      // A code-mode search is an `exec` cell that ran only the built-in web tool. Its output holds
+      // the results, so the pair is kept for the next round's replay once the output arrives.
+      const searchCells = new Map<string, Record<string, unknown>>();
+      // Codex echoes the injected history back as rawResponseItem/completed events. Those items are
+      // already in the transcript; recording them again would replay every earlier search twice
+      // the next round, and twice more the round after.
+      const replayedCalls = new Set<string>();
+      for (const message of request.messages) {
+        if (typeof message.content === "string") continue;
+        for (const block of message.content) {
+          if (block.type === "thinking" && block.reasoningItemId) reasoningSeen.add(block.reasoningItemId);
+          if (block.type === "provider_native" && block.provider === "codex" && typeof block.block["call_id"] === "string") replayedCalls.add(block.block["call_id"]);
+        }
+      }
       while (!completed && !call) {
         if (failure) throw failure;
         const message = queue.shift();
@@ -434,7 +459,7 @@ export class ChatGptService {
           // Each summary part is its own titled paragraph; without a break they run together.
           if (thinking) yield { type: "thinking_delta", text: "\n\n" };
         } else if (message.method === "rawResponseItem/completed") {
-          const raw = p.item as { type?: string; id?: unknown; summary?: unknown; encrypted_content?: unknown } | undefined;
+          const raw = p.item as { type?: string; id?: unknown; summary?: unknown; encrypted_content?: unknown; call_id?: unknown; name?: unknown; input?: unknown; output?: unknown } | undefined;
           if (raw?.type === "reasoning" && typeof raw.id === "string" && !reasoningSeen.has(raw.id)) {
             reasoningSeen.add(raw.id);
             const encryptedContent = typeof raw.encrypted_content === "string" && raw.encrypted_content ? raw.encrypted_content : undefined;
@@ -444,7 +469,22 @@ export class ChatGptService {
             if (text && !thinking) { thinking = true; yield { type: "thinking_delta", text }; }
             // Replaying the item is what keeps the model from starting its reasoning over after a tool call.
             if (text || encryptedContent) yield { type: "thinking_block", text, encryptedContent, reasoningItemId: raw.id };
+          } else if (raw?.type === "custom_tool_call" && request.hostedSearch && typeof raw.call_id === "string" && !replayedCalls.has(raw.call_id) && isCodexSearchCell(raw.input)) {
+            searchCells.set(raw.call_id, { type: "custom_tool_call", call_id: raw.call_id, name: raw.name, input: raw.input });
+          } else if (raw?.type === "custom_tool_call_output" && typeof raw.call_id === "string" && searchCells.has(raw.call_id)) {
+            // Without this pair the next round's fresh thread has the model's answer but not what
+            // it read, and a code-mode model searches again for what it already found.
+            const cell = searchCells.get(raw.call_id)!;
+            searchCells.delete(raw.call_id);
+            yield { type: "provider_native_block", block: { type: "provider_native", provider: "codex", block: cell } };
+            yield { type: "provider_native_block", block: { type: "provider_native", provider: "codex", block: { type: "custom_tool_call_output", call_id: raw.call_id, output: raw.output } } };
           }
+        } else if (message.method === "item/completed" && (p.item as { type?: string } | undefined)?.type === "webSearch") {
+          const item = p.item as { id?: unknown; query?: unknown; action?: { query?: unknown; queries?: unknown } | null; results?: unknown };
+          const query = typeof item.query === "string" && item.query ? item.query
+            : typeof item.action?.query === "string" ? item.action.query
+            : Array.isArray(item.action?.queries) ? item.action.queries.filter((q): q is string => typeof q === "string").join("; ") : "";
+          yield { type: "hosted_search", id: String(item.id ?? `codex-search-${Date.now()}`), query, results: codexSearchResults(item.results) };
         } else if (message.method === "model/rerouted") {
           yield { type: "notice", level: "warn", message: `ChatGPT answered with ${String(p.toModel ?? "another model")} instead of ${String(p.fromModel ?? "the selected model")}${p.reason === "highRiskCyberActivity" ? " because the request was flagged as high-risk cyber activity" : ""}.` };
         } else if (message.method === "warning") {

@@ -31,7 +31,7 @@ see the affected territory on the map.
 
 **Map Notes** — durable annotations on files and relationships, with git history and diffs.
 
-**Browser & Research** — domain-scoped HTTPS reads and Brave search, exact-value input review, structured local-browser forms and optional independent reviewer delegation. Public Chromium rendering remains unavailable pending a proven network boundary. [Setup and limitations](docs/guide/browser-research.md).
+**Browser & Research** — web search through your model provider's built-in search (Claude, OpenRouter, ChatGPT) or Brave, domain-scoped HTTPS reads, exact-value input review, structured local-browser forms and optional independent reviewer delegation. Public Chromium rendering remains unavailable pending a proven network boundary. [Setup and limitations](docs/guide/browser-research.md).
 
 **Execution Runs** — retained, seekable evidence for bounded browser and local-tool sequences.
 Scrub synchronized actions, screenshots, DOM/accessibility state, console/network events, and

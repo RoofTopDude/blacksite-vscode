@@ -1,9 +1,9 @@
 import * as vscode from "vscode";
 import { createHash } from "node:crypto";
 import { BrowserApprovalCoordinator } from "./approval-coordinator.js";
-import { BrowserPolicyError, type BrowserAnchor, type BrowserAudit, type BrowserDecision, type BrowserDelegation, type BrowserProposal, type ResearchUiState } from "./approval-types.js";
+import { BrowserPolicyError, type BrowserAnchor, type BrowserAudit, type BrowserDecision, type BrowserDelegation, type BrowserProposal, type HostedSearchPolicy, type ResearchUiState, type SearchProvider, type SearchScope } from "./approval-types.js";
 import { DomainPolicy, EMPTY_POLICY, normalizeDomain, normalizePolicy, redactedUrl, type ResearchPolicy } from "./domain-policy.js";
-import { ResearchService } from "./research-service.js";
+import { ResearchService, type ResearchContext } from "./research-service.js";
 import type { ContinuationModel } from "../continuation/continuation-model.js";
 
 /**
@@ -30,6 +30,7 @@ const ALLOW_SESSION = "Allow this session";
 const ALLOW_ONCE = "Just this page";
 const ALWAYS_PROJECT = "Always: this project";
 const ALWAYS_EVERYWHERE = "Always: all projects";
+const ALWAYS_SEARCH = "Always allow";
 const APPROVE = "Approve exact values";
 const EDIT = "Edit and approve";
 const DENY = "Deny";
@@ -38,6 +39,7 @@ function modalTitle(proposal: BrowserProposal): string {
   if (proposal.kind === "domain") return hosts.size > 1 ? `Allow research access to ${hosts.size} domains?` : `Allow research access to ${[...hosts][0]}?`;
   if (proposal.kind === "script") return `Run a privileged test script on ${proposal.origin}?`;
   if (proposal.kind === "input") return `Send these exact values to ${proposal.origin}?`;
+  if (proposal.kind === "search") return `Let ${proposal.title} search the web?`;
   return `Approve a browser action on ${proposal.origin}?`;
 }
 
@@ -51,6 +53,10 @@ export class ResearchHost {
   private delegation?: BrowserDelegation;
   private disposed = false;
   private saving = false;
+  /** Hosted search allowed for this chat session only. Cleared with every other session grant. */
+  private hostedGrant = false;
+  /** Hosted search declined for this chat session; web_search stops asking until it is reset. */
+  private hostedDeclined = false;
   private readonly attestation: string;
   private ready: Promise<void>;
   private configSubscription: vscode.Disposable;
@@ -62,7 +68,12 @@ export class ResearchHost {
       audit: event => { this.audits = [...this.audits.slice(-99), event]; void this.send(); },
       reviewer,
     });
-    this.service = new ResearchService(this.coordinator, async () => context.secrets.get("blacksite.research.braveKey"));
+    this.service = new ResearchService(this.coordinator, async () => context.secrets.get("blacksite.research.braveKey"), undefined, {
+      enabled: () => this.hostedEnabled(),
+      enable: scope => this.enableHosted(scope),
+      declined: () => this.hostedDeclined,
+      decline: () => { this.hostedDeclined = true; },
+    });
     this.ready = this.refresh();
     this.configSubscription = vscode.workspace.onDidChangeConfiguration(e => {
       if (!this.saving && e.affectsConfiguration("blacksite.research")) {
@@ -73,7 +84,7 @@ export class ResearchHost {
   }
   private configured(): ResearchPolicy {
     const c = vscode.workspace.getConfiguration("blacksite");
-    return normalizePolicy({ allowedDomains: c.get<string[]>("research.allowedDomains", []), deniedDomains: c.get<string[]>("research.deniedDomains", []), unknownDomainPolicy: c.get<"ask" | "deny">("research.unknownDomainPolicy", "ask"), searchProvider: c.get<"none" | "brave">("research.searchProvider", "none") });
+    return normalizePolicy({ allowedDomains: c.get<string[]>("research.allowedDomains", []), deniedDomains: c.get<string[]>("research.deniedDomains", []), unknownDomainPolicy: c.get<"ask" | "deny">("research.unknownDomainPolicy", "ask"), searchProvider: c.get<SearchProvider>("research.searchProvider", "none"), searchScope: c.get<SearchScope>("research.searchScope", "any") });
   }
   private async refresh(): Promise<void> {
     try {
@@ -81,7 +92,10 @@ export class ResearchHost {
       const saved = await this.context.secrets.get(this.attestation);
       const trusted = saved ? normalizePolicy(JSON.parse(saved) as ResearchPolicy) : EMPTY_POLICY;
       // Settings-file edits can restrict access immediately, but cannot widen it.
-      const effective = { ...configured, allowedDomains: configured.allowedDomains.filter(d => trusted.allowedDomains.includes(d)), deniedDomains: [...new Set([...configured.deniedDomains, ...trusted.deniedDomains])], searchProvider: trusted.searchProvider === configured.searchProvider ? configured.searchProvider : "none" as const };
+      const effective = { ...configured, allowedDomains: configured.allowedDomains.filter(d => trusted.allowedDomains.includes(d)), deniedDomains: [...new Set([...configured.deniedDomains, ...trusted.deniedDomains])], searchProvider: trusted.searchProvider === configured.searchProvider ? configured.searchProvider : "none" as const,
+        // Narrowing to approved sites is a restriction any edit may make; widening back to any
+        // site needs this panel, like every other grant.
+        searchScope: (trusted.searchScope ?? "any") === configured.searchScope ? configured.searchScope : "approved" as const };
       this.policy.replace(effective);
       // Remember revocations too: removing a deny or restoring a removed allow in a
       // settings file must never reactivate a historical human grant.
@@ -99,7 +113,44 @@ export class ResearchHost {
       await this.refresh();
     } finally { this.saving = false; }
   }
-  async dispatch(action: string, payload: Record<string, unknown>, signal?: AbortSignal, anchor?: BrowserAnchor): Promise<unknown> { await this.ready; return this.service.dispatch(action, payload, signal, anchor); }
+  async dispatch(action: string, payload: Record<string, unknown>, signal?: AbortSignal, anchor?: BrowserAnchor, context?: ResearchContext): Promise<unknown> { await this.ready; return this.service.dispatch(action, payload, signal, anchor, context); }
+  private hostedEnabled(): boolean {
+    const provider = this.policy.settings.searchProvider;
+    return provider === "hosted" || (provider === "none" && this.hostedGrant);
+  }
+  /**
+   * The provider's own search, when it is on for this chat: what a session needs to declare it.
+   * Undefined when it is off — and when it is limited to approved sites but none are, since a
+   * search confined to nothing is not worth a tool slot (web_search then explains what to do).
+   */
+  hostedSearch(): HostedSearchPolicy | undefined {
+    if (!this.hostedEnabled()) return undefined;
+    const scope = this.policy.settings.searchScope ?? "any";
+    const allowedDomains = this.policy.domains;
+    if (scope === "approved" && !allowedDomains.length) return undefined;
+    return { scope, allowedDomains, deniedDomains: [...this.policy.settings.deniedDomains] };
+  }
+  /**
+   * Turn hosted search on from an approved consent card. "global" also saves the choice to user
+   * settings and attests it, like any other grant made here; the session grant is set either
+   * way, so a workspace that pins the provider to "none" still gets what was just approved.
+   * Writes only the provider key: copying the domain lists into user settings as save() does
+   * would be a side effect nobody asked for, and re-deriving the policy would revoke the
+   * session's domain grants mid-run.
+   */
+  private async enableHosted(scope: "session" | "global"): Promise<void> {
+    this.hostedGrant = true;
+    if (scope === "global") {
+      const next = normalizePolicy({ ...structuredClone(this.policy.settings), searchProvider: "hosted" });
+      this.saving = true;
+      try {
+        await vscode.workspace.getConfiguration("blacksite").update("research.searchProvider", "hosted", vscode.ConfigurationTarget.Global);
+        await this.context.secrets.store(this.attestation, JSON.stringify(next));
+        if (this.configured().searchProvider === "hosted") this.policy.settings = next;
+      } finally { this.saving = false; }
+    }
+    await this.send();
+  }
   async handle(message: Record<string, unknown>): Promise<void> {
     await this.ready;
     try {
@@ -132,7 +183,7 @@ export class ResearchHost {
     let configured = EMPTY_POLICY;
     try { configured = this.configured(); } catch { /* fail closed; expose settings validation error */ }
     const preference = vscode.workspace.getConfiguration("blacksite").get<string>("browser.inputApprovalMode", "human");
-    const state: ResearchUiState = { policy: this.policy.settings, configured, delegation: this.delegation, inputApprovalPreference: preference === "reviewer" ? "reviewer" : "human", keyConfigured: !!await this.context.secrets.get("blacksite.research.braveKey"), pending: [...this.pending.values()].map(p => p.proposal), audits: this.audits, error };
+    const state: ResearchUiState = { policy: this.policy.settings, configured, hostedSession: this.hostedGrant, delegation: this.delegation, inputApprovalPreference: preference === "reviewer" ? "reviewer" : "human", keyConfigured: !!await this.context.secrets.get("blacksite.research.braveKey"), pending: [...this.pending.values()].map(p => p.proposal), audits: this.audits, error };
     this.post({ type: "research_state", state });
   }
   private async ask(proposal: BrowserProposal, signal?: AbortSignal): Promise<BrowserDecision> {
@@ -158,7 +209,10 @@ export class ResearchHost {
       if (!this.visible()) {
         // Fallback for a hidden chat view. Same decisions, same words as the in-chat card, and
         // the values as readable lines rather than a JSON dump nobody can check at a glance.
-        const options = proposal.kind === "domain" ? [ALLOW_SESSION, ALLOW_ONCE, ALWAYS_PROJECT, ALWAYS_EVERYWHERE, DENY] : proposal.kind === "input" ? [APPROVE, EDIT, DENY] : [APPROVE, DENY];
+        const options = proposal.kind === "domain" ? [ALLOW_SESSION, ALLOW_ONCE, ALWAYS_PROJECT, ALWAYS_EVERYWHERE, DENY]
+          : proposal.kind === "input" ? [APPROVE, EDIT, DENY]
+          : proposal.kind === "search" ? [ALLOW_SESSION, ALWAYS_SEARCH, DENY]
+          : [APPROVE, DENY];
         const values = display.fields.map(f => `${f.label} (${f.type}): ${JSON.stringify(f.value)}`).join("\n");
         const targets = (display.urls ?? [display.url]).join("\n");
         void (async () => {
@@ -168,7 +222,7 @@ export class ResearchHost {
               try { const edited = JSON.parse(value); return Array.isArray(edited) && edited.length === display.fields.length && edited.every((v, i) => typeof v === typeof display.fields[i]!.value) ? undefined : "Keep the same field count and value types."; } catch { return "Enter a JSON array."; }
             } });
             finish({ id: proposal.id, decision: raw === undefined ? "deny" : "edit", ...(raw !== undefined ? { values: JSON.parse(raw) as Array<string | boolean> } : {}) });
-          } else finish({ id: proposal.id, decision: choice === ALLOW_ONCE ? "page" : choice === ALLOW_SESSION ? "session" : choice === ALWAYS_PROJECT ? "workspace" : choice === ALWAYS_EVERYWHERE ? "global" : choice === APPROVE ? "allow" : "deny" });
+          } else finish({ id: proposal.id, decision: choice === ALLOW_ONCE ? "page" : choice === ALLOW_SESSION ? "session" : choice === ALWAYS_PROJECT ? "workspace" : choice === ALWAYS_EVERYWHERE || choice === ALWAYS_SEARCH ? "global" : choice === APPROVE ? "allow" : "deny" });
         })().catch(() => finish());
       }
     });
@@ -176,6 +230,8 @@ export class ResearchHost {
   reset(): void {
     for (const [id, p] of this.pending) p.resolve({ id, decision: "deny" }, "Browser authorization was revoked before this request was answered. Nothing was sent.");
     this.delegation = undefined;
+    this.hostedGrant = false;
+    this.hostedDeclined = false;
     this.coordinator.reset();
     this.onRevoke?.();
   }

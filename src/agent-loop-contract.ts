@@ -80,6 +80,20 @@ export interface CompactionBlock {
   content: string;
 }
 
+/**
+ * Work a provider ran on its own servers inside the turn (its built-in web search), kept exactly
+ * as that provider sent it. Only the provider that produced it can read it back: Anthropic needs
+ * its `server_tool_use` / `web_search_tool_result` blocks replayed verbatim (the result's
+ * `encrypted_content` is how the model sees the search again, and a modified one is a 400), and a
+ * Codex search arrives as an `exec` cell whose output holds the results. Every other wire format
+ * skips the block; the model keeps whatever it wrote about the search.
+ */
+export interface ProviderNativeBlock {
+  type: "provider_native";
+  provider: "anthropic" | "codex";
+  block: Record<string, unknown>;
+}
+
 export type ContentBlock =
   | TextBlock
   | ThinkingBlock
@@ -87,7 +101,17 @@ export type ContentBlock =
   | ToolUseBlock
   | ToolResultBlock
   | ImageBlock
-  | CompactionBlock;
+  | CompactionBlock
+  | ProviderNativeBlock;
+
+/** One result of a provider-hosted web search, as shown in the transcript. */
+export interface HostedSearchResult {
+  title?: string;
+  url?: string;
+  snippet?: string;
+  /** When the source was last updated, as the provider reports it ("April 30, 2025"). */
+  age?: string;
+}
 
 /** The two block types that carry model reasoning and must be replayed ahead of any tool_use. */
 export type ReasoningBlock = ThinkingBlock | RedactedThinkingBlock;
@@ -114,6 +138,11 @@ export type ProviderTurnStreamEvent =
   | { type: "tool_use_block"; block: ToolUseBlock }
   /** Server-side compaction summary (Anthropic beta) — see {@link CompactionBlock}. */
   | { type: "compaction_block"; content: string }
+  /** A provider-executed block to keep in history for replay — see {@link ProviderNativeBlock}. */
+  | { type: "provider_native_block"; block: ProviderNativeBlock }
+  /** A search the provider ran itself. Display only: the session shows it as a finished
+   *  web_search row; nothing about it is executed or answered locally. */
+  | { type: "hosted_search"; id: string; query: string; results: HostedSearchResult[]; error?: string }
   | { type: "stop_reason"; reason: AgentStopReason }
   /** Out-of-band operational message (e.g. "retrying after 429…") surfaced to the UI as
    *  an execution diagnostic; carries no model-facing content and is ignored by the
@@ -167,6 +196,10 @@ export interface ProviderTurnResult {
   /** Present only when server-side compaction fired this turn. Always placed first in the
    *  reconstructed assistant turn — see {@link CompactionBlock}. */
   compactionBlock?: CompactionBlock;
+  /** The turn's blocks in the order the provider produced them. Present only when the turn
+   *  contains provider-executed work: a hosted search sits between the reasoning and text
+   *  around it, and replaying it anywhere else would misplace the thinking it interleaves. */
+  orderedBlocks?: ContentBlock[];
 }
 
 export interface ProviderTurnSession {

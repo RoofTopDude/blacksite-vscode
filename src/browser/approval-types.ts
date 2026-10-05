@@ -1,13 +1,36 @@
 /** Serializable, transient host/webview contract. Never persist exact proposals. */
+/** "hosted" is the model provider's own web search (Claude, OpenRouter, ChatGPT), run on its
+ *  servers inside the model's turn rather than by Blacksite. */
+export type SearchProvider = "none" | "hosted" | "brave";
+/** Where hosted search results may come from. "any" excludes denied domains where the provider
+ *  can; "approved" limits results to the allowed and session-granted domains. */
+export type SearchScope = "any" | "approved";
 export interface ResearchPolicy {
   allowedDomains: string[];
   deniedDomains: string[];
   unknownDomainPolicy: "ask" | "deny";
-  searchProvider: "none" | "brave";
+  searchProvider: SearchProvider;
+  /** Absent in policies saved before hosted search existed; read as "any". */
+  searchScope?: SearchScope;
+}
+/** What a session needs to declare a provider's hosted search tool. */
+export interface HostedSearchPolicy {
+  scope: SearchScope;
+  /** Allowed plus session-granted domains, registrable form. */
+  allowedDomains: string[];
+  deniedDomains: string[];
+}
+/** The provider route the agent is running on, when that route has a hosted search. */
+export interface HostedSearchRoute {
+  provider: "anthropic" | "openrouter" | "chatgpt";
+  /** What the consent card calls it: "Claude", "OpenRouter", "ChatGPT". */
+  label: string;
 }
 export interface ResearchUiState {
   policy: ResearchPolicy;
   configured: ResearchPolicy;
+  /** Hosted search was allowed for this chat session only (not saved in settings). */
+  hostedSession?: boolean;
   delegation?: BrowserDelegation;
   keyConfigured: boolean;
   inputApprovalPreference?: "human" | "reviewer";
@@ -35,7 +58,8 @@ export interface BrowserProposal {
   session: string;
   version: number;
   expiresAt: number;
-  kind: "domain" | "input" | "action" | "script";
+  /** "search" asks to turn on the model provider's hosted search; it carries no values. */
+  kind: "domain" | "input" | "action" | "script" | "search";
   operation: string;
   origin: string;
   url: string;

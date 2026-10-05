@@ -7,7 +7,24 @@ import { Label } from "@/components/ui/label";
 import { Section, Field, Note } from "./common";
 import { useResearch } from "@/lib/research-store";
 import { post } from "@/lib/bridge";
-import type { ResearchPolicy } from "../../../../browser/approval-types";
+import type { ResearchPolicy, SearchProvider, SearchScope } from "../../../../browser/approval-types";
+
+const PROVIDER_OPTIONS: Array<{ value: SearchProvider; label: string }> = [
+  { value: "none", label: "Ask on the agent's first search" },
+  { value: "hosted", label: "Built into my model provider" },
+  { value: "brave", label: "Brave Search API (your key)" },
+];
+const SCOPE_OPTIONS: Array<{ value: SearchScope; label: string }> = [
+  { value: "any", label: "Any site except denied domains" },
+  { value: "approved", label: "Approved domains only" },
+];
+
+/** The search actually in effect, in words: the effective policy plus a grant made in chat. */
+function effectiveSearch(policy: ResearchPolicy, hostedSession: boolean | undefined): string {
+  if (policy.searchProvider === "brave") return "Brave Search API";
+  if (policy.searchProvider === "hosted") return "your model provider's built-in search";
+  return hostedSession ? "your model provider's built-in search, allowed for this chat" : "none yet (the agent's first search asks)";
+}
 
 export function ResearchPanel() {
   const state = useResearch();
@@ -21,15 +38,22 @@ export function ResearchPanel() {
   const policy = draft ?? state.configured;
   const update = (change: Partial<ResearchPolicy>) => setDraft({ ...policy, ...change });
   return <Section>
-    <Note>Public HTTPS reading and Brave search use approved domains. Interactive Chromium is limited to explicit local testing origins; public rendering, PDF, uploads and credential entry are unavailable.</Note>
+    <Note>Reading a public page asks once per site. Search uses your model provider's built-in search (Claude, OpenRouter, ChatGPT) or a Brave API key. Interactive Chromium is limited to explicit local testing origins; public rendering, PDF, uploads and credential entry are unavailable.</Note>
     <Field label="Allowed domains" hint="One hostname per line, including its subdomains. Approving a source in chat records its site (wikipedia.org, not en.wikipedia.org). Workspace lists replace the user list. Only this confirmation grants new access.">
       <Textarea aria-label="Allowed research domains" value={policy.allowedDomains.join("\n")} onChange={e => update({ allowedDomains: e.target.value.split("\n") })} />
     </Field>
     <Field label="Denied domains" hint="Denies override every matching grant."><Textarea aria-label="Denied research domains" value={policy.deniedDomains.join("\n")} onChange={e => update({ deniedDomains: e.target.value.split("\n") })} /></Field>
-    <Note>Effective allowed domains: {state.policy.allowedDomains.join(", ") || "none"}. Effective search provider: {state.policy.searchProvider}.</Note>
+    <Note>Effective allowed domains: {state.policy.allowedDomains.join(", ") || "none"}. Search in effect: {effectiveSearch(state.policy, state.hostedSession)}.</Note>
     <Field label="Unknown domains"><Select ariaLabel="Unknown domain policy" value={policy.unknownDomainPolicy} options={[{ value: "ask", label: "Ask human" }, { value: "deny", label: "Deny" }]} onChange={v => update({ unknownDomainPolicy: v as "ask" | "deny" })} /></Field>
-    <Field label="Search provider" hint="Enabling Brave authorizes sending reviewed queries to its API. Source-domain grants are separate."><Select ariaLabel="Search provider" value={policy.searchProvider} options={[{ value: "none", label: "None" }, { value: "brave", label: "Brave" }]} onChange={v => update({ searchProvider: v as "none" | "brave" })} /></Field>
-    <Field label="Brave API key" hint={state.keyConfigured ? "Key configured in SecretStorage. Leave empty to retain it." : "Stored in VS Code SecretStorage."}><Input aria-label="Brave API key" type="password" autoComplete="off" value={key} onChange={e => setKey(e.target.value)} /></Field>
+    <Field label="Search provider" hint="Built-in search runs on your model provider's servers inside the model's reply and is billed there. Bedrock and direct OpenAI have none yet. With the first option, the agent's first search asks you once per chat. Brave sends each reviewed query to Brave's API.">
+      <Select ariaLabel="Search provider" value={policy.searchProvider} options={PROVIDER_OPTIONS} onChange={v => update({ searchProvider: v as SearchProvider })} />
+    </Field>
+    <Field label="Search results from" hint="Applies to built-in search. ChatGPT search cannot exclude sites, so denied domains may still appear in its results. Brave search always uses approved domains.">
+      <Select ariaLabel="Search results from" value={policy.searchScope ?? "any"} options={SCOPE_OPTIONS} onChange={v => update({ searchScope: v as SearchScope })} />
+    </Field>
+    {(policy.searchProvider === "brave" || state.keyConfigured) && (
+      <Field label="Brave API key" hint={state.keyConfigured ? "Key configured in SecretStorage. Leave empty to retain it." : "Stored in VS Code SecretStorage."}><Input aria-label="Brave API key" type="password" autoComplete="off" value={key} onChange={e => setKey(e.target.value)} /></Field>
+    )}
     <Select ariaLabel="Settings scope" value={scope} options={[{ value: "workspace", label: "Workspace" }, { value: "global", label: "User" }]} onChange={setScope} />
     <div className="flex flex-wrap gap-2"><Button onClick={() => { post({ type: "research_save", policy: { ...policy, allowedDomains: policy.allowedDomains.filter(Boolean), deniedDomains: policy.deniedDomains.filter(Boolean) }, key, scope }); setKey(""); setDraft(undefined); }}>Confirm domain and provider policy</Button><Button variant="outline" onClick={() => post({ type: "research_save", policy: state.configured, clearKey: true, scope })}>Remove key</Button></div>
     <Field label="Browser approval reviewer" hint="Human review is the default. Delegation applies only to this chat session and never includes new domains, scripts or consequential actions. Uses the current configured provider in a separate no-tools call.">

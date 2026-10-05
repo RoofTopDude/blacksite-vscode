@@ -3,6 +3,61 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.31.0-pre.1
+
+Prerelease. The stable update channel remains on 1.30.0.
+
+Web search works without setup. Until now the agent could only search with a Brave API key you
+supplied, and even then only within sites you had already approved. Now, on Claude (through the
+Anthropic API), OpenRouter and ChatGPT sign-in, the agent's first search asks once whether your
+model provider's own search may run, and from then on the provider searches inside the reply. This
+release also makes update checks visible and more reliable, which matters most if you take
+prereleases.
+
+### Added
+
+- **Web search through your model provider.** The first time the agent searches in a chat, a card
+  asks whether to let Claude, OpenRouter or ChatGPT search the web, and says what it costs: $10 per
+  1,000 searches on Anthropic, about $0.005–$0.015 per search on OpenRouter, and part of your plan's
+  usage on ChatGPT, which searches OpenAI's cached index rather than fetching pages live. **Allow
+  this session** lasts for the chat; **Always allow** saves it to your user settings. The model then
+  decides when to search, and each search appears in the transcript as a finished `web_search` row
+  with its results. Claude and OpenRouter make at most five searches per model request.
+- **Choose where results come from.** **Browser & Research → Search results from** offers any site
+  except your denied domains (the default), or approved domains only. ChatGPT search cannot exclude
+  sites, so denied domains may still appear in its results, and the panel says so. Reading a full
+  page with `web_read` still asks per site either way.
+- **Search results stay with the conversation.** Claude's and ChatGPT's search results are kept in the
+  transcript, so the model can use them in later steps instead of searching again. A long Claude
+  search that the API pauses is continued automatically, in the same reply.
+- **A Blacksite Updates output channel.** Every update check, including the automatic ones that never
+  show a failure, writes one line saying which channel and source it used, what it found, and why it
+  did or did not offer an update.
+
+### Changed
+
+- **Browser & Research settings** list three search options: ask on the agent's first search, your
+  model provider's built-in search, or Brave with your key. The Brave key field appears only when
+  Brave is chosen. Claude on Bedrock, direct OpenAI, and custom Anthropic or OpenRouter endpoints
+  have no built-in search yet; on those, `web_search` says what to do instead.
+- If you decline the search card, the agent is told to read sources it can name and is not asked
+  again for the rest of the session.
+
+### Fixed
+
+- **Prerelease updates were not reliably offered.** With prereleases on, the updater depended entirely
+  on GitHub's API, which allows 60 unauthenticated requests per hour per IP. An automatic check that
+  failed recorded nothing and waited three hours to try again, so a machine could go days without
+  being offered a release and with no way to see why. A failed check is now retried after 30 minutes,
+  falls back to the stable release manifest when GitHub refuses, and is logged.
+- The updater offers the highest eligible version rather than the first one GitHub lists. GitHub
+  orders releases by the date of their tagged commit, not by version.
+- An update prompt nobody has answered yet no longer stacks a second, identical prompt three hours
+  later.
+- **Open Run in Editor** was declared as an editor context-menu item without a command definition, so
+  VS Code logged an error on every startup and the command was missing from the Command Palette.
+- The product site listed VS Code 1.85 as the minimum; it is 1.139.
+
 ## 1.30.0
 
 Stable release. It includes every change from 1.30.0-pre.1 through 1.30.0-pre.4, listed below.

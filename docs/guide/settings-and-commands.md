@@ -1,8 +1,9 @@
 # Settings & Commands
 
 Browser & Research has a dedicated panel under **Agent & delegation**. Its settings are
-`blacksite.research.allowedDomains`, `deniedDomains`, `unknownDomainPolicy`, `searchProvider`,
-and the human-default `blacksite.browser.inputApprovalMode` preference. File edits cannot
+`blacksite.research.allowedDomains`, `deniedDomains`, `unknownDomainPolicy`, `searchProvider`
+(`none`, `hosted` for the model provider's built-in search, or `brave`), `searchScope` (`any` or
+`approved`), and the human-default `blacksite.browser.inputApprovalMode` preference. File edits cannot
 widen grants or activate delegation; confirm policy and session scope through the panel.
 See [Browser & Research](browser-research.md) for effective-list precedence and limitations.
 
@@ -175,9 +176,13 @@ behind one NAT can exhaust.
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `blacksite.updates.checkOnStartup` | `true` | Check for newer releases on startup, then every 3 hours while the window is open |
-| `blacksite.updates.includePrerelease` | `false` | Allow prerelease builds. Only the GitHub API lists prereleases, so this bypasses the manifest |
+| `blacksite.updates.includePrerelease` | `false` | Allow prerelease builds. Only the GitHub API lists prereleases, so this checks it first and falls back to the manifest if it is unreachable |
 | `blacksite.updates.manifestUrl` | `https://rooftopdude.github.io/blacksite-vscode/latest.json` | Release manifest checked first |
 | `blacksite.updates.repository` | `""` | Owner/repo used as the fallback source. Blank uses the repository declared in the package |
+
+Every check, automatic or manual, writes one line to the **Blacksite Updates** output channel: which
+channel and source it used, what it found, and why it did or did not offer an update. An automatic
+check that fails is retried after 30 minutes rather than at the next three-hour check.
 
 ---
 

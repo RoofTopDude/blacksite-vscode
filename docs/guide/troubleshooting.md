@@ -217,7 +217,16 @@ network makes it unreliable.
 
 ### I want prerelease builds
 
-`blacksite.updates.includePrerelease: true`.
+Set `blacksite.updates.includePrerelease: true` in your **user** settings. A workspace's
+`.vscode/settings.json` cannot choose where updates come from, so the setting is ignored there.
+
+### A release was published but I was not offered it
+
+Open the **Blacksite Updates** output channel. Each check records its channel, what it found, and
+why it did or did not offer an update: a failed request, a version you dismissed (run **Blacksite:
+Check for Updates** to see it again), or a release that needs a newer VS Code than the one running.
+VS Code installs its own updates on restart, so a window left open for days keeps running the old
+version.
 
 ---
 

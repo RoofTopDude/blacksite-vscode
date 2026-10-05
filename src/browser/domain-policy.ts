@@ -5,7 +5,7 @@ import { BrowserPolicyError } from "./approval-types.js";
 
 import type { ResearchPolicy } from "./approval-types.js";
 export type { ResearchPolicy } from "./approval-types.js";
-export const EMPTY_POLICY: ResearchPolicy = { allowedDomains: [], deniedDomains: [], unknownDomainPolicy: "ask", searchProvider: "none" };
+export const EMPTY_POLICY: ResearchPolicy = { allowedDomains: [], deniedDomains: [], unknownDomainPolicy: "ask", searchProvider: "none", searchScope: "any" };
 export function normalizeDomain(raw: string): string {
   if (typeof raw !== "string" || /[\s/:@*?#\\%]/u.test(raw)) throw new Error("Enter a hostname without a scheme, path, wildcard or credentials.");
   const host = domainToASCII(raw.replace(/\.$/, "").toLowerCase());
@@ -33,9 +33,13 @@ export function baseDomain(raw: string): string {
   return parse(host, { allowPrivateDomains: true }).domain ?? host;
 }
 export function normalizePolicy(value: ResearchPolicy): ResearchPolicy {
+  // A policy attested before hosted search existed has no scope; it reads as the default rather
+  // than failing closed, which would have wiped every saved grant on upgrade.
+  const searchScope = value.searchScope ?? "any";
   if (!Array.isArray(value.allowedDomains) || !Array.isArray(value.deniedDomains)
-    || !["ask", "deny"].includes(value.unknownDomainPolicy) || !["none", "brave"].includes(value.searchProvider)) throw new Error("Invalid research policy.");
-  return { ...value, allowedDomains: [...new Set(value.allowedDomains.map(normalizeDomain))], deniedDomains: [...new Set(value.deniedDomains.map(normalizeDomain))] };
+    || !["ask", "deny"].includes(value.unknownDomainPolicy) || !["none", "hosted", "brave"].includes(value.searchProvider)
+    || !["any", "approved"].includes(searchScope)) throw new Error("Invalid research policy.");
+  return { ...value, searchScope, allowedDomains: [...new Set(value.allowedDomains.map(normalizeDomain))], deniedDomains: [...new Set(value.deniedDomains.map(normalizeDomain))] };
 }
 export function researchUrl(raw: string): URL {
   const url = new URL(raw);

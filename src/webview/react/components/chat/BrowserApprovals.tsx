@@ -65,7 +65,7 @@ export function BrowserProposalBody({ proposal: p }: { proposal: BrowserProposal
     <div className="flex flex-col gap-2" aria-label="Browser approval">
       <div className="chat-sunken px-2 py-1.5">
         <div className="flex flex-wrap items-center gap-1.5">
-          <StatusPill tone="info" className="text-2xs">{p.kind === "domain" ? "web access" : p.kind === "input" ? "outbound values" : p.kind === "script" ? "test script" : "browser action"}</StatusPill>
+          <StatusPill tone="info" className="text-2xs">{p.kind === "domain" ? "web access" : p.kind === "search" ? "web search" : p.kind === "input" ? "outbound values" : p.kind === "script" ? "test script" : "browser action"}</StatusPill>
           {hosts.map(host => <span key={host} className="break-all font-mono text-xs text-foreground">{host}</span>)}
         </div>
         <p className="mt-1 whitespace-pre-wrap text-xs leading-snug text-muted-foreground">{p.purpose}</p>
@@ -110,6 +110,13 @@ export function BrowserProposalBody({ proposal: p }: { proposal: BrowserProposal
                   documentation site into an approval per URL. */}
               <Button type="button" size="xs" disabled={sent} onClick={() => decide("session")}>Allow this session</Button>
               <Button type="button" size="xs" variant="outline" disabled={sent} onClick={() => decide("page")}>Just this page</Button>
+            </>
+          ) : p.kind === "search" ? (
+            <>
+              {/* Turning on the provider's search is one decision per chat, or once for good; it
+                  carries no values to review. "Always" saves it in user settings. */}
+              <Button type="button" size="xs" disabled={sent} onClick={() => decide("session")}>Allow this session</Button>
+              <Button type="button" size="xs" variant="outline" disabled={sent} onClick={() => decide("global")}>Always allow</Button>
             </>
           ) : (
             <Button type="button" size="xs" disabled={sent} onClick={() => decide(edited ? "edit" : "allow")}>Approve exact values</Button>

@@ -332,7 +332,11 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     vscode.commands.registerCommand("blacksite.revealTicket", (ticketId: string) => ticketProvider.reveal(ticketId)),
   );
   const dataProvider = new DataProvider(context, workspaceRoot, dataWorkbench);
-  const updater = new ExtensionUpdater(context);
+  // Every update check writes one line here, including the automatic ones that never show a
+  // failure on screen.
+  const updatesLog = vscode.window.createOutputChannel("Blacksite Updates", { log: true });
+  context.subscriptions.push(updatesLog);
+  const updater = new ExtensionUpdater(context, undefined, undefined, undefined, undefined, (line) => updatesLog.info(line));
   /* What each chat request changed, written by the harness after the turn (see change-log.ts) so
      the agent does not have to narrate its own edits as map notes. */
   const changeLog = new ChangeLog(

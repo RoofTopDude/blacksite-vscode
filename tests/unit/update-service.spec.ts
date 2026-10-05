@@ -14,6 +14,7 @@ import {
   parseReleaseManifest,
   readVsixEngineRange,
   selectVsixAsset,
+  FAILED_CHECK_RETRY_MS,
   UPDATE_CHECK_INTERVAL_MS,
   validateReleaseAssetMetadata,
   verifyVsixBytes,
@@ -569,5 +570,88 @@ describe("VS Code engine gate", () => {
 
     await expect((updater as unknown as { downloadVsix(a: typeof asset, v: string): Promise<string> })
       .downloadVsix(asset, "2.0.0-pre.1")).rejects.toThrow(/needs VS Code 1\.139\.0/);
+  });
+});
+
+/**
+ * Prerelease users depend on the unauthenticated GitHub API, and an automatic check never shows
+ * a failure. A machine went six days and five releases without an offer while every check left
+ * no trace, so these pin down what each check now does and records.
+ */
+describe("ExtensionUpdater prerelease channel", () => {
+  const release = (version: string, prerelease: boolean) => ({
+    tag_name: `v${version}`, name: `Blacksite v${version}`, html_url: `https://github.com/o/r/releases/tag/v${version}`, prerelease,
+    assets: [{ name: `blacksite-vscode-${version}.vsix`, browser_download_url: `https://github.com/o/r/releases/download/v${version}/blacksite-vscode-${version}.vsix`, digest: `sha256:${"c".repeat(64)}` }],
+  });
+  const manifest = { version: "1.30.0", downloadUrl: "https://github.com/o/r/releases/download/v1.30.0/blacksite-vscode-1.30.0.vsix", digest: `sha256:${"d".repeat(64)}` };
+
+  function updater(installed: string, respond: (url: string) => unknown) {
+    const globalStore = new Map<string, unknown>();
+    const lines: string[] = [];
+    const fetcher = vi.fn(async (url: string) => {
+      const answer = respond(String(url));
+      if (answer instanceof Error) throw answer;
+      if (answer === 403) return { ok: false, status: 403, statusText: "rate limit exceeded", headers: { get: () => "application/json" }, json: async () => ({}) };
+      return { ok: true, headers: { get: () => "application/json" }, json: async () => answer };
+    });
+    const context = {
+      extensionMode: vscodeMock.ExtensionMode.Production,
+      extension: { packageJSON: { name: "blacksite-vscode", version: installed, repository: "https://github.com/o/r" } },
+      globalState: {
+        get: <T>(key: string): T | undefined => globalStore.get(key) as T | undefined,
+        update: async (key: string, value: unknown): Promise<void> => { globalStore.set(key, value); },
+      },
+    };
+    return { updater: new ExtensionUpdater(context as never, fetcher as never, undefined, undefined, "1.140.0", (line) => lines.push(line)), globalStore, lines, fetcher };
+  }
+
+  beforeEach(() => {
+    vscodeMock.workspace.__clearConfig();
+    vscodeMock.workspace.__setGlobalConfig("blacksite.updates.includePrerelease", true);
+  });
+  afterEach(() => { vscodeMock.workspace.__clearConfig(); vi.restoreAllMocks(); vi.useRealTimers(); });
+
+  it("offers the highest eligible version, whatever order GitHub lists them in", async () => {
+    const shown: string[] = [];
+    vi.spyOn(vscodeMock.window, "showInformationMessage").mockImplementation(async (message: unknown) => { shown.push(String(message)); return undefined; });
+    const { updater: u, lines } = updater("1.28.0", () => [release("1.30.0-pre.2", true), release("1.30.0-pre.4", true), release("1.30.0-pre.3", true)]);
+    await u.checkForUpdates({ manual: false });
+    expect(shown).toEqual(["Blacksite 1.30.0-pre.4 is available (installed 1.28.0)."]);
+    expect(lines.at(-1)).toBe("automatic check (prerelease channel): offering 1.30.0-pre.4 from github over installed 1.28.0.");
+  });
+
+  it("falls back to the stable manifest when the GitHub API refuses, and says so", async () => {
+    const shown: string[] = [];
+    vi.spyOn(vscodeMock.window, "showInformationMessage").mockImplementation(async (message: unknown) => { shown.push(String(message)); return undefined; });
+    const { updater: u, lines } = updater("1.28.0", (url) => (url.includes("api.github.com") ? 403 : manifest));
+    await u.checkForUpdates({ manual: false });
+    expect(shown).toEqual(["Blacksite 1.30.0 is available (installed 1.28.0)."]);
+    expect(lines[0]).toMatch(/^GitHub releases unavailable \(GitHub returned 403/);
+  });
+
+  it("logs an automatic failure and retries in half an hour, not three", async () => {
+    vi.useFakeTimers();
+    const { updater: u, globalStore, lines, fetcher } = updater("1.28.0", () => new Error("getaddrinfo ENOTFOUND api.github.com"));
+    await u.checkForUpdates({ manual: false });
+    expect(lines).toEqual(["automatic check failed (prerelease channel, installed 1.28.0): getaddrinfo ENOTFOUND api.github.com"]);
+    const stamped = globalStore.get("blacksite.updates.lastCheckAt") as number;
+    // Throttle set back so the retry is allowed once FAILED_CHECK_RETRY_MS has passed.
+    expect(Date.now() - stamped).toBe(UPDATE_CHECK_INTERVAL_MS - 5 * 60 * 1000 - FAILED_CHECK_RETRY_MS);
+    const before = fetcher.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(FAILED_CHECK_RETRY_MS);
+    expect(fetcher.mock.calls.length).toBeGreaterThan(before);
+  });
+
+  it("does not stack a second prompt for a version whose prompt is still open", async () => {
+    let answer: (value: string | undefined) => void = () => {};
+    const show = vi.spyOn(vscodeMock.window, "showInformationMessage").mockImplementation(() => new Promise((resolve) => { answer = resolve as typeof answer; }));
+    const { updater: u, lines } = updater("1.28.0", () => [release("1.30.0-pre.4", true)]);
+    const first = u.checkForUpdates({ manual: false });
+    await vi.waitFor(() => expect(show).toHaveBeenCalledTimes(1));
+    await u.checkForUpdates({ manual: false });
+    expect(show).toHaveBeenCalledTimes(1);
+    expect(lines.at(-1)).toContain("its update prompt is still open");
+    answer("Later");
+    await first;
   });
 });

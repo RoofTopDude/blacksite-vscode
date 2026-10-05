@@ -71,6 +71,23 @@ describe("built Browser & Research webview", () => {
     expect(decisions).toEqual([{ type: "browser_decision", decision: { id: "proposal-domain", decision: "session" } }]);
   });
 
+  it("asks once to turn on the model provider's search, with nothing to review but the cost", async () => {
+    const proposal = { id: "proposal-search", digest: "digest", session: "session", version: 1, expiresAt: Date.now() + 300_000, kind: "search", operation: "hosted_search", origin: "", url: "[invalid URL]", title: "Claude", document: "", purpose: "Claude can search the web from inside its reply. Searches run on Anthropic's servers and are billed to your Anthropic account: $10 per 1,000 searches, plus the result tokens.", fields: [] };
+    await page.evaluate(({ policy, proposal }) => window.postMessage({ type: "research_state", state: { policy, configured: policy, keyConfigured: false, audits: [], pending: [proposal] } }, "*"), { policy, proposal });
+    await page.getByText("Let Claude search the web").first().waitFor();
+    expect(await page.getByText(/\$10 per 1,000 searches/).first().isVisible()).toBe(true);
+    for (const label of ["Allow this session", "Always allow", "Deny"]) {
+      expect(await page.getByRole("button", { name: label, exact: true }).isVisible()).toBe(true);
+    }
+    // A consent card carries no values: no per-page scope and no value review.
+    expect(await page.getByRole("button", { name: "Just this page", exact: true }).count()).toBe(0);
+    expect(await page.getByRole("button", { name: "Approve exact values", exact: true }).count()).toBe(0);
+    await page.getByRole("button", { name: "Always allow", exact: true }).click();
+    const decisions = await page.evaluate(() => (window as any).__messages.filter((m: any) => m.decision?.id === "proposal-search"));
+    expect(decisions).toEqual([{ type: "browser_decision", decision: { id: "proposal-search", decision: "global" } }]);
+    await page.evaluate(policy => window.postMessage({ type: "research_state", state: { policy, configured: policy, keyConfigured: false, audits: [], pending: [] } }, "*"), policy);
+  });
+
   it("escalates back to the chat when a web approval opens on another view", async () => {
     await page.evaluate(policy => window.postMessage({ type: "research_state", state: { policy, configured: policy, keyConfigured: false, audits: [], pending: [] } }, "*"), policy);
     await page.getByRole("button", { name: "Settings", exact: true }).click();
@@ -89,6 +106,10 @@ describe("built Browser & Research webview", () => {
     await page.getByRole("tab", { name: "Agent & delegation", exact: true }).click();
     await page.getByRole("button", { name: /Browser & Research/ }).click();
     expect(await page.getByLabel("Allowed research domains").inputValue()).toBe("example.com");
+    // Built-in search needs no key, so the Brave key field only appears once Brave is chosen.
+    expect(await page.getByLabel("Brave API key").count()).toBe(0);
+    expect(await page.getByLabel("Search results from").count()).toBe(1);
+    await page.evaluate(policy => window.postMessage({ type: "research_state", state: { policy, configured: { ...policy, searchProvider: "brave" }, keyConfigured: false, audits: [], pending: [] } }, "*"), policy);
     expect(await page.getByLabel("Brave API key").getAttribute("type")).toBe("password");
     expect(await page.getByRole("button", { name: "Delegate review for this session", exact: true }).isDisabled()).toBe(true);
     await page.getByLabel("Your original task").fill("Find public documentation");
