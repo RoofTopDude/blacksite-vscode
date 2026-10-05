@@ -912,7 +912,9 @@ export const actions = {
     post({ type: "set_thinking", provider, enabled, budgetTokens, effort });
   },
   setReasoningEffort(provider: ProviderName, effort: ReasoningEffort): void {
-    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), reasoningEffort: effort } } };
+    // Under ChatGPT sign-in the depth is its own setting; the API-key one stays as it was.
+    const subscription = provider === "openai" && curProvider(provider).authMode === "chatgpt";
+    store.settings = { ...store.settings, providerSettings: { ...store.settings.providerSettings, [provider]: { ...curProvider(provider), ...(subscription ? { subscriptionReasoningEffort: effort } : { reasoningEffort: effort }) } } };
     bump();
     post({ type: "set_reasoning_effort", provider, effort });
   },

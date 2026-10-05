@@ -47,7 +47,9 @@ are under **Details**, and status chips are under **Current configuration**.
 | --- | --- | --- |
 | `blacksite.provider` | `anthropic` | The active provider (`anthropic`, `openrouter`, `openai`, `bedrock`), mirrored from the sidebar Settings. A user-level value seeds a new install |
 | `blacksite.chatgpt.codexPath` | (empty) | Absolute path to the Codex executable for ChatGPT subscription sign-in. Blank uses the Codex VS Code extension or `codex` on PATH. Reload the window after changing |
-| `blacksite.chatgpt.reasoningSummary` | `auto` | How much of the model's reasoning ChatGPT summarizes in the chat: `auto`, `concise`, `detailed` or `none`. ChatGPT sends no reasoning unless asked. Applies to the next request |
+| `blacksite.chatgpt.reasoningSummary` | `detailed` | How much of the model's reasoning ChatGPT summarizes in the chat: `auto`, `concise`, `detailed` or `none`. ChatGPT sends no reasoning unless asked, and some models return none even when asked. Applies to the next request |
+| `blacksite.chatgpt.verbosity` | `medium` | How long ChatGPT's answers run: `low`, `medium`, `high`, or `default` to leave the model's own setting (low for every ChatGPT model). Applies to the next turn |
+| `blacksite.chatgpt.reuseConversation` | `true` | Keep one ChatGPT conversation open across the agent's steps instead of starting a new one for every model call. Blacksite starts a fresh one whenever its transcript and ChatGPT's would disagree |
 | `blacksite.chatgpt.extendedContext` | `false` | Ask ChatGPT for the model's largest context window (872K tokens on GPT-6 and GPT-5.6 models) instead of the 272K default. Long conversations then send more tokens with each request, which uses more of your allowance |
 | `blacksite.bedrockApi` | `converse` | Bedrock API path, mirrored from the sidebar Settings. `converse` for live model listing and dated inference profiles; `mantle` for the Anthropic-native Messages endpoint required by the newest Claude models |
 | `blacksite.model` | `""` | The active model, mirrored from the sidebar for reference. Change it in the sidebar or with `/model` |

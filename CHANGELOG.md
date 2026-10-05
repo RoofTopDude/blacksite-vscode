@@ -3,6 +3,47 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.31.0-pre.2
+
+Prerelease. The stable update channel remains on 1.30.0.
+
+ChatGPT sign-in gets much quicker on tool-heavy work, and its thinking is easier to trust. Until now
+every model call started a brand-new ChatGPT conversation, sent the whole transcript again, and cut
+it short at the first tool call. Now one conversation stays open across the agent's steps.
+
+### Changed
+
+- **One ChatGPT conversation per chat, kept open across steps.** When the model asks for a tool,
+  Blacksite runs it through its own tools and approvals and sends the result back into the same
+  turn. In a live run, the step after a tool result started in 0.26 seconds (it took 2.7 to 9.7
+  seconds before), the model kept its own reasoning, and a follow-up message read 5,248 tokens from
+  ChatGPT's prompt cache. The model can also ask for several tools at once. Blacksite's transcript
+  stays the source of truth: if compaction, an edit, a steered message, a changed tool list or a
+  cancellation would make the two disagree, it starts a fresh conversation from the transcript, as
+  every step used to. If ChatGPT can no longer continue a parked turn, that step is retried the
+  same way. `blacksite.chatgpt.reuseConversation` turns the whole thing off. A live run answered a
+  tool after 100 seconds without the turn giving up; a parked turn is released after an hour.
+- **Your own message starts the turn.** The model no longer receives an invented "Continue from the
+  conversation above" prompt after your message, and the workspace-state block is sent only when it
+  changed, on a new message, since each copy stays in the conversation.
+- **Thinking is requested more firmly.** The summary setting now goes to ChatGPT both when the
+  conversation starts and with each turn, and the default is `detailed` (it was `auto`). If you set
+  it yourself, your choice stands.
+- **ChatGPT answers are longer by default.** Every ChatGPT model defaults to terse replies. New
+  setting `blacksite.chatgpt.verbosity` (`low`, `medium`, `high`, `default`) defaults to `medium`;
+  `default` restores the model's own behavior.
+- **Reasoning depth for ChatGPT is its own setting.** It was shared with the API-key depth, so a
+  choice made there, such as Off, which ChatGPT models do not have, carried over. Depths you chose
+  under ChatGPT sign-in before this release start from each model's default again.
+- Signed-in status is checked once, and plan limits are re-read at most every 90 seconds, instead of
+  twice for every model call.
+
+### Added
+
+- **The thinking pane explains silence.** When the model reasoned but ChatGPT sent no summary of it,
+  the pane now says how many tokens it used instead of staying blank. A model that decided a step
+  needed no reasoning still shows nothing, because nothing happened.
+
 ## 1.31.0-pre.1
 
 Prerelease. The stable update channel remains on 1.30.0.

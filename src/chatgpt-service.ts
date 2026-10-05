@@ -1,5 +1,6 @@
+import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import type { AgentMessage, ProviderTurnStreamEvent, ToolUseBlock } from "./agent-loop-contract.js";
+import type { AgentMessage, ContentBlock, ImageBlock, ProviderTurnStreamEvent, ToolResultBlock } from "./agent-loop-contract.js";
 import { toResponsesInputItems } from "./agent/wire/openai.js";
 import { codexSearchResults, codexWebSearchConfig, isCodexSearchCell } from "./agent/hosted-search.js";
 import type { HostedSearchPolicy } from "./browser/approval-types.js";
@@ -22,18 +23,117 @@ export interface SubscriptionRequest {
   utility?: boolean;
   /** Codex's own web search, when it is on for this chat (ResearchHost decides). */
   hostedSearch?: HostedSearchPolicy;
+  /** Identifies the conversation this round belongs to. Rounds that share one reuse a live Codex
+   *  thread while it still matches the transcript. Absent for one-shot helper calls. */
+  conversationId?: string;
+  /** The volatile workspace block. Kept apart from `messages` so it is never mistaken for part of
+   *  the conversation the thread has to agree with. */
+  contextTail?: string;
 }
 export type SubscriptionStream = (request: SubscriptionRequest) => AsyncGenerator<ProviderTurnStreamEvent>;
 
 /** How much of the model's reasoning Codex is asked to summarize. Without a request the
  *  server sends none at all (every catalog model defaults to "none"). */
 export type ReasoningSummaryMode = "auto" | "concise" | "detailed" | "none";
+/** How long ChatGPT answers run. "default" sends nothing and leaves each model's own default, which
+ *  is "low" for every model in the catalog. */
+export type ChatGptVerbosity = "default" | "low" | "medium" | "high";
 export interface ChatGptOptions {
   reasoningSummary: ReasoningSummaryMode;
   /** Ask Codex for the model's largest context window instead of its 272K default. */
   extendedContext: boolean;
+  /** Keep one Codex thread per conversation instead of seeding a new one for every model call. */
+  reuseConversation: boolean;
+  verbosity: ChatGptVerbosity;
 }
-export const DEFAULT_CHATGPT_OPTIONS: ChatGptOptions = { reasoningSummary: "auto", extendedContext: false };
+export const DEFAULT_CHATGPT_OPTIONS: ChatGptOptions = { reasoningSummary: "detailed", extendedContext: false, reuseConversation: true, verbosity: "medium" };
+
+const CONTINUE_TEXT = "Continue from the conversation above. Respond to the latest user request or tool results.";
+/** Live threads kept at once; the least recently used idle one makes room for a new one. */
+const MAX_LIVE_THREADS = 6;
+/** An idle conversation's thread is released after this long. */
+const IDLE_THREAD_MS = 30 * 60_000;
+/** A turn parked on a tool call waits on a person's approval, so it is held longer. */
+const PARKED_TURN_MS = 60 * 60_000;
+/** The account is re-verified at most this often between rounds. */
+const ACCOUNT_CHECK_MS = 5 * 60_000;
+/** Usage and plan limits are re-read at most this often; Codex also pushes changes as they happen. */
+const REFRESH_MS = 90_000;
+
+interface PendingCall { requestId: number | string; callId: string; name: string; input: Record<string, unknown> }
+/** What one round has seen so far. */
+interface RoundState {
+  text: string;
+  thinking: boolean;
+  completed: boolean;
+  calls: PendingCall[];
+  reasoningSeen: Set<string>;
+  replayedCalls: Set<string>;
+  searchCells: Map<string, Record<string, unknown>>;
+}
+interface Totals { totalTokens: number; inputTokens: number; cachedInputTokens: number; cacheWriteInputTokens: number; outputTokens: number; reasoningOutputTokens: number }
+const ZERO_TOTALS: Totals = { totalTokens: 0, inputTokens: 0, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 };
+/** How the next round continues a live thread. */
+type ResumeStep =
+  | { kind: "turn"; input: Array<Record<string, unknown>> }
+  | { kind: "results"; results: Map<string, ToolResultBlock>; images: ImageBlock[] };
+/** One conversation's Codex thread, kept between rounds. */
+interface LiveThread {
+  key: string;
+  threadId: string;
+  /** Thread-level inputs the thread was started with; a change needs a new thread. */
+  signature: string;
+  queue: CodexMessage[];
+  wake?: () => void;
+  failure?: Error;
+  dead: boolean;
+  busy: boolean;
+  lastUsed: number;
+  idleTimer?: ReturnType<typeof setTimeout>;
+  turnId?: string;
+  /** A turn is in progress on the thread: streaming, or parked on tool calls. */
+  running?: boolean;
+  /** The turn is parked on these tool calls, waiting for their results. */
+  open?: { turnId: string; calls: PendingCall[] };
+  /** How many transcript messages this thread was seeded with, their digest, and a digest of the
+   *  assistant message the last round produced. All three must still match to continue it. */
+  synced: number;
+  fingerprint: string;
+  emitted: string;
+  /** Token totals as of the last round, so each round reports only what it spent. */
+  reported: Totals;
+  latest: Totals;
+  contextSent?: string;
+  unsubscribe: () => void;
+}
+
+const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
+const textInput = (text: string): Record<string, unknown> => ({ type: "text", text, text_elements: [] });
+function userBlocks(message: AgentMessage): ContentBlock[] {
+  if (typeof message.content !== "string") return message.content;
+  return message.content ? [{ type: "text", text: message.content }] : [];
+}
+/** A user message as a Codex turn input, with the workspace block after it when one is due. */
+function promptInput(message: AgentMessage, tail?: string): Array<Record<string, unknown>> {
+  const blocks = userBlocks(message);
+  const images = blocks.filter((block): block is ImageBlock => block.type === "image")
+    .map((image) => ({ type: "image", url: `data:${image.source.media_type};base64,${image.source.data}` }));
+  const text = blocks.flatMap((block) => (block.type === "text" && block.text ? [block.text] : [])).join("\n");
+  const input = [...images, ...(text ? [textInput(text)] : []), ...(tail ? [textInput(tail)] : [])];
+  return input.length ? input : [textInput(CONTINUE_TEXT)];
+}
+function emittedDigest(text: string, callIds: string[]): string { return sha(JSON.stringify([text, callIds])); }
+function assistantDigest(message: AgentMessage): string {
+  const blocks = typeof message.content === "string" ? [{ type: "text", text: message.content } as ContentBlock] : message.content;
+  return emittedDigest(
+    blocks.flatMap((block) => (block.type === "text" ? [block.text] : [])).join(""),
+    blocks.flatMap((block) => (block.type === "tool_use" ? [block.id] : [])),
+  );
+}
+/** Blacksite tool results are JSON strings; one that says `ok: false` is a failed call to Codex. */
+function toolSucceeded(content: string): boolean {
+  try { return (JSON.parse(content) as { ok?: unknown } | null)?.ok !== false; } catch { return true; }
+}
 
 export function subscriptionLimits(result: Record<string, unknown>): ChatGptLimit[] {
   const buckets = result.rateLimitsByLimitId as Record<string, ChatGptLimit> | undefined;
@@ -169,6 +269,10 @@ export class ChatGptService {
   /** After Codex refuses carried reasoning, requests go plain for a while rather than failing first
    *  every round: whatever it objected to stays in the transcript until compaction removes it. */
   private continuityPausedUntil = 0;
+  /** Live Codex threads by conversation id. */
+  private live = new Map<string, LiveThread>();
+  private accountVerifiedAt = 0;
+  private lastRefreshAt = 0;
 
   constructor(
     private readonly rpc: CodexAppServer,
@@ -178,6 +282,8 @@ export class ChatGptService {
     private readonly options: () => ChatGptOptions = () => DEFAULT_CHATGPT_OPTIONS,
   ) {
     rpc.subscribe((message) => this.accountEvent(message), () => {
+      this.accountVerifiedAt = 0;
+      this.discardAllLive();
       this.loginId = undefined;
       this.publish({ status: "disconnected", limits: [], error: "Codex disconnected. Refresh to reconnect." });
     });
@@ -192,6 +298,8 @@ export class ChatGptService {
       else this.publish({ status: "disconnected", limits: [], error: String(message.params?.error ?? "Sign-in was cancelled.") });
     } else if (message.method === "account/updated" && !message.params?.authMode) {
       this.accountVersion++;
+      this.accountVerifiedAt = 0;
+      this.discardAllLive();
       this.publish({ status: "disconnected", limits: [] });
     } else if (message.method === "account/rateLimits/updated" && this.state.status === "connected") {
       const limits = subscriptionLimits(message.params ?? {});
@@ -216,6 +324,7 @@ export class ChatGptService {
   }
 
   private async readAccount(): Promise<void> {
+    this.lastRefreshAt = Date.now();
     const version = this.accountVersion;
     this.publish({ ...this.state, refreshing: true, error: undefined });
     try {
@@ -236,10 +345,19 @@ export class ChatGptService {
     }
   }
 
-  async requireAccount(): Promise<void> {
+  /** `cached` skips the account read when it was done recently: a long tool loop made one for every
+   *  model call, and sign-out is announced by Codex as it happens (see accountEvent). */
+  async requireAccount(cached = false): Promise<void> {
     await this.ready();
+    if (cached && Date.now() - this.accountVerifiedAt < ACCOUNT_CHECK_MS) return;
     const result = await this.rpc.request<{ account: { type: string } | null }>("account/read", { refreshToken: false });
-    if (result.account?.type !== "chatgpt") throw new Error("Sign in with ChatGPT in Blacksite Settings > Model to use your subscription.");
+    if (result.account?.type !== "chatgpt") { this.accountVerifiedAt = 0; throw new Error("Sign in with ChatGPT in Blacksite Settings > Model to use your subscription."); }
+    this.accountVerifiedAt = Date.now();
+  }
+
+  private refreshSoon(): void {
+    if (Date.now() - this.lastRefreshAt < REFRESH_MS) return;
+    void this.refresh();
   }
 
   async login(): Promise<void> {
@@ -274,6 +392,8 @@ export class ChatGptService {
 
   async logout(): Promise<void> {
     await this.ready();
+    this.accountVerifiedAt = 0;
+    this.discardAllLive();
     await this.cancelLogin();
     await Promise.all([...this.activeTurns].map(([threadId, turnId]) => this.rpc.request("turn/interrupt", { threadId, turnId }).catch(() => {})));
     await this.rpc.request("account/logout");
@@ -330,33 +450,84 @@ export class ChatGptService {
     return this.catalog.get(id);
   }
 
-  /** Each provider round gets an ephemeral thread seeded from Blacksite's authoritative
-   * transcript. This preserves edits, restored sessions and client-side compression.
-   * A dynamic tool request ends the model round; Blacksite executes it through its
-   * normal tool/approval pipeline and replays the result on the next round.
+  /**
+   * One model round. With a conversation id the round runs on that conversation's live Codex
+   * thread: a tool call is left pending inside the open turn and answered with its result on the
+   * next round, so the model keeps its own state (reasoning, cache) instead of being re-seeded
+   * from the transcript every time. Anything that makes the thread disagree with Blacksite's
+   * transcript (compaction, an edit, a changed tool list, a steer) starts a fresh thread seeded
+   * from the transcript, which is also how every round used to run.
    *
-   * The model's reasoning is captured from the raw response stream and replayed with the
-   * result. If Codex refuses that replay before producing anything, the round is retried once
-   * with the plain transcript, so continuity can only ever improve a request, never fail one. */
+   * Reasoning state is captured from the raw response stream and replayed on a fresh thread. If
+   * Codex refuses that replay before producing anything, the round is retried once with the plain
+   * transcript, so continuity can only ever improve a request, never fail one.
+   */
   async *stream(request: SubscriptionRequest): AsyncGenerator<ProviderTurnStreamEvent> {
     request.signal?.throwIfAborted();
-    await this.requireAccount();
+    await this.requireAccount(true);
     const info = await this.modelInfo(request.model);
     const continuity = !request.utility && Date.now() >= this.continuityPausedUntil;
-    const items = toCodexInputItems(request.messages, continuity);
-    const carried = continuity && items.some((item) => item.type === "reasoning" || item.type === "custom_tool_call");
+    const carried = continuity && toCodexInputItems(request.messages, true).some((item) => item.type === "reasoning" || item.type === "custom_tool_call");
+    const key = !request.utility && this.options().reuseConversation ? request.conversationId : undefined;
+    const produces = (event: ProviderTurnStreamEvent) => event.type === "text_delta" || event.type === "thinking_delta" || event.type === "thinking_block" || event.type === "tool_use_block";
+
+    if (key) {
+      const plans: Array<{ reuse: boolean; continuity: boolean }> = [{ reuse: true, continuity }];
+      if (this.live.has(key)) plans.push({ reuse: false, continuity });
+      if (carried) plans.push({ reuse: false, continuity: false });
+      for (let attempt = 0; attempt < plans.length; attempt++) {
+        let produced = false;
+        try {
+          for await (const event of this.liveRound(request, info, key, plans[attempt]!)) {
+            if (produces(event)) produced = true;
+            yield event;
+          }
+          return;
+        } catch (error) {
+          await this.discardLive(key);
+          const next = plans[attempt + 1];
+          if (!next || produced || request.signal?.aborted || isAbortError(error) || (error instanceof CodexTurnError && FINAL_FAILURES.has(error.kind))) throw error;
+          if (!next.continuity && plans[attempt]!.continuity) {
+            this.continuityPausedUntil = Date.now() + 10 * 60_000;
+            yield { type: "notice", level: "info", message: "ChatGPT did not accept the earlier reasoning state; continuing without it." };
+          }
+        }
+      }
+      return;
+    }
+
+    const history = request.contextTail ? [...request.messages, { role: "user" as const, content: request.contextTail }] : request.messages;
     let produced = false;
     try {
-      for await (const event of this.round(request, info, items)) {
-        if (event.type === "text_delta" || event.type === "thinking_delta" || event.type === "thinking_block" || event.type === "tool_use_block") produced = true;
+      for await (const event of this.round(request, info, toCodexInputItems(history, continuity))) {
+        if (produces(event)) produced = true;
         yield event;
       }
     } catch (error) {
       if (!carried || produced || request.signal?.aborted || isAbortError(error) || (error instanceof CodexTurnError && FINAL_FAILURES.has(error.kind))) throw error;
       this.continuityPausedUntil = Date.now() + 10 * 60_000;
       yield { type: "notice", level: "info", message: "ChatGPT did not accept the earlier reasoning state; continuing without it." };
-      yield* this.round(request, info, toCodexInputItems(request.messages, false));
+      yield* this.round(request, info, toCodexInputItems(history, false));
     }
+  }
+
+  /** Forget a conversation's live thread (its chat was reset). Safe to call for an unknown id. */
+  releaseConversation(id: string): void { void this.discardLive(id); }
+
+  private async discardLive(key: string): Promise<void> {
+    const thread = this.live.get(key);
+    if (!thread) return;
+    this.live.delete(key);
+    thread.dead = true;
+    if (thread.idleTimer) clearTimeout(thread.idleTimer);
+    thread.unsubscribe();
+    this.activeTurns.delete(thread.threadId);
+    if (thread.running && thread.turnId) await this.rpc.request("turn/interrupt", { threadId: thread.threadId, turnId: thread.turnId }).catch(() => {});
+    await this.rpc.request("thread/unsubscribe", { threadId: thread.threadId }).catch(() => {});
+  }
+
+  private discardAllLive(): void {
+    for (const key of [...this.live.keys()]) void this.discardLive(key);
   }
 
   private async startThread(params: Record<string, unknown>, raw: boolean): Promise<{ thread: { id: string } }> {
@@ -369,19 +540,25 @@ export class ChatGptService {
     }
   }
 
-  private async *round(request: SubscriptionRequest, info: ModelInfo | undefined, items: Array<Record<string, unknown>>): AsyncGenerator<ProviderTurnStreamEvent> {
+  /** Everything fixed when a thread starts: tools, instructions, and the settings Codex reads from
+   *  thread config. A change to any of it needs a new thread (see threadSignature). */
+  private threadParams(request: SubscriptionRequest): Record<string, unknown> {
     const options = this.options();
     const tools = request.tools.map((tool) => ({ type: "function", name: `blacksite_${tool.name}`, description: tool.description, inputSchema: tool.input_schema }));
-    const effort = resolveCodexEffort(request.utility ? "low" : request.reasoningEffort, info?.reasoningEfforts);
-    const summary = request.utility ? "none" : this.summaryRejected.has(request.model) ? undefined : options.reasoningSummary;
     const config: Record<string, unknown> = {
       "features.shell_tool": false, "features.unified_exec": false, "features.apps": false, "features.multi_agent": false, project_doc_max_bytes: 0,
       // Codex's own search stays off unless the user turned it on for this chat; a helper call
       // never searches.
       ...codexWebSearchConfig(request.utility ? undefined : request.hostedSearch),
     };
-    if (options.extendedContext && !request.utility) config.model_context_window = CODEX_EXTENDED_WINDOW;
-    const result = await this.startThread({
+    if (!request.utility) {
+      // The summary is requested again when each turn starts. A thread that carries it as well
+      // returned summaries on turns where the turn-level request alone returned none.
+      if (options.reasoningSummary !== "none" && !this.summaryRejected.has(request.model)) config["model_reasoning_summary"] = options.reasoningSummary;
+      if (options.verbosity !== "default") config["model_verbosity"] = options.verbosity;
+      if (options.extendedContext) config.model_context_window = CODEX_EXTENDED_WINDOW;
+    }
+    return {
       model: request.model || null, modelProvider: "openai", ephemeral: true,
       cwd: this.home, environments: [], sandbox: "read-only", approvalPolicy: "never",
       baseInstructions: request.systemPrompt,
@@ -391,17 +568,308 @@ export class ChatGptService {
       dynamicTools: tools,
       ...(request.serviceTier ? { serviceTier: request.serviceTier } : {}),
       config,
-    }, this.rawEvents && !request.utility);
+    };
+  }
+
+  /** Fingerprint of the thread-level inputs. A live thread is reused only while this is unchanged. */
+  private threadSignature(request: SubscriptionRequest): string {
+    const options = this.options();
+    return sha(JSON.stringify([request.model, request.systemPrompt, request.tools, request.hostedSearch ?? null, request.serviceTier ?? null, options.extendedContext, options.reasoningSummary, options.verbosity, this.summaryRejected.has(request.model)]));
+  }
+
+  private turnParams(request: SubscriptionRequest, info: ModelInfo | undefined, threadId: string, input: Array<Record<string, unknown>>, withSummary: boolean): Record<string, unknown> {
+    const effort = resolveCodexEffort(request.utility ? "low" : request.reasoningEffort, info?.reasoningEfforts);
+    const summary = request.utility ? "none" : this.summaryRejected.has(request.model) ? undefined : this.options().reasoningSummary;
+    return { threadId, input, ...(effort ? { effort } : {}), ...(withSummary && summary ? { summary } : {}) };
+  }
+
+  private async startTurn(request: SubscriptionRequest, info: ModelInfo | undefined, threadId: string, input: Array<Record<string, unknown>>): Promise<{ turn: { id: string } }> {
+    try { return await this.rpc.request<{ turn: { id: string } }>("turn/start", this.turnParams(request, info, threadId, input, true)); } catch (error) {
+      const summary = this.options().reasoningSummary;
+      // A model that cannot summarize its reasoning should still answer.
+      if (request.utility || summary === "none" || !/summary/i.test(error instanceof Error ? error.message : String(error))) throw error;
+      this.summaryRejected.add(request.model);
+      return this.rpc.request<{ turn: { id: string } }>("turn/start", this.turnParams(request, info, threadId, input, false));
+    }
+  }
+
+  /**
+   * Turn one Codex notification into Blacksite stream events, recording tool calls and the end of
+   * the turn in `state`. Shared by the one-shot round and the live thread so the two cannot drift.
+   */
+  private *translate(message: CodexMessage, request: SubscriptionRequest, state: RoundState): Generator<ProviderTurnStreamEvent> {
+    const p = message.params ?? {};
+    if (message.method === "item/agentMessage/delta") {
+      const text = String(p.delta ?? "");
+      state.text += text;
+      yield { type: "text_delta", text };
+    } else if (message.method === "item/reasoning/summaryTextDelta" || message.method === "item/reasoning/textDelta") {
+      const text = String(p.delta ?? "");
+      if (text) { state.thinking = true; yield { type: "thinking_delta", text }; }
+    } else if (message.method === "item/reasoning/summaryPartAdded") {
+      // Each summary part is its own titled paragraph; without a break they run together.
+      if (state.thinking) yield { type: "thinking_delta", text: "\n\n" };
+    } else if (message.method === "rawResponseItem/completed") {
+      const raw = p.item as { type?: string; id?: unknown; summary?: unknown; encrypted_content?: unknown; call_id?: unknown; name?: unknown; input?: unknown; output?: unknown } | undefined;
+      if (raw?.type === "reasoning" && typeof raw.id === "string" && !state.reasoningSeen.has(raw.id)) {
+        state.reasoningSeen.add(raw.id);
+        const encryptedContent = typeof raw.encrypted_content === "string" && raw.encrypted_content ? raw.encrypted_content : undefined;
+        const text = joinSummary(raw.summary);
+        // A Codex that sends summaries only when the item completes would otherwise leave the
+        // thinking pane empty; once any delta has streamed, the deltas are the display.
+        if (text && !state.thinking) { state.thinking = true; yield { type: "thinking_delta", text }; }
+        // Replaying the item is what keeps the model from starting its reasoning over after a tool call.
+        if (text || encryptedContent) yield { type: "thinking_block", text, encryptedContent, reasoningItemId: raw.id };
+      } else if (raw?.type === "custom_tool_call" && request.hostedSearch && typeof raw.call_id === "string" && !state.replayedCalls.has(raw.call_id) && isCodexSearchCell(raw.input)) {
+        state.searchCells.set(raw.call_id, { type: "custom_tool_call", call_id: raw.call_id, name: raw.name, input: raw.input });
+      } else if (raw?.type === "custom_tool_call_output" && typeof raw.call_id === "string" && state.searchCells.has(raw.call_id)) {
+        // Without this pair the next round's fresh thread has the model's answer but not what
+        // it read, and a code-mode model searches again for what it already found.
+        const cell = state.searchCells.get(raw.call_id)!;
+        state.searchCells.delete(raw.call_id);
+        yield { type: "provider_native_block", block: { type: "provider_native", provider: "codex", block: cell } };
+        yield { type: "provider_native_block", block: { type: "provider_native", provider: "codex", block: { type: "custom_tool_call_output", call_id: raw.call_id, output: raw.output } } };
+      }
+    } else if (message.method === "item/completed" && (p.item as { type?: string } | undefined)?.type === "webSearch") {
+      const item = p.item as { id?: unknown; query?: unknown; action?: { query?: unknown; queries?: unknown } | null; results?: unknown };
+      const query = typeof item.query === "string" && item.query ? item.query
+        : typeof item.action?.query === "string" ? item.action.query
+        : Array.isArray(item.action?.queries) ? item.action.queries.filter((q): q is string => typeof q === "string").join("; ") : "";
+      yield { type: "hosted_search", id: String(item.id ?? `codex-search-${Date.now()}`), query, results: codexSearchResults(item.results) };
+    } else if (message.method === "model/rerouted") {
+      yield { type: "notice", level: "warn", message: `ChatGPT answered with ${String(p.toModel ?? "another model")} instead of ${String(p.fromModel ?? "the selected model")}${p.reason === "highRiskCyberActivity" ? " because the request was flagged as high-risk cyber activity" : ""}.` };
+    } else if (message.method === "warning") {
+      if (typeof p.message === "string" && p.message) yield { type: "notice", level: "warn", message: p.message };
+    } else if (message.method === "error") {
+      const detail = (p.error as { message?: string } | undefined)?.message;
+      if (p.willRetry) yield { type: "provider_activity", phase: "retrying", message: `ChatGPT is retrying${detail ? `: ${detail}` : ""}` };
+    } else if (message.method === "item/tool/call") {
+      const name = String(p.tool ?? "").replace(/^blacksite_/, "");
+      if (!request.tools.some((tool) => tool.name === name)) throw new Error("Codex requested an unavailable Blacksite tool.");
+      const input = typeof p.arguments === "string" ? JSON.parse(p.arguments) : p.arguments;
+      if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Codex returned invalid tool arguments.");
+      if (typeof p.callId !== "string" || !p.callId) throw new Error("Codex returned an invalid tool call ID.");
+      if (message.id === undefined) throw new Error("Codex sent a tool call without a request ID.");
+      state.calls.push({ requestId: message.id, callId: p.callId, name, input: input as Record<string, unknown> });
+    } else if (message.method === "turn/completed") {
+      const final = p.turn as { status: string; error?: { message?: string; codexErrorInfo?: unknown } };
+      if (final.status !== "completed") throw turnFailure(final.error);
+      state.completed = true;
+    }
+  }
+
+  private newState(request: SubscriptionRequest): RoundState {
+    const state: RoundState = { text: "", thinking: false, completed: false, calls: [], reasoningSeen: new Set(), replayedCalls: new Set(), searchCells: new Map() };
+    // Codex echoes injected history back as rawResponseItem/completed events. Those items are
+    // already in the transcript; recording them again would replay every earlier search twice
+    // the next round, and twice more the round after.
+    for (const message of request.messages) {
+      if (typeof message.content === "string") continue;
+      for (const block of message.content) {
+        if (block.type === "thinking" && block.reasoningItemId) state.reasoningSeen.add(block.reasoningItemId);
+        if (block.type === "provider_native" && block.provider === "codex" && typeof block.block["call_id"] === "string") state.replayedCalls.add(block.block["call_id"]);
+      }
+    }
+    return state;
+  }
+
+  /** A turn that reasoned but returned no summary would otherwise look like a model that did not
+   *  think. Say what happened, once per round, instead of leaving the thinking pane blank. */
+  private silentReasoning(state: RoundState, reasoningTokens: number): ProviderTurnStreamEvent | undefined {
+    if (reasoningTokens <= 0 || state.thinking || this.options().reasoningSummary === "none") return undefined;
+    return { type: "thinking_delta", text: `Reasoned for ${reasoningTokens.toLocaleString("en-US")} tokens. ChatGPT sent no summary of it for this step.` };
+  }
+
+  // ── Live thread ────────────────────────────────────────────────────────────
+
+  private async *liveRound(request: SubscriptionRequest, info: ModelInfo | undefined, key: string, plan: { reuse: boolean; continuity: boolean }): AsyncGenerator<ProviderTurnStreamEvent> {
+    const signature = this.threadSignature(request);
+    let thread = plan.reuse ? this.live.get(key) : undefined;
+    let step: ResumeStep | undefined;
+    if (thread) {
+      step = this.planResume(thread, request, signature);
+      if (!step) { await this.discardLive(key); thread = undefined; }
+    } else if (this.live.has(key)) await this.discardLive(key);
+
+    if (!thread) {
+      thread = await this.openLive(request, key, signature);
+      step = await this.seedLive(thread, request, plan.continuity);
+    }
+    const live = thread;
+    live.busy = true;
+    if (live.idleTimer) { clearTimeout(live.idleTimer); live.idleTimer = undefined; }
+    this.touch(live);
+
+    const state = this.newState(request);
+    const started = live.reported;
+    const abort = () => { live.failure = new Error("ChatGPT request cancelled."); live.failure.name = "AbortError"; live.wake?.(); };
+    request.signal?.addEventListener("abort", abort, { once: true });
+    const deadline = setTimeout(() => { live.failure = new Error("ChatGPT response timed out. Retry the request."); live.wake?.(); }, 10 * 60_000);
+    let settled = false;
+    try {
+      request.signal?.throwIfAborted();
+      if (live.failure) throw live.failure;
+      if (step!.kind === "results") {
+        const open = live.open!;
+        live.open = undefined;
+        open.calls.forEach((call, index) => {
+          const result = step!.kind === "results" ? step!.results.get(call.callId)! : undefined;
+          const images = index === open.calls.length - 1 && step!.kind === "results" ? step!.images : [];
+          this.rpc.respond(call.requestId, { contentItems: [{ type: "inputText", text: result!.content }, ...images.map((image) => ({ type: "inputImage", imageUrl: `data:${image.source.media_type};base64,${image.source.data}` }))], success: toolSucceeded(result!.content) });
+        });
+      } else {
+        live.queue.length = 0; // anything left over belongs to the turn that already finished
+        const turn = await this.startTurn(request, info, live.threadId, step!.input);
+        live.turnId = turn.turn.id;
+        live.running = true;
+        this.activeTurns.set(live.threadId, live.turnId);
+      }
+      while (!state.completed) {
+        const message = await this.take(live, state.calls.length ? 250 : undefined);
+        if (!message) break; // calls arrive together; a quiet moment means the batch is complete
+        yield* this.translate(message, request, state);
+      }
+      const totals = live.latest;
+      const spent = { input: totals.inputTokens - started.inputTokens, cached: totals.cachedInputTokens - started.cachedInputTokens, written: totals.cacheWriteInputTokens - started.cacheWriteInputTokens, output: totals.outputTokens - started.outputTokens, reasoning: totals.reasoningOutputTokens - started.reasoningOutputTokens };
+      live.reported = { ...totals };
+      const silent = this.silentReasoning(state, spent.reasoning);
+      if (silent) yield silent;
+      if (spent.input > 0 || spent.output > 0) yield { type: "usage_update", inputTokens: Math.max(0, spent.input - spent.cached - spent.written), outputTokens: spent.output, cacheReadTokens: spent.cached, cacheWriteTokens: spent.written };
+      // What the next round must find in the transcript for this thread to still be the right one.
+      live.synced = request.messages.length;
+      live.fingerprint = sha(JSON.stringify(request.messages));
+      live.emitted = emittedDigest(state.text, state.calls.map((call) => call.callId));
+      if (state.calls.length) {
+        live.open = { turnId: live.turnId!, calls: state.calls };
+        for (const call of state.calls) yield { type: "tool_use_block", block: { type: "tool_use", id: call.callId, name: call.name, input: call.input } };
+        yield { type: "stop_reason", reason: "tool_use" };
+      } else {
+        live.open = undefined;
+        live.running = false;
+        this.activeTurns.delete(live.threadId);
+        yield { type: "stop_reason", reason: "end_turn" };
+        this.refreshSoon();
+      }
+      settled = true;
+    } finally {
+      clearTimeout(deadline);
+      request.signal?.removeEventListener("abort", abort);
+      live.busy = false;
+      if (settled) this.armIdle(key, live);
+      else await this.discardLive(key);
+    }
+  }
+
+  /** Start a Codex thread for a conversation and subscribe to everything it sends. */
+  private async openLive(request: SubscriptionRequest, key: string, signature: string): Promise<LiveThread> {
+    // Room for this thread: drop the least recently used idle one rather than grow without bound.
+    while (this.live.size >= MAX_LIVE_THREADS) {
+      const oldest = [...this.live.values()].filter((t) => !t.busy).sort((a, b) => a.lastUsed - b.lastUsed)[0];
+      if (!oldest) break;
+      await this.discardLive(oldest.key);
+    }
+    const result = await this.startThread(this.threadParams(request), this.rawEvents);
+    const live: LiveThread = {
+      key, threadId: result.thread.id, signature, queue: [], dead: false, busy: false, lastUsed: Date.now(),
+      synced: 0, fingerprint: "", emitted: "", reported: { ...ZERO_TOTALS }, latest: { ...ZERO_TOTALS },
+      unsubscribe: () => {},
+    };
+    live.unsubscribe = this.rpc.subscribe((message) => {
+      if (message.params?.threadId !== live.threadId) return;
+      if (message.method === "thread/tokenUsage/updated") {
+        const tokenUsage = message.params.tokenUsage as { total?: Totals; modelContextWindow?: number | null } | undefined;
+        if (tokenUsage?.total) live.latest = { ...ZERO_TOTALS, ...tokenUsage.total };
+        const extended = this.options().extendedContext;
+        if (tokenUsage?.modelContextWindow) this.observedWindows.set(`${request.model}|${extended}`, tokenUsage.modelContextWindow);
+      }
+      live.queue.push(message);
+      live.wake?.();
+    }, (error) => { live.failure = error; live.dead = true; live.wake?.(); });
+    this.live.set(key, live);
+    return live;
+  }
+
+  /** Put a new live thread in the state the transcript describes, and decide what starts its turn. */
+  private async seedLive(live: LiveThread, request: SubscriptionRequest, continuity: boolean): Promise<ResumeStep> {
+    const messages = request.messages;
+    const last = messages[messages.length - 1];
+    const prompt = last && last.role === "user" && !userBlocks(last).some((block) => block.type === "tool_result");
+    const items = toCodexInputItems(prompt ? messages.slice(0, -1) : messages, continuity);
+    if (items.length) await this.rpc.request("thread/inject_items", { threadId: live.threadId, items });
+    const input = prompt ? promptInput(last!, request.contextTail) : [textInput(CONTINUE_TEXT), ...(request.contextTail ? [textInput(request.contextTail)] : [])];
+    live.contextSent = request.contextTail ?? "";
+    return { kind: "turn", input };
+  }
+
+  /** What to do with an existing live thread, or undefined when it no longer matches the transcript. */
+  private planResume(live: LiveThread, request: SubscriptionRequest, signature: string): ResumeStep | undefined {
+    if (live.dead || live.busy || live.failure || live.signature !== signature) return undefined;
+    const messages = request.messages;
+    if (messages.length < live.synced + 2) return undefined;
+    if (sha(JSON.stringify(messages.slice(0, live.synced))) !== live.fingerprint) return undefined;
+    const assistant = messages[live.synced]!;
+    if (assistant.role !== "assistant" || assistantDigest(assistant) !== live.emitted) return undefined;
+    const rest = messages.slice(live.synced + 1);
+    if (rest.length !== 1 || rest[0]!.role !== "user") return undefined;
+    const user = rest[0]!;
+    const blocks = userBlocks(user);
+    const results = blocks.filter((block): block is ToolResultBlock => block.type === "tool_result");
+    const hasText = blocks.some((block) => block.type === "text" && block.text.trim());
+    const images = blocks.filter((block): block is ImageBlock => block.type === "image");
+    if (live.open) {
+      // Anything beyond the answers to the open calls (a steer, a stray result) cannot be delivered
+      // into a turn that is waiting on tool output.
+      if (hasText || results.length !== live.open.calls.length) return undefined;
+      const byId = new Map(results.map((result) => [result.tool_use_id, result]));
+      if (!live.open.calls.every((call) => byId.has(call.callId))) return undefined;
+      return { kind: "results", results: byId, images };
+    }
+    if (results.length || (!hasText && !images.length)) return undefined;
+    // The workspace block rides along only when it changed: every copy stays in the thread.
+    const tail = request.contextTail && request.contextTail !== live.contextSent ? request.contextTail : undefined;
+    if (tail) live.contextSent = tail;
+    return { kind: "turn", input: promptInput(user, tail) };
+  }
+
+  /** The next notification for a live thread. With `quietMs`, resolves undefined once that long
+   *  passes with nothing new; without it, waits as long as the round's deadline allows. */
+  private async take(live: LiveThread, quietMs?: number): Promise<CodexMessage | undefined> {
+    for (;;) {
+      if (live.failure) throw live.failure;
+      const message = live.queue.shift();
+      if (message) return message;
+      const woke = await new Promise<boolean>((resolve) => {
+        const timer = quietMs === undefined ? undefined : setTimeout(() => { live.wake = undefined; resolve(false); }, quietMs);
+        live.wake = () => { if (timer) clearTimeout(timer); live.wake = undefined; resolve(true); };
+      });
+      if (!woke) return undefined;
+    }
+  }
+
+  private touch(live: LiveThread): void { live.lastUsed = Date.now(); }
+
+  private armIdle(key: string, live: LiveThread): void {
+    if (live.dead) return;
+    if (live.idleTimer) clearTimeout(live.idleTimer);
+    // A turn parked on a tool the user has not approved yet is waiting on a person, so it gets
+    // longer than an idle conversation; both are released rather than held forever.
+    live.idleTimer = setTimeout(() => { void this.discardLive(key); }, live.open ? PARKED_TURN_MS : IDLE_THREAD_MS);
+    live.idleTimer.unref?.();
+  }
+
+  // ── One-shot round (helper calls, and conversation reuse turned off) ──────
+
+  private async *round(request: SubscriptionRequest, info: ModelInfo | undefined, items: Array<Record<string, unknown>>): AsyncGenerator<ProviderTurnStreamEvent> {
+    const result = await this.startThread(this.threadParams(request), this.rawEvents && !request.utility);
     const threadId = result.thread.id;
     // Only a thread that asked for the larger window can report it; a helper call never does.
-    const extendedApplied = options.extendedContext && !request.utility;
+    const extendedApplied = this.options().extendedContext && !request.utility;
     const queue: CodexMessage[] = [];
     let wake: (() => void) | undefined;
     let failure: Error | undefined;
     let turnId: string | undefined;
-    let completed = false;
-    let call: ToolUseBlock | undefined;
-    let usage: { inputTokens: number; outputTokens: number; cachedInputTokens: number; cacheWriteInputTokens?: number } | undefined;
+    const state = this.newState(request);
+    let usage: { inputTokens: number; outputTokens: number; cachedInputTokens: number; cacheWriteInputTokens?: number; reasoningOutputTokens?: number } | undefined;
     const unsubscribe = this.rpc.subscribe((message) => {
       if (message.params?.threadId === threadId && message.method === "thread/tokenUsage/updated") {
         const tokenUsage = message.params.tokenUsage as { total?: typeof usage; modelContextWindow?: number | null } | undefined;
@@ -416,107 +884,30 @@ export class ChatGptService {
     try {
       request.signal?.throwIfAborted();
       if (items.length) await this.rpc.request("thread/inject_items", { threadId, items });
-      const start = (withSummary: boolean) => this.rpc.request<{ turn: { id: string } }>("turn/start", {
-        threadId, input: [{ type: "text", text: "Continue from the conversation above. Respond to the latest user request or tool results." }],
-        ...(effort ? { effort } : {}),
-        ...(withSummary && summary ? { summary } : {}),
-      });
-      let turn: { turn: { id: string } };
-      try { turn = await start(true); } catch (error) {
-        // A model that cannot summarize its reasoning should still answer.
-        if (!summary || summary === "none" || !/summary/i.test(error instanceof Error ? error.message : String(error))) throw error;
-        this.summaryRejected.add(request.model);
-        turn = await start(false);
-      }
+      const turn = await this.startTurn(request, info, threadId, [textInput(CONTINUE_TEXT)]);
       turnId = turn.turn.id;
       this.activeTurns.set(threadId, turnId);
-      const reasoningSeen = new Set<string>();
-      let thinking = false;
-      // A code-mode search is an `exec` cell that ran only the built-in web tool. Its output holds
-      // the results, so the pair is kept for the next round's replay once the output arrives.
-      const searchCells = new Map<string, Record<string, unknown>>();
-      // Codex echoes the injected history back as rawResponseItem/completed events. Those items are
-      // already in the transcript; recording them again would replay every earlier search twice
-      // the next round, and twice more the round after.
-      const replayedCalls = new Set<string>();
-      for (const message of request.messages) {
-        if (typeof message.content === "string") continue;
-        for (const block of message.content) {
-          if (block.type === "thinking" && block.reasoningItemId) reasoningSeen.add(block.reasoningItemId);
-          if (block.type === "provider_native" && block.provider === "codex" && typeof block.block["call_id"] === "string") replayedCalls.add(block.block["call_id"]);
-        }
-      }
-      while (!completed && !call) {
+      while (!state.completed && !state.calls.length) {
         if (failure) throw failure;
         const message = queue.shift();
         if (!message) { await new Promise<void>((resolve) => { wake = resolve; }); continue; }
-        const p = message.params ?? {};
-        if (message.method === "item/agentMessage/delta") yield { type: "text_delta", text: String(p.delta ?? "") };
-        else if (message.method === "item/reasoning/summaryTextDelta" || message.method === "item/reasoning/textDelta") {
-          const text = String(p.delta ?? "");
-          if (text) { thinking = true; yield { type: "thinking_delta", text }; }
-        } else if (message.method === "item/reasoning/summaryPartAdded") {
-          // Each summary part is its own titled paragraph; without a break they run together.
-          if (thinking) yield { type: "thinking_delta", text: "\n\n" };
-        } else if (message.method === "rawResponseItem/completed") {
-          const raw = p.item as { type?: string; id?: unknown; summary?: unknown; encrypted_content?: unknown; call_id?: unknown; name?: unknown; input?: unknown; output?: unknown } | undefined;
-          if (raw?.type === "reasoning" && typeof raw.id === "string" && !reasoningSeen.has(raw.id)) {
-            reasoningSeen.add(raw.id);
-            const encryptedContent = typeof raw.encrypted_content === "string" && raw.encrypted_content ? raw.encrypted_content : undefined;
-            const text = joinSummary(raw.summary);
-            // A Codex that sends summaries only when the item completes would otherwise leave the
-            // thinking pane empty; once any delta has streamed, the deltas are the display.
-            if (text && !thinking) { thinking = true; yield { type: "thinking_delta", text }; }
-            // Replaying the item is what keeps the model from starting its reasoning over after a tool call.
-            if (text || encryptedContent) yield { type: "thinking_block", text, encryptedContent, reasoningItemId: raw.id };
-          } else if (raw?.type === "custom_tool_call" && request.hostedSearch && typeof raw.call_id === "string" && !replayedCalls.has(raw.call_id) && isCodexSearchCell(raw.input)) {
-            searchCells.set(raw.call_id, { type: "custom_tool_call", call_id: raw.call_id, name: raw.name, input: raw.input });
-          } else if (raw?.type === "custom_tool_call_output" && typeof raw.call_id === "string" && searchCells.has(raw.call_id)) {
-            // Without this pair the next round's fresh thread has the model's answer but not what
-            // it read, and a code-mode model searches again for what it already found.
-            const cell = searchCells.get(raw.call_id)!;
-            searchCells.delete(raw.call_id);
-            yield { type: "provider_native_block", block: { type: "provider_native", provider: "codex", block: cell } };
-            yield { type: "provider_native_block", block: { type: "provider_native", provider: "codex", block: { type: "custom_tool_call_output", call_id: raw.call_id, output: raw.output } } };
-          }
-        } else if (message.method === "item/completed" && (p.item as { type?: string } | undefined)?.type === "webSearch") {
-          const item = p.item as { id?: unknown; query?: unknown; action?: { query?: unknown; queries?: unknown } | null; results?: unknown };
-          const query = typeof item.query === "string" && item.query ? item.query
-            : typeof item.action?.query === "string" ? item.action.query
-            : Array.isArray(item.action?.queries) ? item.action.queries.filter((q): q is string => typeof q === "string").join("; ") : "";
-          yield { type: "hosted_search", id: String(item.id ?? `codex-search-${Date.now()}`), query, results: codexSearchResults(item.results) };
-        } else if (message.method === "model/rerouted") {
-          yield { type: "notice", level: "warn", message: `ChatGPT answered with ${String(p.toModel ?? "another model")} instead of ${String(p.fromModel ?? "the selected model")}${p.reason === "highRiskCyberActivity" ? " because the request was flagged as high-risk cyber activity" : ""}.` };
-        } else if (message.method === "warning") {
-          if (typeof p.message === "string" && p.message) yield { type: "notice", level: "warn", message: p.message };
-        } else if (message.method === "error") {
-          const detail = (p.error as { message?: string } | undefined)?.message;
-          if (p.willRetry) yield { type: "provider_activity", phase: "retrying", message: `ChatGPT is retrying${detail ? `: ${detail}` : ""}` };
-        } else if (message.method === "item/tool/call") {
-          const name = String(p.tool ?? "").replace(/^blacksite_/, "");
-          if (!request.tools.some((tool) => tool.name === name)) throw new Error("Codex requested an unavailable Blacksite tool.");
-          const input = typeof p.arguments === "string" ? JSON.parse(p.arguments) : p.arguments;
-          if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Codex returned invalid tool arguments.");
-          if (typeof p.callId !== "string" || !p.callId) throw new Error("Codex returned an invalid tool call ID.");
-          call = { type: "tool_use", id: String(p.callId), name, input: input as Record<string, unknown> };
-        } else if (message.method === "turn/completed") {
-          const final = p.turn as { status: string; error?: { message?: string; codexErrorInfo?: unknown } };
-          if (final.status !== "completed") throw turnFailure(final.error);
-          completed = true;
-        }
+        yield* this.translate(message, request, state);
       }
     } finally {
       clearTimeout(timeout);
       request.signal?.removeEventListener("abort", abort);
-      if (turnId && !completed) await this.rpc.request("turn/interrupt", { threadId, turnId }).catch(() => {});
+      if (turnId && !state.completed) await this.rpc.request("turn/interrupt", { threadId, turnId }).catch(() => {});
       this.activeTurns.delete(threadId);
       await this.rpc.request("thread/unsubscribe", { threadId }).catch(() => {});
       unsubscribe();
-      void this.refresh();
+      this.refreshSoon();
     }
     request.signal?.throwIfAborted();
+    const silent = this.silentReasoning(state, usage?.reasoningOutputTokens ?? 0);
+    if (silent) yield silent;
     if (usage) yield { type: "usage_update", inputTokens: Math.max(0, usage.inputTokens - usage.cachedInputTokens - (usage.cacheWriteInputTokens ?? 0)), outputTokens: usage.outputTokens, cacheReadTokens: usage.cachedInputTokens, cacheWriteTokens: usage.cacheWriteInputTokens ?? 0 };
-    if (call) yield { type: "tool_use_block", block: call };
+    const call = state.calls[0];
+    if (call) yield { type: "tool_use_block", block: { type: "tool_use", id: call.callId, name: call.name, input: call.input } };
     yield { type: "stop_reason", reason: call ? "tool_use" : "end_turn" };
   }
 
@@ -526,5 +917,5 @@ export class ChatGptService {
     return text;
   }
 
-  dispose(): void { this.disposed = true; this.accountVersion++; this.rpc.dispose(); }
+  dispose(): void { this.disposed = true; this.accountVersion++; this.discardAllLive(); this.rpc.dispose(); }
 }

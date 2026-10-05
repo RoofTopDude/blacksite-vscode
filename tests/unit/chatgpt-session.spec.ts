@@ -117,9 +117,11 @@ describe("ChatGPT routing through Blacksite", () => {
       _usesChatGpt: (_provider: string, settings: { providerSettings: { openai?: { authMode?: string } } }) => settings.providerSettings.openai?.authMode === "chatgpt",
     }) as Host;
     const merged = { reasoningEffort: "medium" };
-    const subscription = (reasoningEffort?: string) => ({ providerSettings: { openai: { authMode: "chatgpt", ...(reasoningEffort ? { reasoningEffort } : {}) } } });
+    const subscription = (subscriptionReasoningEffort?: string, apiKeyEffort?: string) => ({ providerSettings: { openai: { authMode: "chatgpt", ...(subscriptionReasoningEffort ? { subscriptionReasoningEffort } : {}), ...(apiKeyEffort ? { reasoningEffort: apiKeyEffort } : {}) } } });
     expect(host._reasoningEffortFor("openai", subscription(), merged)).toBeUndefined();
     expect(host._reasoningEffortFor("openai", subscription("xhigh"), merged)).toBe("xhigh");
+    // A depth chosen under API-key sign-in (here one ChatGPT models do not have) is not inherited.
+    expect(host._reasoningEffortFor("openai", subscription(undefined, "none"), merged)).toBeUndefined();
     expect(host._reasoningEffortFor("openai", { providerSettings: { openai: {} } }, merged)).toBe("medium");
   });
 
@@ -130,8 +132,9 @@ describe("ChatGPT routing through Blacksite", () => {
     expect(effectiveReasoningEffort("gpt-5.5", undefined, info)).toBe("xhigh");
     expect(effectiveReasoningEffort("gpt-5.5", "low", info)).toBe("low");
     expect(effectiveReasoningEffort("gpt-5.5", "max", info)).toBe("xhigh");
-    const settings = (reasoningEffort?: string) => ({ provider: "openai", providerSettings: { openai: { authMode: "chatgpt", model: "gpt-5.5", ...(reasoningEffort ? { reasoningEffort } : {}) } }, maxIterations: 40, disabledTools: [] }) as never;
+    const settings = (subscriptionReasoningEffort?: string, apiKeyEffort?: string) => ({ provider: "openai", providerSettings: { openai: { authMode: "chatgpt", model: "gpt-5.5", ...(subscriptionReasoningEffort ? { subscriptionReasoningEffort } : {}), ...(apiKeyEffort ? { reasoningEffort: apiKeyEffort } : {}) } }, maxIterations: 40, disabledTools: [] }) as never;
     expect(subscriptionReasoningEffort(settings(), info)).toBe("xhigh");
     expect(subscriptionReasoningEffort(settings("medium"), info)).toBe("medium");
+    expect(subscriptionReasoningEffort(settings(undefined, "low"), info)).toBe("xhigh");
   });
 });

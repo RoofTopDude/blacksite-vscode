@@ -95,7 +95,7 @@ import { SkillToolProvider as SkillToolService } from "./skills/skill-tools.js";
 import type { ModelInfo, ModelPricing } from "./model-fetcher.js";
 import { normalizeSamplingValue, samplingParameter, type SamplingKey } from "./sampling-parameters.js";
 import { compressHistory } from "./compressor.js";
-import { ChatGptService } from "./chatgpt-service.js";
+import { ChatGptService, DEFAULT_CHATGPT_OPTIONS } from "./chatgpt-service.js";
 import type { AgentMessage } from "./agent-loop-contract.js";
 import { CodexAppServer } from "./codex-app-server.js";
 import { listAvailableBedrockModels, bedrockModelsToModelInfo } from "./bedrock-models.js";
@@ -198,6 +198,10 @@ export interface ProviderSettings {
   thinking?: ThinkingConfig;
   /** Full OpenAI depth ladder — clamped per model family at request time. */
   reasoningEffort?: OpenAIReasoningEffort;
+  /** The depth chosen under ChatGPT sign-in. Kept apart from `reasoningEffort` because the two
+   *  routes offer different rungs: an API-key choice such as "Off" does not exist on a ChatGPT
+   *  model and must not carry over to it. */
+  subscriptionReasoningEffort?: OpenAIReasoningEffort;
   /** OpenAI processing tier ("flex" = reduced rates, queued latency). Meaningful for the openai provider only. */
   serviceTier?: OpenAIServiceTier;
   /**
@@ -502,13 +506,16 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const service = new ChatGptService(new CodexAppServer(executable, home), home,
       (state) => this._post({ type: "chatgpt_state", state }),
       async (url) => vscode.env.openExternal(vscode.Uri.parse(url)),
-      // Read on every request, so a change to either setting applies to the next turn.
+      // Read on every request, so a change to any of these applies to the next turn.
       () => {
         const config = vscode.workspace.getConfiguration("blacksite.chatgpt");
-        const summary = config.get<string>("reasoningSummary", "auto");
+        const summary = config.get<string>("reasoningSummary", DEFAULT_CHATGPT_OPTIONS.reasoningSummary);
+        const verbosity = config.get<string>("verbosity", DEFAULT_CHATGPT_OPTIONS.verbosity);
         return {
-          reasoningSummary: summary === "concise" || summary === "detailed" || summary === "none" ? summary : "auto",
+          reasoningSummary: summary === "auto" || summary === "concise" || summary === "none" ? summary : "detailed",
           extendedContext: config.get<boolean>("extendedContext", false),
+          reuseConversation: config.get<boolean>("reuseConversation", true),
+          verbosity: verbosity === "default" || verbosity === "low" || verbosity === "high" ? verbosity : "medium",
         };
       });
     this._chatgpt = service;
@@ -3172,7 +3179,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         const VALID_EFFORTS: ReadonlySet<string> = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
         if (!this._isValidProvider(provider) || !effort || !VALID_EFFORTS.has(effort)) break;
         const s = this._readSettings();
-        s.providerSettings[provider] = { ...this._providerSettings(provider, s), reasoningEffort: effort };
+        s.providerSettings[provider] = this._usesChatGpt(provider, s)
+          ? { ...this._providerSettings(provider, s), subscriptionReasoningEffort: effort }
+          : { ...this._providerSettings(provider, s), reasoningEffort: effort };
         this._writeSettings(s);
         this._session = null;
         return true;
@@ -4884,7 +4893,7 @@ ${this._pendingRewindNote}`;
    *  because the persisted default ("medium") is an API-key default that would otherwise override
    *  a Codex model's own — GPT-5.5 runs at x-high unless told otherwise. */
   private _reasoningEffortFor(provider: ProviderName, settings: ExtendedSettings, pSettings: ProviderSettings): OpenAIReasoningEffort | undefined {
-    return this._usesChatGpt(provider, settings) ? settings.providerSettings[provider]?.reasoningEffort : pSettings.reasoningEffort;
+    return this._usesChatGpt(provider, settings) ? settings.providerSettings[provider]?.subscriptionReasoningEffort : pSettings.reasoningEffort;
   }
 
   /** Request parameters the active model accepts, from the live catalog. Undefined when the

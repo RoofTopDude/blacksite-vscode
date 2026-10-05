@@ -79,10 +79,14 @@ this profile and stops active subscription model calls.
 
 This integration uses the documented [Codex app-server](https://learn.chatgpt.com/docs/app-server)
 account interface and its experimental dynamic-tool and transcript APIs. A current Codex
-version is required. Each model round starts an ephemeral thread with Blacksite's current
-transcript; when a tool is requested, Blacksite interrupts that thread and handles the tool
-itself. This keeps restored conversations and compression consistent, but differs from a
-persistent Codex session and can add overhead on long tool-heavy runs.
+version is required. Each conversation keeps one Codex thread open. When the model asks for a
+tool, Blacksite runs it through its own tools and approvals and sends the result back into the
+same turn, so the model keeps its own reasoning and ChatGPT's prompt cache, and a step after a
+tool result starts in a fraction of a second rather than seconds. Blacksite's transcript stays
+the source of truth: when it and the thread would disagree (history was compacted or edited, you
+steered alongside a tool result, the tool list or instructions changed, or the thread was
+cancelled), Blacksite starts a fresh thread seeded from the transcript instead. Turn
+`blacksite.chatgpt.reuseConversation` off to start a new thread for every model call.
 
 Chat, delegated agents using OpenAI, and OpenAI compression use the selected authentication
 mode. Subscription calls do not fall back to API billing, and Blacksite does not assign API dollar
@@ -93,12 +97,19 @@ require API credentials. Return to **API key** authentication to use the standar
 
 - **Reasoning you can read.** ChatGPT sends no reasoning unless it is asked to, so Blacksite
   asks for summaries and shows them in the thinking stream as the model works. Set
-  `blacksite.chatgpt.reasoningSummary` to `concise`, `detailed` or `none`. The default is `auto`.
+  `blacksite.chatgpt.reasoningSummary` to `auto`, `concise` or `none`; the default is `detailed`.
+  Some models reason without returning a summary even when one is requested, and a model may
+  decide a simple step needs no reasoning at all. When it reasoned but sent nothing, the thinking
+  pane says how many tokens it used instead of staying blank.
 - **Reasoning depth.** The Reasoning Effort control in **Settings > Model** and the chat's
   quick settings list the depths the selected model accepts, from ChatGPT's own catalog, and
-  show the model's default until you choose one. GPT-5.5 runs at x-high by default and GPT-6-Astra
+  show the model's default until you choose one. The depth is stored separately from the API-key
+  one, so a choice made there (for example Off, which ChatGPT models do not have) never carries over. GPT-5.5 runs at x-high by default and GPT-6-Astra
   at low. Depths above Max (Ultra, which hands work to ChatGPT's own sub-agents) are not offered;
   use Blacksite's delegation instead.
+- **Answer length.** Every ChatGPT model answers tersely by default (low verbosity).
+  `blacksite.chatgpt.verbosity` sets `low`, `medium` (the default), `high`, or `default` to leave
+  the model's own setting alone.
 - **Speed.** Models that offer a faster tier show a **Speed** control: **Auto** leaves the
   account default, **Standard** asks for normal speed, and **Fast** runs the model faster at
   the higher usage rate ChatGPT lists for it.
@@ -120,7 +131,7 @@ require API credentials. Return to **API key** authentication to use the standar
 
 ChatGPT sign-in gives Blacksite the model, not Codex's own agent. Codex's shell, file editing, web search, apps, plugins, memories and multi-agent
 tools stay off so that every action goes through Blacksite's tools and approvals. Sampling,
-output limits, prompt caching and verbosity follow the model and cannot be changed. Codex's
+output limits and prompt caching follow the model and cannot be changed. Codex's
 own conversation storage, review mode and voice features are not used.
 
 ### Using an API key

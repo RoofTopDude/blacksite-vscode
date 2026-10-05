@@ -181,7 +181,7 @@ export function GenerationPanel() {
           <Segmented options={tierOptions} value={chosenTier} onChange={(id) => actions.setServiceTier(provider, id)} />
         </Field>
       )}
-      <Note>Sampling, output limits and prompt caching follow the ChatGPT model and are not adjustable here. They apply when you select API key authentication. Reasoning summaries and the larger context window are set in <code>blacksite.chatgpt.*</code> settings.</Note>
+      <Note>Sampling, output limits and prompt caching follow the ChatGPT model and are not adjustable here. They apply when you select API key authentication. Reasoning summaries, answer length, the larger context window and conversation reuse are set in <code>blacksite.chatgpt.*</code> settings.</Note>
     </Section>;
   }
 

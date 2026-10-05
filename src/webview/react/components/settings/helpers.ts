@@ -102,7 +102,7 @@ export function effectiveReasoningEffort(modelId: string | undefined, effort: Re
 /** The depth to show under ChatGPT sign-in. Only a depth the user chose is stored as theirs; the
  *  merged settings always carry the API-key default, which must not stand in for it here. */
 export function subscriptionReasoningEffort(settings: ExtendedSettings, info: ModelInfo | null): ReasoningEffort {
-  const chosen = settings.providerSettings?.openai?.reasoningEffort;
+  const chosen = settings.providerSettings?.openai?.subscriptionReasoningEffort;
   return effectiveReasoningEffort(info?.id, chosen, info);
 }
 

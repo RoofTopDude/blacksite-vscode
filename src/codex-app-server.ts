@@ -93,6 +93,12 @@ export class CodexAppServer {
     });
   }
 
+  /** Answer a request the server made of us (a dynamic tool call). Throws when the connection is
+   *  gone, which a caller holding a suspended turn treats as "that turn cannot be resumed". */
+  respond(id: number | string, result: unknown): void {
+    this.write({ id, result });
+  }
+
   private write(message: CodexMessage): void {
     if (!this.process) throw new Error("Codex is not connected.");
     this.process.stdin.write(JSON.stringify(message) + "\n");

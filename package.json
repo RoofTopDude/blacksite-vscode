@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.31.0-pre.1",
+  "version": "1.31.0-pre.2",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -524,7 +524,7 @@
         },
         "blacksite.chatgpt.reasoningSummary": {
           "type": "string",
-          "default": "auto",
+          "default": "detailed",
           "enum": [
             "auto",
             "concise",
@@ -537,7 +537,29 @@
             "Fuller summaries",
             "Do not request summaries"
           ],
-          "markdownDescription": "How much of the model's reasoning is summarized in the chat when you sign in with ChatGPT. Without a request, ChatGPT sends no reasoning at all, so the thinking stream stays empty. Takes effect on the next request."
+          "markdownDescription": "How much of the model's reasoning is summarized in the chat when you sign in with ChatGPT. Without a request, ChatGPT sends no reasoning at all, so the thinking stream stays empty. Some models reason without returning a summary even when one is requested; the chat then says how much they reasoned. Takes effect on the next request."
+        },
+        "blacksite.chatgpt.verbosity": {
+          "type": "string",
+          "default": "medium",
+          "enum": [
+            "default",
+            "low",
+            "medium",
+            "high"
+          ],
+          "enumDescriptions": [
+            "Send nothing and use the model's own default, which is low for every ChatGPT model",
+            "Terse answers",
+            "Balanced answers",
+            "Detailed answers"
+          ],
+          "markdownDescription": "How long ChatGPT's answers run. Every ChatGPT model defaults to low, which reads terse next to other providers. Takes effect on the next conversation turn."
+        },
+        "blacksite.chatgpt.reuseConversation": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Keep one ChatGPT conversation open across the agent's steps instead of starting a new one for every model call. Tool results then go back into the same turn, so the model keeps its own reasoning, replies start sooner, and prompt caching works. Blacksite starts a fresh conversation on its own whenever its transcript and ChatGPT's would disagree (compaction, edits, a changed tool list). Turn off to restore one-conversation-per-call behavior."
         },
         "blacksite.chatgpt.extendedContext": {
           "type": "boolean",

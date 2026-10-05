@@ -3089,7 +3089,11 @@ export class AgentSession {
           systemPrompt: this._compressedSummary
             ? `${this.opts.systemPrompt}\n\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}`
             : this.opts.systemPrompt,
-          messages: [...normalizeForProvider(this.messages), ...(subscriptionContext ? [{ role: "user" as const, content: subscriptionContext }] : [])],
+          // The workspace block travels apart from the conversation: the service decides whether it
+          // is sent at all, because every copy it sends stays in a reused thread.
+          messages: normalizeForProvider(this.messages),
+          ...(subscriptionContext ? { contextTail: subscriptionContext } : {}),
+          conversationId: this.sessionId,
           tools: this._toolPlan().wire,
           ...(hostedForChatGpt ? { hostedSearch: { scope: hostedForChatGpt.scope, allowedDomains: hostedForChatGpt.allowedDomains, deniedDomains: hostedForChatGpt.deniedDomains } } : {}),
           signal: this._signal,

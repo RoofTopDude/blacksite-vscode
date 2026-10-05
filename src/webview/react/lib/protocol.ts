@@ -46,6 +46,8 @@ export interface ProviderSettings {
   maxTokensUnlimited?: boolean;
   thinking?: ThinkingConfig;
   reasoningEffort?: ReasoningEffort;
+  /** The depth chosen under ChatGPT sign-in, kept apart from the API-key one. */
+  subscriptionReasoningEffort?: ReasoningEffort;
   /** OpenAI processing tier ("flex" = reduced rates, queued latency). */
   serviceTier?: ServiceTier;
   /** Full endpoint URL override (Azure OpenAI, proxy, local OpenAI-compatible server, …).
