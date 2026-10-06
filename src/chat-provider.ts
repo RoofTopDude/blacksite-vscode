@@ -33,6 +33,7 @@ import type {
   ReferenceToolProvider,
   SkillToolProvider,
   VisionFallbackProvider,
+  ToolOutputEvent,
 } from "./agent-session.js";
 import { BackgroundRunner } from "./background-runner.js";
 import type { ImageBlock } from "./agent-loop-contract.js";
@@ -380,6 +381,12 @@ function normalizeCostGuardrails(value: CostGuardrailSettings | undefined): Cost
 
 const SETTINGS_KEY = "blacksite.settings.v2";
 
+/** How long shell output is held before it is posted, so one message carries many pipe reads. */
+const TOOL_OUTPUT_FLUSH_MS = 80;
+/** Characters of one command's output streamed live. A runaway log stops streaming here; the
+ *  final result still carries the command's (separately capped) stdout and stderr. */
+const TOOL_OUTPUT_LIVE_CAP = 2_000_000;
+
 // Applied only where a provider has no persisted entry — an install that has ever picked a model
 // keeps it. Each default moves to the current generation of the *same tier* rather than to the
 // provider's flagship: someone who never opened the model picker should get a capability upgrade,
@@ -600,6 +607,19 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _liveGates = new Map<string, { kind: "question" | "approval"; payload: Record<string, unknown> }>();
   // Live turn id for out-of-band approvals (e.g. file-edit apply) routed to the webview.
   private _liveTurnId: string | undefined;
+  // Shell output still waiting to be posted, per running tool call (lane-qualified). Coalesced
+  // into one webview message per flush window so a chatty build does not post a message per
+  // pipe read; see _queueToolOutput.
+  private readonly _toolOutput = new Map<string, {
+    turnId: string;
+    toolCallId: string;
+    lane?: { laneId: string; parentToolCallId: string };
+    chunks: Array<{ stream: "stdout" | "stderr"; text: string }>;
+    sent: number;
+    capped: boolean;
+    cappedPosted: boolean;
+  }>();
+  private _toolOutputTimer: ReturnType<typeof setTimeout> | undefined;
   // Executables already offered for install this session — see _offerMissingCommandInstall.
   private readonly _offeredInstalls = new Set<string>();
   private _editApprovalSeq = 0;
@@ -1272,6 +1292,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       systemPrompt,
       workspaceRoot: this._workspaceRoot,
       runtime: this._runtime,
+      onToolOutput: (event) => this._queueToolOutput(event),
       context: this._context,
       previewStylesheetPaths: this._previewStylesheetPaths(),
       provider: settings.provider,
@@ -2455,6 +2476,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         systemPrompt: buildDelegatedSystemPrompt(buildStaticSystemPrompt(), budget, profile?.systemPromptAddition),
         workspaceRoot: this._workspaceRoot,
         runtime: this._runtime,
+        onToolOutput: (event) => this._queueToolOutput(event, { laneId, parentToolCallId: request.parentToolCallId }),
         context: this._context,
         previewStylesheetPaths: this._previewStylesheetPaths(),
         provider: subProvider,
@@ -4466,6 +4488,9 @@ ${this._pendingRewindNote}`;
       this._post({ type: "stream_diagnostic", id: turnId, level: "warn", message: `Post-turn bookkeeping failed (session/log persistence): ${err instanceof Error ? err.message : String(err)}` });
     } finally {
       this._postSessionRuntimeState();
+      /* Output of a call that never reported a result (the run died mid-command). */
+      this._flushToolOutput();
+      this._toolOutput.clear();
       this._liveTurnId = undefined;
       this._postRewindPoints();
       // The turn is over, so nothing can consume an answer any more. Normally every gate has
@@ -4573,6 +4598,53 @@ ${this._pendingRewindNote}`;
     });
   }
 
+  /** Hold a running command's output for the next flush. Output arriving outside a live turn
+   *  has no transcript row to land in and is dropped. */
+  private _queueToolOutput(event: ToolOutputEvent, lane?: { laneId: string; parentToolCallId: string }): void {
+    const turnId = this._liveTurnId;
+    if (!turnId || !event.text) return;
+    const key = `${lane?.laneId ?? ""}\u0000${event.toolCallId}`;
+    let entry = this._toolOutput.get(key);
+    if (!entry) {
+      entry = { turnId, toolCallId: event.toolCallId, lane, chunks: [], sent: 0, capped: false, cappedPosted: false };
+      this._toolOutput.set(key, entry);
+    }
+    if (entry.capped) return;
+    const room = TOOL_OUTPUT_LIVE_CAP - entry.sent;
+    const text = event.text.length > room ? event.text.slice(0, room) : event.text;
+    entry.sent += text.length;
+    if (entry.sent >= TOOL_OUTPUT_LIVE_CAP) entry.capped = true;
+    const last = entry.chunks[entry.chunks.length - 1];
+    if (last && last.stream === event.stream) last.text += text;
+    else entry.chunks.push({ stream: event.stream, text });
+    this._toolOutputTimer ??= setTimeout(() => {
+      this._toolOutputTimer = undefined;
+      this._flushToolOutput();
+    }, TOOL_OUTPUT_FLUSH_MS);
+  }
+
+  /** Post held output. With a tool call named, flush just that call and forget it — its result
+   *  is about to be posted, and the output has to land first. */
+  private _flushToolOutput(only?: { toolCallId: string; laneId?: string }): void {
+    for (const [key, entry] of this._toolOutput) {
+      if (only && (entry.toolCallId !== only.toolCallId || (entry.lane?.laneId ?? "") !== (only.laneId ?? ""))) continue;
+      const announceCap = entry.capped && !entry.cappedPosted;
+      if (entry.chunks.length > 0 || announceCap) {
+        this._post({
+          type: "stream_tool_output",
+          id: entry.turnId,
+          toolCallId: entry.toolCallId,
+          chunks: entry.chunks,
+          ...(announceCap ? { capped: true } : {}),
+          ...(entry.lane ?? {}),
+        });
+        entry.chunks = [];
+        if (announceCap) entry.cappedPosted = true;
+      }
+      if (only) this._toolOutput.delete(key);
+    }
+  }
+
   private _postStreamEvent(
     turnId: string,
     event: BaseAgentEvent,
@@ -4580,6 +4652,7 @@ ${this._pendingRewindNote}`;
   ): void {
     const laneMeta = lane ? { laneId: lane.laneId, parentToolCallId: lane.parentToolCallId } : {};
     if (event.type === "tool_call_start") this._rewind.recordUntracked(turnId, untrackedEffect(event.toolName, event.input));
+    if (event.type === "tool_call_result") this._flushToolOutput({ toolCallId: event.toolCallId, laneId: lane?.laneId });
     switch (event.type) {
       case "provider_activity":
         this._post({ type: "stream_provider_activity", id: turnId, phase: event.phase, message: event.message, ...laneMeta });

@@ -22,7 +22,7 @@ function post(message: OutgoingMessage): void {
 }
 import {
   addQuestionCard, answerQuestionCard, appendText, appendThinking, applyApprovalPending, declineQuestionCard,
-  applyApprovalResult, applyApprovalReview, truncateTurnsFrom, applyDiagnostic, applyProviderActivity, applyToolResult, chooseApprovalDecision, createChatState, createUserTurn,
+  applyApprovalResult, applyApprovalReview, truncateTurnsFrom, applyDiagnostic, applyProviderActivity, applyToolResult, applyToolOutput, chooseApprovalDecision, createChatState, createUserTurn,
   checkpointLiveResponse, currentRoundHasText, deliverSteers, ensureLaneTurn, ensureParentLiveTurn, ensureToolCall,
   expireApproval, expireOpenGates, expireQuestionCard, finalizeThinking, finalizeTurn, lastUserRequest,
   removeSteers, resetConversation, resetLiveResponse, resolveStreamTurn, restoreConversation, setQuestionDraft, setSteerState, type ChatState,
@@ -71,6 +71,8 @@ export interface Store {
   mentionItems: string[];
   mentionQuery: string;
   lightbox: Lightbox | null;
+  /** A tool call to expand and scroll to (the live-action strip asks for its own call), cleared once shown. */
+  revealToolCallId: string | null;
   previewModal: PreviewModalState | null;
   /** The project's compiled stylesheet, pushed once by the host so question-card previews render
    *  against the real design system instead of hand-written CSS. Empty until it arrives, and
@@ -139,6 +141,7 @@ export const store: Store = {
   mentionItems: [],
   mentionQuery: "",
   lightbox: null,
+  revealToolCallId: null,
   previewModal: null,
   previewProjectCss: "",
   focusNonce: 0,
@@ -306,6 +309,13 @@ function handleIncoming(msg: IncomingMessage): void {
     case "stream_tool_call": {
       const turn = resolveStreamTurn(chat, msg);
       if (turn) ensureToolCall(chat, turn, { toolCallId: msg.toolCallId, toolName: msg.toolName, input: msg.input || {}, inputPreview: msg.inputPreview || "" });
+      break;
+    }
+
+    case "stream_tool_output": {
+      const turn = resolveStreamTurn(chat, msg);
+      const call = turn && msg.toolCallId ? turn.toolCalls.get(msg.toolCallId) : undefined;
+      if (call) applyToolOutput(call, Array.isArray(msg.chunks) ? msg.chunks : [], msg.capped === true);
       break;
     }
 
@@ -851,6 +861,7 @@ export const actions = {
     post({ type: "approval_decision", toolCallId, decision, command, scope });
   },
   openLightbox(dataUrl: string, label: string): void { store.lightbox = { dataUrl, label }; bump(); },
+  revealToolCall(id: string | null): void { store.revealToolCallId = id; bump(); },
   /**
    * Best-effort "show me more" from a docked PendingBar item: switches to the chat view
    * and scrolls the owning tool/question card into view if it's currently rendered. If the

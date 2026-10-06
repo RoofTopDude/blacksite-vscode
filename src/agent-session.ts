@@ -915,6 +915,14 @@ export type BaseAgentEvent =
   | { type: "turn_complete"; stopReason: AgentStopReason; iterations: number }
   | { type: "error"; message: string };
 
+/** One piece of a running command's output, for AgentSessionOptions.onToolOutput. */
+export interface ToolOutputEvent {
+  toolCallId: string;
+  toolName: string;
+  stream: "stdout" | "stderr";
+  text: string;
+}
+
 /** A message the user sent while a run was in progress, delivered at the run's next step. */
 export interface SteerMessage {
   id: string;
@@ -1396,6 +1404,10 @@ export interface AgentSessionOptions {
   systemPrompt: string;
   workspaceRoot: string;
   runtime: LocalRuntime;
+  /** Output of a shell command while it is still running. A side channel rather than an
+   *  AgentEvent: the run loop is suspended awaiting the command, so it cannot yield until the
+   *  command ends — by which point the live view would only be the final result again. */
+  onToolOutput?: (event: ToolOutputEvent) => void;
   context: vscode.ExtensionContext;
   provider?: ProviderName;
   baseUrl?: string;
@@ -5825,7 +5837,11 @@ export class AgentSession {
                   }
                 }
               } else {
-                const firstResponse = await this.opts.runtime.handleMessage({ type: runtimeType, payload }, this._signal);
+                const onToolOutput = this.opts.onToolOutput;
+                const outputHooks = onToolOutput && runtimeType === "system.shell"
+                  ? { onOutput: (stream: "stdout" | "stderr", text: string) => onToolOutput({ toolCallId: tc.id, toolName: tc.name, stream, text }) }
+                  : undefined;
+                const firstResponse = await this.opts.runtime.handleMessage({ type: runtimeType, payload }, this._signal, outputHooks);
                 const firstResult = runtimeResultOrError(firstResponse, tc.name, () => this._getTools().map((t) => t.name));
                 if (isConfirmationRequired(firstResult)) {
                   const { tier, description, unrecognizedCommand } = firstResult as { tier: string; description: string; unrecognizedCommand?: boolean };
@@ -5846,6 +5862,7 @@ export class AgentSession {
                     const confirmed = await this.opts.runtime.handleMessage(
                       { type: runtimeType, payload: { ...payload, confirmed: true } },
                       this._signal,
+                      outputHooks,
                     );
                     result = runtimeResultOrError(confirmed, tc.name, () => this._getTools().map((t) => t.name));
                   }

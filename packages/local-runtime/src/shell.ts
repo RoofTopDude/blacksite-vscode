@@ -17,6 +17,12 @@ const STDERR_MAX = 32 * 1024;
 
 const buildEnv = buildSanitizedProcessEnv;
 
+/** Receives a command's output as it is produced, already decoded (a multi-byte
+ *  character split across two pipe reads arrives whole). Unlike the captured
+ *  result, which stops growing at its cap, the listener sees every chunk — the
+ *  caller decides how much of a long stream to keep. */
+export type OutputListener = (stream: "stdout" | "stderr", text: string) => void;
+
 /** Where an installed program is, by the same PATH lookup a spawn uses, or undefined. Windows'
  *  Store aliases for Python are not an installation: they only offer to install one. */
 function locateInstalled(name: string, cwd: string, workspaceRoot: string, env: NodeJS.ProcessEnv): string | undefined {
@@ -55,6 +61,7 @@ export function runShellCommand(
   timeoutMs: number,
   signal?: AbortSignal,
   env: NodeJS.ProcessEnv = buildEnv(),
+  onOutput?: OutputListener,
 ): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean; cancelled: boolean }> {
   if (signal?.aborted) {
     return Promise.resolve({ stdout: "", stderr: "", exitCode: null, timedOut: false, cancelled: true });
@@ -125,11 +132,17 @@ export function runShellCommand(
       resolve({ stdout, stderr, exitCode, timedOut, cancelled });
     };
 
-    child.stdout?.on("data", (chunk: Buffer) => {
-      if (stdout.length < STDOUT_MAX) stdout += chunk.toString("utf8");
+    // setEncoding decodes through a StringDecoder, so a UTF-8 character split across two
+    // reads is held back until it is complete instead of becoming two replacement marks.
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (text: string) => {
+      if (stdout.length < STDOUT_MAX) stdout += text;
+      onOutput?.("stdout", text);
     });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      if (stderr.length < STDERR_MAX) stderr += chunk.toString("utf8");
+    child.stderr?.on("data", (text: string) => {
+      if (stderr.length < STDERR_MAX) stderr += text;
+      onOutput?.("stderr", text);
     });
     // A ChildProcess is an EventEmitter; an "error" (e.g. ENOENT — command not found) with
     // no listener is an unhandled 'error' event, which Node treats as an uncaught exception
@@ -168,6 +181,8 @@ export async function handleShell(
   /** Installed toolchains (see toolchain-roots.ts): readable outside the workspace, and the
    *  PATH directories whose executables are identified by name. */
   toolchains: { readableRoots?: readonly string[]; executableDirs?: readonly string[] } = {},
+  /** Live output while the command runs, for a caller showing it as it happens. */
+  onOutput?: OutputListener,
 ): Promise<
   | ShellResult
   | { ok: false; error: string; missingCommand?: InstallHint; cancelled?: boolean; stdout?: string; stderr?: string }
@@ -225,7 +240,7 @@ export async function handleShell(
   }
 
   const plan = planSpawn(resolvedCommand, args);
-  const result = await runShellCommand(plan, cwd, timeoutMs, signal, env);
+  const result = await runShellCommand(plan, cwd, timeoutMs, signal, env, onOutput);
 
   if (result.cancelled) {
     return {

@@ -1,7 +1,9 @@
 import { type CSSProperties } from "react";
 import { formatDuration } from "@/lib/format";
 import { toolActivityKind, toolIntentPhrase } from "@/lib/tool-presentation";
-import { currentActionOf, toolCallLiveElapsedMs, type Turn } from "@/lib/chat-model";
+import { currentActionOf, isTerminalTool, toolCallLiveElapsedMs, type Turn } from "@/lib/chat-model";
+import { terminalTail } from "@/lib/terminal-output";
+import { actions } from "@/lib/store";
 import { agentLaneColor, cssColor } from "@/lib/graph/colors";
 import { useLiveClock } from "@/lib/use-live-clock";
 import { ToolIcon } from "./ToolLog";
@@ -44,30 +46,38 @@ export function LiveAction({ turn }: { turn: Turn }) {
   const accent = KIND_COLOR[kind];
   const { verb, target } = toolIntentPhrase(call.toolName, call.input);
   const elapsed = toolCallLiveElapsedMs(call, now);
+  const terminal = isTerminalTool(call.toolName);
+  const tail = terminal ? terminalTail(call.output) : "";
 
   return (
-    <div
-      className="live-action fade-in flex items-center gap-2 px-2.5 py-1.5"
+    <button
+      type="button"
+      className="live-action fade-in flex w-full items-center gap-2 px-2.5 py-1.5 text-left"
       style={{ "--activity-accent": accent } as CSSProperties}
+      onClick={() => actions.revealToolCall(call.id)}
+      title={terminal ? "Show this command's live output" : "Show this step in the transcript"}
     >
       <span className="live-action-sheen" aria-hidden />
       <span className="live-action-dot" />
       <ToolIcon toolName={call.toolName} />
-      <div className="flex min-w-0 flex-1 items-baseline gap-1.5">
-        <span className="shrink-0 text-sm font-semibold" style={{ color: accent }}>{verb}</span>
-        {target && <span className="truncate font-mono text-sm text-foreground/90">{target}</span>}
-        {laneLabel && (
-          <span
-            className="ml-0.5 shrink-0 rounded-full px-1.5 py-px text-xs font-semibold uppercase tracking-wide"
-            style={{ color: cssColor(agentLaneColor(action.laneId ?? "") ?? 0x8aa6c0), background: "rgba(255,255,255,0.05)" }}
-          >
-            {laneLabel}
-          </span>
-        )}
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-baseline gap-1.5">
+          <span className="shrink-0 text-sm font-semibold" style={{ color: accent }}>{verb}</span>
+          {target && <span className="truncate font-mono text-sm text-foreground/90">{target}</span>}
+          {laneLabel && (
+            <span
+              className="ml-0.5 shrink-0 rounded-full px-1.5 py-px text-xs font-semibold uppercase tracking-wide"
+              style={{ color: cssColor(agentLaneColor(action.laneId ?? "") ?? 0x8aa6c0), background: "rgba(255,255,255,0.05)" }}
+            >
+              {laneLabel}
+            </span>
+          )}
+        </div>
+        {tail && <div className="terminal-tail truncate font-mono text-xs" title={tail}>{tail}</div>}
       </div>
       {elapsed != null && elapsed > 400 && (
         <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">{formatDuration(elapsed)}</span>
       )}
-    </div>
+    </button>
   );
 }

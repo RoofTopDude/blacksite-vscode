@@ -7,6 +7,7 @@ import { cssColor, folderColor } from "@/lib/graph/colors";
 import { selectNonOverlappingLabels, type ScreenLabelCandidate, type ScreenRect } from "@/lib/graph/labels";
 import {
   baseName,
+  clusterBaseDir,
   clusterHubKey,
   clusterHubLabel,
   clusterSubgroupLabel,
@@ -18,6 +19,41 @@ import {
 } from "@/lib/graph/view-model";
 import { MAX_NEIGHBORHOOD_LABELS } from "./shared";
 
+/* Measuring file labels with their own font. The old fixed 6.5px-per-character
+   estimate was narrower than the rendered monospace text, so nearly every label
+   ended in an ellipsis ("types.t…"). */
+let measureContext: CanvasRenderingContext2D | null | undefined;
+let measuredFont = "";
+const measuredWidths = new Map<string, number>();
+
+function labelFont(): string {
+  const root = getComputedStyle(document.documentElement);
+  const size = root.getPropertyValue("--ui-text-2xs").trim() || "11px";
+  const family = root.getPropertyValue("--font-mono").trim() || "monospace";
+  return `${size} ${family}`;
+}
+
+/** Rendered width of a file label (text plus its padding). */
+function fileLabelWidth(text: string, font: string): number {
+  if (measureContext === undefined) measureContext = document.createElement("canvas").getContext("2d");
+  if (font !== measuredFont) {
+    measuredFont = font;
+    measuredWidths.clear();
+  }
+  let width = measuredWidths.get(text);
+  if (width === undefined) {
+    if (measureContext) {
+      measureContext.font = font;
+      width = measureContext.measureText(text).width;
+    } else {
+      width = text.length * 7;
+    }
+    if (measuredWidths.size > 5000) measuredWidths.clear();
+    measuredWidths.set(text, width);
+  }
+  return Math.ceil(width) + 14;
+}
+
 /** Folder cluster labels + hovered/selected file label, projected over the canvas. */
 export function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }: {
   view: GraphViewState;
@@ -27,14 +63,17 @@ export function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }:
   selectedId: string | null;
 }) {
   const clusterStats = useMemo(() => {
+    /* Keyed by folder, not cluster: the chunks of an oversized folder are packed
+       side by side, and one label at their middle names the folder they share. */
     const byDir = new Map<string, { count: number; weight: number; sx: number; sy: number }>();
     for (const node of view.displayNodes) {
-      const entry = byDir.get(node.dir) ?? { count: 0, weight: 0, sx: 0, sy: 0 };
+      const dir = clusterBaseDir(node.dir);
+      const entry = byDir.get(dir) ?? { count: 0, weight: 0, sx: 0, sy: 0 };
       entry.count += isClusterNode(node) ? (node.fileCount ?? 1) : 1;
       entry.weight += 1;
       entry.sx += node.x;
       entry.sy += node.y;
-      byDir.set(node.dir, entry);
+      byDir.set(dir, entry);
     }
     return [...byDir.entries()]
       .sort((a, b) => b[1].count - a[1].count)
@@ -186,14 +225,15 @@ export function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }:
     }
   }
 
+  const neighbors = new Set<string>();
   if (fileAlpha > 0.06) {
-    const neighbors = new Set<string>();
     if (focus) {
       for (const edge of view.displayEdges) {
         if (edge.from === focus) neighbors.add(edge.to);
         if (edge.to === focus) neighbors.add(edge.from);
       }
     }
+    const font = labelFont();
     for (const node of view.displayNodes) {
       if ((node.kind && node.kind !== "file") || node.id === focus) continue;
       const p = worldToScreen(camera, viewport, node.x, node.y);
@@ -202,10 +242,10 @@ export function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }:
       if (p.x < 0 || p.y < 0 || p.x > viewport.width || p.y > viewport.height) continue;
       candidates.push({
         value: { key: `file:${node.id}`, kind: "file" },
-        x: p.x + 12,
-        y: p.y - 10,
-        width: Math.min(180, Math.max(48, baseName(node.id).length * 6.5 + 12)),
-        height: 20,
+        x: p.x + 10,
+        y: p.y - 9,
+        width: Math.min(220, fileLabelWidth(baseName(node.id), font)),
+        height: 18,
         priority: (neighbors.has(node.id) ? 90 : 10) + Math.min(70, Math.log1p(node.inDegree + node.outDegree) * 8),
       });
     }
@@ -214,10 +254,12 @@ export function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }:
   /* Keep labels out from under the persistent control surfaces and the focus
      tooltip. These are allocation constraints, not masks: hidden labels are
      reconsidered immediately as the camera moves into free screen space. */
-  const reserved: ScreenRect[] = [
-    { x: 0, y: 0, width: Math.min(336, viewport.width * 0.46), height: 166 },
-    { x: Math.max(0, viewport.width - 214), y: 0, width: 214, height: Math.max(174, viewport.height - 108) },
-  ];
+  const reserved: ScreenRect[] = viewport.width > 720
+    ? [
+      { x: 0, y: 0, width: 332, height: 150 },
+      { x: Math.max(0, viewport.width - 252), y: 0, width: 252, height: viewport.height },
+    ]
+    : [{ x: 0, y: 0, width: viewport.width, height: 170 }];
   if (focusNode) {
     const p = worldToScreen(camera, viewport, focusNode.x, focusNode.y);
     reserved.push({ x: p.x - 138, y: p.y + 8, width: 276, height: 42 });
@@ -232,8 +274,8 @@ export function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }:
         return (
           <div
             key={label.value.key}
-            className="map-file-label absolute truncate"
-            style={{ left: label.x, top: label.y, width: label.width, height: label.height, opacity: fileAlpha }}
+            className={`map-file-label absolute truncate ${neighbors.has(id) ? "map-file-label-near" : ""}`}
+            style={{ left: label.x, top: label.y, maxWidth: label.width, opacity: fileAlpha }}
             title={id}
           >
             {baseName(id)}
@@ -252,10 +294,8 @@ export function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }:
             style={{ left: p.x, top: p.y + 14, color: cssColor(folderColor(node.dir)) }}
             title={node.dir}
           >
-            <div className="whitespace-nowrap font-mono text-sm font-semibold uppercase tracking-[0.16em]">{node.groupLabel ?? node.dir}</div>
-            <div className="mt-0.5 whitespace-nowrap font-mono text-2xs tracking-wide text-white/60">
-              {level} · {(node.fileCount ?? 0).toLocaleString()} files
-            </div>
+            <div className="map-label-name">{node.groupLabel ?? node.dir}</div>
+            <div className="map-label-sub">{level} · {(node.fileCount ?? 0).toLocaleString()} files</div>
           </div>
         );
       })}
@@ -270,12 +310,8 @@ export function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }:
             style={{ left: p.x, top: p.y, color: cssColor(folderColor(nb)), opacity: neighborhoodAlpha }}
             title={nb}
           >
-            <div className="whitespace-nowrap font-mono text-lg font-semibold uppercase tracking-[0.22em]">
-              {neighborhoodLabel(nb)}
-            </div>
-            <div className="mt-0.5 whitespace-nowrap font-mono text-2xs tracking-wide text-white/55">
-              codebase · {count.toLocaleString()} files
-            </div>
+            <div className="map-label-name">{neighborhoodLabel(nb)}</div>
+            <div className="map-label-sub">codebase · {count.toLocaleString()} files</div>
           </div>
         );
       })}
@@ -290,12 +326,8 @@ export function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }:
             style={{ left: p.x, top: p.y, color: cssColor(folderColor(dir)), opacity: hubAlpha }}
             title={dir}
           >
-            <div className="whitespace-nowrap font-mono text-sm uppercase tracking-[0.18em]">
-              {clusterHubLabel(dir)}
-            </div>
-            <div className="mt-0.5 whitespace-nowrap font-mono text-2xs tracking-wide text-white/58">
-              {count.toLocaleString()} files{groups > 1 ? ` • ${groups} groups` : ""}
-            </div>
+            <div className="map-label-name">{clusterHubLabel(dir)}</div>
+            <div className="map-label-sub">{count.toLocaleString()} files{groups > 1 ? ` · ${groups} folders` : ""}</div>
           </div>
         );
       })}
@@ -333,12 +365,12 @@ export function LabelsOverlay({ view, camera, viewport, hoveredId, selectedId }:
             : `${focusNode.dir}  ·  →${focusNode.outDegree} ←${focusNode.inDegree}`;
         return (
           <div
-            className="absolute -translate-x-1/2 rounded-md border border-white/10 bg-black/75 px-2 py-1 text-center backdrop-blur-[2px]"
-            style={{ left: p.x, top: p.y + 12, borderLeft: `2px solid ${cssColor(folderColor(focusNode.dir))}` }}
+            className="map-focus-tip absolute -translate-x-1/2"
+            style={{ left: p.x, top: p.y + 12, boxShadow: `inset 0 2px 0 ${cssColor(folderColor(focusNode.dir))}` }}
             title={focusNode.id}
           >
-            <div className="whitespace-nowrap font-mono text-sm font-semibold text-white">{name}</div>
-            <div className="max-w-[260px] truncate whitespace-nowrap font-mono text-2xs text-white/55" title={detail}>
+            <div className="whitespace-nowrap font-mono text-xs font-semibold text-[color:var(--map-text)]">{name}</div>
+            <div className="max-w-[260px] truncate whitespace-nowrap font-mono text-2xs text-[color:var(--map-text-3)]" title={detail}>
               {detail}
             </div>
           </div>

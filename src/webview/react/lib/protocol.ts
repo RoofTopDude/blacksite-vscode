@@ -411,6 +411,9 @@ export type IncomingMessage =
   | { type: "stream_reset"; id: string; reason?: string; laneId?: string }
   | { type: "stream_tool_call"; id: string; toolCallId?: string; toolName?: string; inputPreview?: string; input?: any; laneId?: string }
   | { type: "stream_tool_result"; id: string; toolCallId?: string; toolName?: string; ok?: boolean; summary?: string; result?: any; elapsedMs?: number; laneId?: string; diffs?: ToolDiffInfo[] }
+  /** Output of a still-running command, in arrival order. `capped`: the host stopped streaming
+   *  this call's output (it ran past the live cap); the final result still carries its tail. */
+  | { type: "stream_tool_output"; id: string; toolCallId?: string; chunks?: Array<{ stream: "stdout" | "stderr"; text: string }>; capped?: boolean; laneId?: string }
   | { type: "stream_approval_pending"; id: string; toolCallId?: string; description?: string; tier?: string; unrecognizedCommand?: boolean; laneId?: string; rationale?: string; browserProposalId?: string }
   | { type: "stream_approval_result"; id: string; toolCallId?: string; granted?: boolean; decision?: ApprovalDecision; laneId?: string }
   /** Auto mode's decision on a gated call: "allowed" ran it, "escalated" is asking the user next. */

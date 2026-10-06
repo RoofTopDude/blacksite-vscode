@@ -36,11 +36,33 @@ function longestPrefixRoot(id: string, roots: readonly string[]): string | null 
   return best;
 }
 
-/** Fallback neighborhood for a file with no owning project: its top path segment
-    — the coarsest codebase boundary directory structure offers. */
-function fallbackNeighborhood(id: string): string {
+/** Every proper ancestor folder of a project root: `services/auth` gives
+    `services`. A folder in this set holds projects, so it is a container, not a
+    codebase of its own. */
+function rootAncestors(roots: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const root of roots) {
+    const segments = root.split("/");
+    for (let i = 1; i < segments.length; i += 1) out.add(segments.slice(0, i).join("/"));
+  }
+  return out;
+}
+
+/** Fallback neighborhood for a file with no owning project: the shallowest
+    folder on its path that is not a container of projects. A plain top-level
+    folder (`scripts/`) is its own codebase; an unowned folder sitting beside
+    real projects (`services/billing` next to `services/auth`) is its own
+    codebase too, rather than being merged into the shared container. */
+function fallbackNeighborhood(id: string, containers: ReadonlySet<string>): string {
   const segments = normalizeGraphPath(id).split("/").filter(Boolean);
-  return segments.length <= 1 ? "." : segments[0]!;
+  if (segments.length <= 1) return ".";
+  let prefix = "";
+  for (const segment of segments.slice(0, -1)) {
+    prefix = prefix ? `${prefix}/${segment}` : segment;
+    if (!containers.has(prefix)) return prefix;
+  }
+  /* The file sits directly in a container folder (a README beside projects). */
+  return prefix;
 }
 
 /** Rounds of affinity propagation. Owned files never move, so this only bounds
@@ -48,19 +70,23 @@ function fallbackNeighborhood(id: string): string {
     (docs → helper → owned code). A handful of passes settles any real repo. */
 const AFFINITY_ITERATIONS = 6;
 
-/** Assign each node id a neighborhood root. Topology container/project roots win
-    by longest-prefix match (manifests where present). Files under no project are
-    pulled — by import affinity, when `edges` is supplied — into the codebase they
-    actually connect to; only files with no path to an owned neighborhood keep
-    the coarse top-path-segment fallback. */
+/** Assign each node id a neighborhood root, directory first. Topology
+    container/project roots win by longest-prefix match (manifests where
+    present). A file under no project belongs to its own folder's codebase (see
+    fallbackNeighborhood) — never to whichever codebase it imports from, which
+    used to fold whole unowned trees such as `src/` and `tests/` into the one
+    package they depend on. Only loose top-level files, which have no folder to
+    belong to, are pulled by import affinity (when `edges` is supplied) into the
+    codebase they connect to. */
 export function assignNeighborhoods(
   ids: readonly string[],
   topology: ProjectTopology | null | undefined,
   edges?: ReadonlyMap<string, readonly string[]>,
 ): Map<string, string> {
   const roots = neighborhoodRoots(topology).sort((a, b) => b.length - a.length);
+  const containers = rootAncestors(roots);
   const out = new Map<string, string>();
-  const unowned: string[] = [];
+  const loose: string[] = [];
   const owned = new Set<string>(); // the neighborhood values that come from topology, not fallback
   for (const id of ids) {
     const normalized = normalizeGraphPath(id);
@@ -69,18 +95,20 @@ export function assignNeighborhoods(
       out.set(id, root);
       owned.add(root);
     } else {
-      out.set(id, fallbackNeighborhood(normalized));
-      unowned.push(id);
+      const fallback = fallbackNeighborhood(normalized, containers);
+      out.set(id, fallback);
+      if (fallback === ".") loose.push(id);
     }
   }
-  if (edges && unowned.length > 0 && owned.size > 0) applyImportAffinity(out, unowned, owned, edges);
+  if (edges && loose.length > 0 && owned.size > 0) applyImportAffinity(out, loose, owned, edges);
   return out;
 }
 
 /** Label-propagation over the undirected import graph, seeded by the fixed owned
-    assignments. An unowned file adopts the owned neighborhood the majority of its
-    import neighbors belong to; nothing else moves, so loose files are pulled into
-    real codebases without ever inventing a merge between two fallback buckets. */
+    assignments. A loose top-level file adopts the owned neighborhood the majority
+    of its import neighbors belong to; nothing else moves, so loose files are
+    pulled into real codebases without ever inventing a merge between two
+    fallback buckets, and no file ever leaves the folder it lives in. */
 function applyImportAffinity(
   assignment: Map<string, string>,
   unowned: readonly string[],

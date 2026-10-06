@@ -1,5 +1,5 @@
-/* The Map's command panel: title and index status, the scope bar (breadcrumb
-   and view mode — Systems, Focus, All files), and search. Search covers the
+/* The Map's command panel: where you are (breadcrumb and index status), how
+   the scope is drawn (Systems, Focus, All files), and search. Search covers the
    render sample locally and, when the index holds more files than the canvas
    draws, the whole index through the host (search_corpus); picking a file
    beyond the sample scopes into its codebase so it is fetched and drawn. */
@@ -7,13 +7,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { actions } from "../store";
 import { cssColor, folderColor } from "@/lib/graph/colors";
-import { groupIndexFor, searchHighlightSegments, searchMatches, type GraphViewState } from "@/lib/graph/view-model";
+import { baseName, groupIndexFor, searchHighlightSegments, searchMatches, type GraphViewState } from "@/lib/graph/view-model";
 import { breadcrumb, type ScopeMode } from "@/lib/graph/scope";
 import type { GraphNode } from "@/lib/graph/protocol";
 import { ChevronRight, CornerLeftUp, Search } from "lucide-react";
+import { MapKbd, MapSegmented } from "./ui";
 
 const PHASE_LABELS: Record<string, string> = {
-  discover: "Discovering files",
+  discover: "Discovering",
   scan: "Reading files",
   resolve: "Resolving imports",
   layout: "Laying out",
@@ -25,59 +26,55 @@ const MODES: Array<{ mode: ScopeMode; label: string; title: string }> = [
   { mode: "all", label: "All files", title: "Every file in the render sample, unfolded" },
 ];
 
-/** Breadcrumb and view-mode control. */
-export function ScopeBar({ view }: { view: GraphViewState }) {
+/** Where the map is scoped, as a breadcrumb that doubles as the panel's title. */
+function Breadcrumb({ view }: { view: GraphViewState }) {
   const index = useMemo(() => groupIndexFor(view.hierarchy), [view.hierarchy]);
   const crumbs = useMemo(() => breadcrumb(view.scope, index), [view.scope, index]);
+  const atWorkspace = view.scope.length === 0;
+  return (
+    <nav className="map-breadcrumb" aria-label="Map scope">
+      {!atWorkspace && (
+        <button type="button" className="map-crumb-up" onClick={() => actions.scopeUp()} title="Up one level (Backspace)" aria-label="Up one level">
+          <CornerLeftUp size={12} aria-hidden="true" />
+        </button>
+      )}
+      {crumbs.map((crumb, i) => {
+        const last = i === crumbs.length - 1;
+        return (
+          <span key={crumb.id ?? "workspace"} className="flex min-w-0 items-center">
+            {i > 0 && <ChevronRight className="map-crumb-sep" aria-hidden="true" />}
+            <button
+              type="button"
+              className={`map-crumb ${last ? "map-crumb-current" : ""}`}
+              aria-current={last ? "location" : undefined}
+              onClick={() => actions.setScopeTo(crumb.id)}
+              title={crumb.id ? `${crumb.level}: ${crumb.label}` : "The whole workspace"}
+              style={crumb.id && crumb.level !== "area" && !last ? { color: cssColor(folderColor(index.byId.get(crumb.id)?.key ?? crumb.label)) } : undefined}
+            >
+              {crumb.label}
+            </button>
+          </span>
+        );
+      })}
+    </nav>
+  );
+}
+
+/** How the current scope is drawn. Hidden until the host sends a hierarchy. */
+export function ScopeBar({ view }: { view: GraphViewState }) {
   if (!view.hierarchy || view.display.lens !== "files") return null;
   const hasGroups = view.hierarchy.groups.some((group) => group.level === "codebase" || group.level === "root");
   const atWorkspace = view.scope.length === 0;
+  const modes = MODES.filter(({ mode }) => mode !== "systems" || hasGroups);
+  const active = modes.find(({ mode }) => view.scopeMode === mode && (mode !== "systems" || atWorkspace))?.mode ?? modes[modes.length - 1]!.mode;
   return (
     <div className="map-scope-bar" data-map-region="scope">
-      <nav className="map-breadcrumb" aria-label="Map scope">
-        {!atWorkspace && (
-          <button type="button" className="map-crumb-up" onClick={() => actions.scopeUp()} title="Up one level (Backspace)" aria-label="Up one level">
-            <CornerLeftUp size={12} aria-hidden="true" />
-          </button>
-        )}
-        {crumbs.map((crumb, i) => {
-          const last = i === crumbs.length - 1;
-          return (
-            <span key={crumb.id ?? "workspace"} className="flex min-w-0 items-center">
-              {i > 0 && <ChevronRight size={11} className="shrink-0 opacity-50" aria-hidden="true" />}
-              <button
-                type="button"
-                className={`map-crumb ${last ? "map-crumb-current" : ""}`}
-                aria-current={last ? "location" : undefined}
-                onClick={() => actions.setScopeTo(crumb.id)}
-                title={crumb.id ? `${crumb.level}: ${crumb.label}` : "The whole workspace"}
-                style={crumb.id && crumb.level !== "area" ? { color: cssColor(folderColor(index.byId.get(crumb.id)?.key ?? crumb.label)) } : undefined}
-              >
-                {crumb.label}
-              </button>
-            </span>
-          );
-        })}
-      </nav>
-      <div className="map-mode-switch" role="group" aria-label="View mode">
-        {MODES.map(({ mode, label, title }) => {
-          if (mode === "systems" && !hasGroups) return null;
-          const active = view.scopeMode === mode && (mode !== "systems" || atWorkspace);
-          return (
-            <button
-              key={mode}
-              type="button"
-              className={`map-tool-button ${active ? "map-tool-button-active" : ""}`}
-              aria-pressed={active}
-              title={title}
-              data-map-control={`mode-${mode}`}
-              onClick={() => (mode === "all" && atWorkspace ? actions.showAllFiles() : actions.setScopeMode(mode))}
-            >
-              {label}
-            </button>
-          );
-        })}
-      </div>
+      <MapSegmented
+        label="View mode"
+        value={active}
+        options={modes.map(({ mode, label, title }) => ({ value: mode, label, title, control: `mode-${mode}` }))}
+        onChange={(mode) => (mode === "all" && atWorkspace ? actions.showAllFiles() : actions.setScopeMode(mode))}
+      />
     </div>
   );
 }
@@ -109,7 +106,7 @@ export function SearchBar({ view, search, nodes, searchNodes, indexedFileCount, 
     return () => observer.disconnect();
   }, []);
   const matches = useMemo(() => searchMatches(searchNodes, search, 8), [searchNodes, search]);
-  const moduleCount = useMemo(() => new Set(nodes.map((node) => node.dir)).size, [nodes]);
+  const folderCount = useMemo(() => new Set(nodes.map((node) => node.dir.replace(/#\d+$/, ""))).size, [nodes]);
   const servicesMode = searchNodes.some((node) => node.kind === "service");
   const [active, setActive] = useState(0);
   useEffect(() => { setActive(0); }, [search]);
@@ -150,139 +147,104 @@ export function SearchBar({ view, search, nodes, searchNodes, indexedFileCount, 
     }
   };
 
-  const phase = view.indexingPhase ? PHASE_LABELS[view.indexingPhase] ?? "Indexing" : "Indexing files";
-  const progress = view.indexingProgress !== null ? ` ${Math.round(view.indexingProgress * 100)}%` : "";
+  const busy = indexing || relationshipIndexing;
+  const phase = view.indexingPhase ? PHASE_LABELS[view.indexingPhase] ?? "Indexing" : "Indexing";
+  const progress = indexing && view.indexingProgress !== null ? Math.round(view.indexingProgress * 100) : null;
+  const statusText = indexing
+    ? `${phase}${progress !== null ? ` ${progress}%` : ""}`
+    : relationshipIndexing ? "Tracing services" : `${indexedFileCount.toLocaleString()} indexed`;
+  const statusTitle = indexing
+    ? "Building the map in the background — the canvas updates as it lands"
+    : relationshipIndexing
+      ? "Detecting API, event, and data contracts between services"
+      : `${indexedFileCount.toLocaleString()} files indexed${sampled ? `, ${nodes.length.toLocaleString()} drawn` : ""}`;
 
   return (
-    <section ref={panelRef} className="map-panel map-command-panel pointer-events-auto absolute left-3 top-3 w-[min(340px,calc(100vw-24px))]" aria-label="Architecture map search and summary" data-map-region="command">
-      <div className="mb-2 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="map-eyebrow">Blacksite · Workspace</div>
-          <div className="map-command-title">Codebase map</div>
-        </div>
-        <div className={`map-status ${indexing || relationshipIndexing ? "map-status-live" : ""}`} role="status" aria-live="polite">
-          {indexing
-            ? `${phase}${progress}`
-            : relationshipIndexing
-              ? "Tracing services"
-              : `${indexedFileCount.toLocaleString()} indexed`}
-        </div>
+    <section ref={panelRef} className="map-panel map-command-panel pointer-events-auto absolute left-3 top-3" aria-label="Map scope and search" data-map-region="command">
+      <div className="map-command-head">
+        <Breadcrumb view={view} />
+        <span className={`map-status ${busy ? "map-status-live" : ""}`} role="status" aria-live="polite" title={statusTitle}>
+          {busy && <span className="map-live-pip" aria-hidden />}
+          {statusText}
+        </span>
       </div>
       <ScopeBar view={view} />
-      <div className="map-stats">
-        <div className="map-stat">
-          <span>Files</span>
-          <strong>{indexedFileCount.toLocaleString()}</strong>
-        </div>
-        <div className="map-stat">
-          <span>Links</span>
-          <strong>{indexedImportCount.toLocaleString()}</strong>
-        </div>
-        <div className="map-stat">
-          <span>Modules</span>
-          <strong>{moduleCount.toLocaleString()}</strong>
-        </div>
-      </div>
-      {/* Removing a large slice of a workspace has to be legible: somebody who
-          wanted .github on the map otherwise has no way to learn why it went
-          away. Only shown when the policy actually dropped something. */}
-      {hiddenByPolicyCount > 0 && excludeDotDirectories && !indexing && (
-        <div className="mb-2 flex items-center justify-between gap-2 text-xs text-muted-foreground" data-map-region="hidden-files">
-          <span>
-            {hiddenByPolicyCount.toLocaleString()} {hiddenByPolicyCount === 1 ? "file" : "files"} in dot-directories hidden
-          </span>
-          <button
-            type="button"
-            className="map-layer-toggle shrink-0"
-            data-map-control="show-dot-directories"
-            title="Index dot-directories such as .vscode-test and .github. Rebuilds the map. .git and .blacksite are never indexed."
-            onClick={() => actions.setExcludeDotDirectories(false)}
-          >
-            Show
-          </button>
-        </div>
-      )}
-      {view.gitignoreApplied && !indexing && (
-        <div className="mb-2 flex items-center justify-between gap-2 text-xs text-muted-foreground" data-map-region="gitignore">
-          <span>Following .gitignore</span>
-          <button
-            type="button"
-            className="map-layer-toggle shrink-0"
-            data-map-control="include-gitignored"
-            title="Also index files your .gitignore excludes (generated, vendored, build output). Rebuilds the map."
-            onClick={() => actions.setRespectGitignore(false)}
-          >
-            Include ignored
-          </button>
-        </div>
-      )}
-      <label className="sr-only" htmlFor="map-search">{servicesMode ? "Search services" : "Search files and modules"}</label>
+      <label className="sr-only" htmlFor="map-search">{servicesMode ? "Search services" : "Search files and folders"}</label>
       <div className="map-search-field">
-        <Search size={15} aria-hidden="true" />
+        <Search aria-hidden="true" />
         <input
           id="map-search"
           ref={inputRef}
           value={search}
           onChange={(e) => actions.setSearch(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder={servicesMode ? "Find a service…" : "Find a file or module…"}
+          placeholder={servicesMode ? "Find a service…" : "Find a file or folder…"}
           spellCheck={false}
-          className="map-search-input"
+          className="map-search-input w-full"
           role="combobox"
           aria-autocomplete="list"
           aria-expanded={Boolean(search.trim())}
           aria-controls="map-search-results"
           aria-activedescendant={search.trim() && matches[active] ? `map-search-result-${active}` : undefined}
         />
-        <kbd aria-hidden="true">/</kbd>
+        <MapKbd>/</MapKbd>
       </div>
       {search.trim() && (
-        <div id="map-search-results" className="map-results mt-1 flex flex-col gap-px overflow-hidden" role="listbox">
-          {matches.length === 0 && beyond.length === 0 && <div className="px-2 py-1 text-xs text-muted-foreground">No matches</div>}
-          {matches.map((node, i) => (
-            <button
-              id={`map-search-result-${i}`}
-              key={node.id}
-              className={`px-2 py-1 text-left font-mono text-xs text-foreground ${i === active ? "bg-white/12" : "hover:bg-white/10"}`}
-              role="option"
-              aria-selected={i === active}
-              onMouseEnter={() => {
-                setActive(i);
-                /* Preview: light the star (hover spotlight) before committing. */
-                actions.hover(node.id);
-              }}
-              onMouseLeave={() => actions.hover(null)}
-              onClick={() => pick(node.id)}
-              title={node.id}
-            >
-              <span className="flex min-w-0 items-center gap-1.5">
-                <span
-                  className="h-1.5 w-1.5 shrink-0 rounded-full"
-                  style={{ background: cssColor(folderColor(node.dir)) }}
-                  aria-hidden
-                />
-                <span className="block truncate">
-                  {searchHighlightSegments(node.kind === "service" ? node.dir : node.id, search).map((segment, s) => (
-                    segment.hit
-                      ? <strong key={s} className="map-result-hit">{segment.text}</strong>
-                      : <span key={s}>{segment.text}</span>
-                  ))}
-                </span>
-              </span>
-              {node.kind === "service" && (
-                <span className="mt-0.5 block text-2xs uppercase tracking-wide text-cyan-200/70">
-                  service · {node.inDegree} in · {node.outDegree} out
-                </span>
-              )}
-            </button>
-          ))}
+        <div id="map-search-results" className="map-results" role="listbox">
+          {matches.length === 0 && beyond.length === 0 && <div className="map-hint px-2 py-1.5">No matches</div>}
+          {matches.map((node, i) => {
+            const label = node.kind === "service" ? node.dir.replace(/^svc:/, "") : node.id;
+            const slash = label.lastIndexOf("/");
+            const nameStart = node.kind === "service" ? 0 : slash + 1;
+            const segments = searchHighlightSegments(label, search);
+            /* Split the highlighted path at the last slash: name prominent, folder quiet. */
+            let offset = 0;
+            const name: React.ReactNode[] = [];
+            const dir: React.ReactNode[] = [];
+            segments.forEach((segment, s) => {
+              const start = offset;
+              offset += segment.text.length;
+              const pieces: Array<[string, boolean]> = [];
+              if (offset <= nameStart) pieces.push([segment.text, false]);
+              else if (start >= nameStart) pieces.push([segment.text, true]);
+              else pieces.push([segment.text.slice(0, nameStart - start), false], [segment.text.slice(nameStart - start), true]);
+              pieces.forEach(([text, inName], p) => {
+                if (!text) return;
+                const element = segment.hit ? <strong key={`${s}:${p}`} className="map-result-hit">{text}</strong> : <span key={`${s}:${p}`}>{text}</span>;
+                (inName ? name : dir).push(element);
+              });
+            });
+            return (
+              <button
+                id={`map-search-result-${i}`}
+                key={node.id}
+                type="button"
+                className="map-result"
+                role="option"
+                aria-selected={i === active}
+                onMouseEnter={() => {
+                  setActive(i);
+                  /* Preview: light the star (hover spotlight) before committing. */
+                  actions.hover(node.id);
+                }}
+                onMouseLeave={() => actions.hover(null)}
+                onClick={() => pick(node.id)}
+                title={node.kind === "service" ? `${label} · service · ${node.inDegree} in · ${node.outDegree} out` : node.id}
+              >
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: cssColor(folderColor(node.dir)) }} aria-hidden />
+                <span className="map-result-name">{name.length ? name : baseName(label)}</span>
+                {dir.length > 0 && <span className="map-result-dir"><bdi>{dir}</bdi></span>}
+              </button>
+            );
+          })}
           {beyond.length > 0 && (
             <>
-              <div className="px-2 pt-1 text-2xs uppercase tracking-wide text-muted-foreground">Beyond the drawn sample</div>
+              <div className="map-results-label" title="These files are indexed but not drawn yet; picking one opens its codebase">Not drawn yet</div>
               {beyond.map((row) => (
                 <button
                   key={row.id}
-                  className="px-2 py-1 text-left font-mono text-xs text-foreground/85 hover:bg-white/10"
+                  type="button"
+                  className="map-result"
                   role="option"
                   aria-selected={false}
                   onClick={() => {
@@ -292,14 +254,54 @@ export function SearchBar({ view, search, nodes, searchNodes, indexedFileCount, 
                   }}
                   title={`${row.id} — opens its codebase and draws it`}
                 >
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <span className="h-1.5 w-1.5 shrink-0 rounded-full border border-white/40" aria-hidden />
-                    <span className="block truncate">{row.id}</span>
-                  </span>
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full border border-white/40" aria-hidden />
+                  <span className="map-result-name">{baseName(row.id)}</span>
+                  <span className="map-result-dir"><bdi>{row.dir}</bdi></span>
                 </button>
               ))}
             </>
           )}
+        </div>
+      )}
+      <div className="map-meta-line">
+        <span title={`${indexedFileCount.toLocaleString()} files indexed in this workspace`}><strong>{indexedFileCount.toLocaleString()}</strong> files</span>
+        <span title="Resolved import links between indexed files"><strong>{indexedImportCount.toLocaleString()}</strong> links</span>
+        <span title="Folders with drawn files"><strong>{folderCount.toLocaleString()}</strong> folders</span>
+        {view.gitignoreApplied && !indexing && (
+          <span data-map-region="gitignore" title="Files your .gitignore excludes (generated, vendored, build output) are left out">
+            Following .gitignore ·{" "}
+            <button
+              type="button"
+              className="map-meta-link"
+              data-map-control="include-gitignored"
+              title="Also index files your .gitignore excludes. Rebuilds the map."
+              onClick={() => actions.setRespectGitignore(false)}
+            >
+              include
+            </button>
+          </span>
+        )}
+        {/* Removing a large slice of a workspace has to be legible: somebody who
+            wanted .github on the map otherwise has no way to learn why it went
+            away. Only shown when the policy actually dropped something. */}
+        {hiddenByPolicyCount > 0 && excludeDotDirectories && !indexing && (
+          <span data-map-region="hidden-files" title="Files in dot-directories such as .github and .vscode-test are not indexed. .git and .blacksite never are.">
+            {hiddenByPolicyCount.toLocaleString()} in dot-folders hidden ·{" "}
+            <button
+              type="button"
+              className="map-meta-link"
+              data-map-control="show-dot-directories"
+              title="Index dot-directories too. Rebuilds the map."
+              onClick={() => actions.setExcludeDotDirectories(false)}
+            >
+              show
+            </button>
+          </span>
+        )}
+      </div>
+      {busy && (
+        <div className={`map-progress ${progress === null ? "map-progress-indeterminate" : ""}`} aria-hidden>
+          <i style={progress === null ? undefined : { width: `${Math.max(4, progress)}%` }} />
         </div>
       )}
     </section>

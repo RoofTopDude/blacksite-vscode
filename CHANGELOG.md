@@ -3,6 +3,56 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.31.0-pre.4
+
+Prerelease. The stable update channel remains on 1.30.0.
+
+The Codebase Map now lays out your workspace by its folders, and it has a cleaner, more compact set of
+controls. Shell commands the agent runs now show their output live in the chat.
+
+### Changed
+
+- **The Map groups files by folder first.** Each folder is now one region of the map, nested inside its
+  parent folder's region, so everything under `services/auth` stays together and never mixes with
+  `services/billing`. Before, folders were placed by size alone and import links pulled them toward each
+  other, so files from different service folders could end up side by side. Imports and declared
+  dependencies still matter: they decide which neighbouring folders sit closest and which way a folder
+  faces, but they never move a folder out of its parent.
+- **Files stay in their own folder's codebase.** A file that isn't covered by any project manifest used
+  to be moved into whichever codebase it imported from. In a repository with one package, that could fold
+  most of `src/` and `tests/` into that package (one workspace showed "local-runtime · 827 files"). Now a
+  folder without a manifest is its own codebase, including one that sits next to real projects. Only
+  loose files at the top of the workspace still join the codebase they import from.
+- **A very large folder reads as one folder.** When a folder is too big to draw as one group, its pieces
+  now sit side by side, share one colour and one outline, and carry one label (`tests/unit`, not
+  `TESTS/UNIT#4`) instead of being scattered across the map.
+- **Cleaner Map controls.** The panels share one compact style: a breadcrumb and index status at the top
+  of the search panel, choices as segmented controls, on/off settings as switches, canvas actions as
+  icon buttons, and rarely used settings folded away. Every control explains itself in a tooltip. The
+  search panel is about half its old height. In a narrow sidebar, the display controls fold into a
+  single button.
+- **A clearer inspector.** The selected file's name, folder, and role sit in one header with a close
+  button. Tabs show how many tickets and notes they hold, and Trace and Isolate are compact controls.
+
+### Fixed
+
+- **File names on the Map are no longer cut off.** Labels were sized with a guess that was narrower than
+  the text, so nearly every name ended in "…" (`types.t…`). They are now measured.
+- **The agent-activity chip is centred** and shows how long the agent has been on the current file.
+  Click it to fly to that file.
+- **Folder outlines are drawn for up to 160 folders** (was 48), so large workspaces no longer leave most
+  folders bare. Codebase outlines no longer spill into neighbouring codebases.
+
+### Added
+
+- **Live terminal output for shell commands.** While the agent runs a command, its output streams into
+  the tool's row in the chat as a terminal view. Progress lines update in place, colours are kept, and
+  stderr is tinted. The view follows the newest line unless you scroll up, and Copy and Wrap sit in its
+  footer. A folded row shows the newest line as it arrives, and the "Running …" strip above the
+  transcript shows it too; click the strip to jump straight to the command's output. Finished commands
+  keep their output and show how they ended (`Exit 0`, `Exit 1`, timed out, cancelled). Commands in
+  restored conversations show their saved output the same way.
+
 ## 1.31.0-pre.3
 
 Prerelease. The stable update channel remains on 1.30.0.

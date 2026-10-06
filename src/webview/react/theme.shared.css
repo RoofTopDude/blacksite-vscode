@@ -179,8 +179,9 @@
   }
 }
 
-/* The live chip drops in from above; keep the -50% x-centering it's laid
-   out with (Tailwind translate utility) through both keyframes. */
+/* The live chip drops in from above. Tailwind v4 centres it with the separate
+   `translate` property, so the keyframes animate `transform` alone — repeating
+   the -50% here doubled the offset and pushed the chip left of centre. */
 .map-live-chip {
   animation: map-chip-in 0.24s ease-out both;
 }
@@ -188,11 +189,11 @@
 @keyframes map-chip-in {
   from {
     opacity: 0;
-    transform: translate(-50%, -7px);
+    transform: translateY(-6px);
   }
   to {
     opacity: 1;
-    transform: translate(-50%, 0);
+    transform: none;
   }
 }
 

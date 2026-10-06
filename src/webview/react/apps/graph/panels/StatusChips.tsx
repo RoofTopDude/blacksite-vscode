@@ -1,49 +1,58 @@
-/* Codebase Map panel module, split out of GraphApp.tsx (move-only; see
-   docs/map-scale-implementation-plan.md B8). */
+/* Status surfaces over the Map canvas: the agent's live activity, run
+   playback, the keyboard sheet, and the language-server setup panel. */
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { actions } from "../store";
 import { activityColor, cssColor } from "@/lib/graph/colors";
 import { baseName, traceKindVerb, type GraphViewState } from "@/lib/graph/view-model";
 import type { LiveActivity } from "@/lib/graph/protocol";
+import { useLiveClock } from "@/lib/use-live-clock";
+import { ChevronDown, ChevronRight, Download, Keyboard, X } from "lucide-react";
 import { compactDuration } from "./shared";
+import { MapButton, MapIconButton, MapKbd } from "./ui";
 
 export const SHORTCUTS: Array<[string, string]> = [
   ["Drag", "Pan the map"],
   ["Wheel", "Zoom in / out"],
-  ["Click star", "Select a file"],
-  ["Double-click star", "Open the file (or expand a cluster)"],
-  ["Click minimap", "Jump the camera there"],
+  ["Click", "Select a file"],
+  ["Double-click", "Open the file, or step into a folded group"],
   ["/", "Search"],
-  ["Enter", "Open selected / top match"],
-  ["F", "Fit whole map"],
-  ["+ / -", "Zoom in / out"],
-  ["WASD / Arrows", "Pan (hold Shift for a bigger step)"],
-  ["Esc", "Clear selection / search"],
+  ["Enter", "Open the selection"],
+  ["F", "Fit the whole map"],
+  ["+ −", "Zoom in / out"],
+  ["W A S D", "Pan (Shift for a bigger step)"],
+  ["Backspace", "Up one scope level"],
+  ["Esc", "Clear selection or search"],
 ];
 
-/** Heads-up readout of what the agent is doing on the map right now, driven by
-    in-flight tool calls. Hidden when the agent is idle. */
-export function LiveActivityChip({ live }: { live: LiveActivity[] }) {
-  if (live.length === 0) return null;
+/** What the agent is doing on the map right now, driven by in-flight tool
+    calls. Click it to fly to the file. Hidden while the agent is idle. */
+export function LiveActivityChip({ live, onFocus }: { live: LiveActivity[]; onFocus?: (path: string) => void }) {
   const primary = live[0]; /* host sorts most-recent-first */
+  const now = useLiveClock(Boolean(primary));
   if (!primary) return null;
   const color = cssColor(activityColor(primary.kind, primary.laneId));
   const extra = live.length - 1;
   const laneCount = new Set(live.map((item) => item.laneId ?? "main")).size;
-  const laneLabel = primary.laneId ? "lane" : "main";
+  const elapsed = Math.max(0, now - primary.at);
   return (
-    <div className="map-live-chip pointer-events-none absolute left-1/2 top-3 -translate-x-1/2" role="status" aria-live="polite">
-      <span className="map-live-dot" style={{ color, background: color }} />
-      <span className="whitespace-nowrap text-xs text-foreground">
-        <span style={{ color }}>{laneLabel}</span>{" "}
-        <span className="text-muted-foreground">{traceKindVerb(primary.kind)}</span>{" "}
-        <strong className="font-mono font-semibold">{baseName(primary.path)}</strong>
-        {primary.detail && <span className="text-muted-foreground"> · {primary.detail}</span>}
-        {extra > 0 && <span className="text-muted-foreground"> +{extra} more</span>}
-        {laneCount > 1 && <span className="text-muted-foreground"> · {laneCount} lanes</span>}
-      </span>
-    </div>
+    <button
+      type="button"
+      className="map-live-chip pointer-events-auto absolute left-1/2 top-3 -translate-x-1/2"
+      style={{ "--map-live-color": color } as CSSProperties}
+      onClick={() => onFocus?.(primary.path)}
+      title={`${primary.laneId ? "A delegated lane" : "The agent"} is ${traceKindVerb(primary.kind).toLowerCase()} ${primary.path}${primary.detail ? ` (${primary.detail})` : ""} — click to fly there`}
+      aria-live="polite"
+      data-map-region="live-activity"
+    >
+      <span className="map-live-dot" aria-hidden />
+      <span className="map-live-verb">{traceKindVerb(primary.kind)}</span>
+      <span className="map-live-target">{baseName(primary.path)}</span>
+      {primary.detail && <span className="map-live-extra truncate">{primary.detail}</span>}
+      {extra > 0 && <span className="map-live-extra">+{extra}</span>}
+      {laneCount > 1 && <span className="map-live-extra">· {laneCount} lanes</span>}
+      {elapsed >= 2000 && <span className="map-live-extra font-mono tabular-nums">{compactDuration(elapsed)}</span>}
+    </button>
   );
 }
 
@@ -69,23 +78,23 @@ export function RunPlaybackControls({ view }: { view: GraphViewState }) {
 
   return (
     <section
-      className={`map-panel pointer-events-auto absolute left-1/2 z-20 -translate-x-1/2 px-2 py-1.5 ${view.liveActivity.length > 0 && !isPlayback ? "top-12" : "top-3"}`}
+      className={`map-panel pointer-events-auto absolute left-1/2 z-20 -translate-x-1/2 !px-2 !py-1.5 ${view.liveActivity.length > 0 && !isPlayback ? "top-14" : "top-3"}`}
       aria-label="Execution run playback"
       data-map-region="run-playback"
     >
-      <div className="flex items-center gap-1.5">
-        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${isPlayback ? "bg-violet-300" : "bg-emerald-300"}`} aria-hidden />
+      <div className="flex items-center gap-2">
+        <span className="map-live-pip" style={{ background: isPlayback ? "var(--primary)" : "var(--map-live)" }} aria-hidden />
         <label className="sr-only" htmlFor="map-run-selector">Execution run</label>
         <select
           id="map-run-selector"
-          className="max-w-[220px] rounded border border-white/10 bg-black/50 px-1.5 py-0.5 text-xs text-foreground"
+          className="map-search-input !min-h-[26px] max-w-[220px] !px-2 text-xs"
           value={isPlayback ? playback.selectedRunId ?? "" : ""}
           onChange={(event) => {
             if (event.target.value) actions.selectRun(event.target.value);
           }}
-          title="Project retained run activity onto the Codebase Map"
+          title="Replay a retained Execution Run's activity on the map"
         >
-          <option value="" disabled>Live · select a run</option>
+          <option value="" disabled>Live · replay a run…</option>
           {playback.summaries.map((summary) => (
             <option key={summary.id} value={summary.id}>
               {summary.title} · {summary.status.replace(/_/g, " ")}
@@ -93,20 +102,14 @@ export function RunPlaybackControls({ view }: { view: GraphViewState }) {
           ))}
         </select>
         {isPlayback && (
-          <button
-            className="rounded bg-white/5 px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-white/15 hover:text-foreground"
-            onClick={() => actions.exitRunPlayback()}
-            title="Return to live activity"
-          >
-            Exit
-          </button>
+          <MapButton size="xs" variant="ghost" onClick={() => actions.exitRunPlayback()} title="Return to live activity">Exit</MapButton>
         )}
       </div>
       {isPlayback && range && cursor !== null && (
-        <div className="mt-1 flex items-center gap-1.5">
-          <span className="w-10 text-right font-mono text-2xs text-violet-200">{elapsed}</span>
+        <div className="mt-1.5 flex items-center gap-2">
+          <span className="w-10 text-right font-mono text-2xs text-[color:var(--map-text)]">{elapsed}</span>
           <input
-            className="h-3 w-[min(260px,42vw)] accent-violet-300"
+            className="h-3 w-[min(260px,42vw)] accent-[color:var(--primary)]"
             type="range"
             min={range.from}
             max={range.to}
@@ -116,10 +119,10 @@ export function RunPlaybackControls({ view }: { view: GraphViewState }) {
             onChange={(event) => actions.seekRun(Number(event.target.value))}
             aria-label={`Run position, ${elapsed} of ${duration}`}
           />
-          <span className="w-10 font-mono text-2xs text-muted-foreground">{duration}</span>
+          <span className="w-10 font-mono text-2xs text-[color:var(--map-text-3)]">{duration}</span>
           <span
-            className="whitespace-nowrap text-2xs text-muted-foreground"
-            title={`${loadedEvents.toLocaleString()} events in the currently loaded bounded window${totalEvents === undefined ? "" : ` of ${totalEvents.toLocaleString()} retained events`}`}
+            className="whitespace-nowrap text-2xs text-[color:var(--map-text-3)]"
+            title={`${loadedEvents.toLocaleString()} events in the currently loaded window${totalEvents === undefined ? "" : ` of ${totalEvents.toLocaleString()} retained events`}`}
           >
             {eventReadout}
           </span>
@@ -131,24 +134,20 @@ export function RunPlaybackControls({ view }: { view: GraphViewState }) {
 
 export function HelpChip({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   return (
-    <div className="pointer-events-auto absolute bottom-2 left-1/2 flex -translate-x-1/2 flex-col items-center gap-1">
+    <div className="pointer-events-auto absolute bottom-3 left-1/2 flex -translate-x-1/2 flex-col items-center">
       {open && (
-        <div className="mb-1 flex flex-col gap-1 rounded-md border border-border bg-black/80 px-2.5 py-2 backdrop-blur">
+        <div className="map-panel map-card map-help-sheet" role="dialog" aria-label="Keyboard shortcuts">
           {SHORTCUTS.map(([key, label]) => (
-            <div key={key} className="flex items-center gap-2 text-xs text-muted-foreground">
-              <kbd className="min-w-[42px] rounded border border-white/15 bg-white/5 px-1 py-0.5 text-center font-mono text-2xs text-slate-200">{key}</kbd>
-              {label}
+            <div key={key} className="contents">
+              <span className="flex justify-end"><MapKbd>{key}</MapKbd></span>
+              <span>{label}</span>
             </div>
           ))}
         </div>
       )}
-      <button
-        className="rounded-md border border-border bg-black/60 px-2 py-1 text-xs text-muted-foreground backdrop-blur hover:bg-white/10 hover:text-foreground"
-        onClick={onToggle}
-        title="Keyboard shortcuts (?)"
-        aria-expanded={open}
-      >
-        {open ? "Hide keys" : "? Keys"}
+      <button type="button" className="map-help-toggle" onClick={onToggle} title="Keyboard shortcuts (?)" aria-expanded={open}>
+        <Keyboard className="size-3.5" aria-hidden />
+        {open ? "Hide keys" : "Keys"}
       </button>
     </div>
   );
@@ -170,14 +169,8 @@ export function capacityWarning(view: GraphViewState): string {
         : "relationship detection capped (too many API/event/data call sites to fully cross-match)",
     );
   }
-  return parts.length ? parts.join(" - ") : `Large workspace - showing ${view.nodes.length.toLocaleString()} files sampled across every folder`;
+  return parts.length ? parts.join(" · ") : `Large workspace · showing ${view.nodes.length.toLocaleString()} files sampled across every folder`;
 }
-
-
-
-
-
-
 
 /** Human labels so the onboarding panel reads in plain language, not lang codes
     and marketplace ids. */
@@ -239,79 +232,66 @@ export function LspDiagnostics({ view }: { view: GraphViewState }) {
   if (dismissed || (limited.length === 0 && !showBackgroundPrompt)) return null;
   const installable = [...new Map(limited.filter((i) => i.recommendation).map((i) => [i.recommendation!, i])).values()];
   return (
-    <div className="map-panel map-lsp-panel pointer-events-auto absolute left-3 top-[178px] w-[min(310px,calc(100vw-24px))] px-2.5 py-2">
-      <div className="flex items-start justify-between gap-2">
-        <button className="flex items-center gap-1.5 text-left" onClick={() => setOpen((o) => !o)}>
-          <span className="text-sm">{open ? "▾" : "▸"}</span>
-          <span className="text-sm font-semibold text-foreground">Light up more relationships</span>
+    <div className="map-panel map-card map-lsp-panel pointer-events-auto absolute left-3 w-[min(300px,calc(100%-24px))] !p-0" data-map-region="lsp">
+      <div className="flex items-center gap-1 py-1 pl-3 pr-1">
+        <button type="button" className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-semibold text-[color:var(--map-text)]" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
+          {open ? <ChevronDown className="size-3.5 text-[color:var(--map-text-3)]" aria-hidden /> : <ChevronRight className="size-3.5 text-[color:var(--map-text-3)]" aria-hidden />}
+          <span className="truncate">Light up more relationships</span>
         </button>
-        <button
-          className="shrink-0 text-sm leading-none text-muted-foreground hover:text-foreground"
-          onClick={() => setDismissed(true)}
-          title="Dismiss"
-        >
-          ✕
-        </button>
+        <MapIconButton icon={X} label="Dismiss" onClick={() => setDismissed(true)} />
       </div>
       {open && (
-        <>
+        <div className="flex flex-col gap-2 border-t border-[color:var(--map-line)] px-3 pb-3 pt-2">
           {limited.length > 0 && (
             <>
-              <div className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-                Imports and includes are mapped automatically. <strong className="text-foreground/90">Symbol-level</strong>{" "}
-                links (who calls or references what) come from each language&apos;s VS Code extension. Install one to
-                reveal more edges for these files:
-              </div>
-              <div className="mt-1.5 flex flex-col gap-1">
+              <p className="map-hint !text-xs">
+                Imports are mapped automatically. <span className="text-[color:var(--map-text-2)]">Symbol-level</span> links
+                (who calls or references what) come from each language&apos;s extension. Install one to reveal more for:
+              </p>
+              <div className="flex flex-col gap-1">
                 {limited.map((item) => (
-                  <div key={item.lang} className="flex items-center gap-1.5 text-xs">
-                    <span
-                      className="h-1.5 w-1.5 shrink-0 rounded-full"
-                      style={{ background: LSP_STATUS_COLOR[item.status] ?? "#8a8a93" }}
-                      title={item.detail}
-                    />
-                    <span className="text-foreground/90">{langLabel(item.lang)}</span>
-                    <span className="text-muted-foreground">· {item.fileCount.toLocaleString()} files</span>
+                  <div key={item.lang} className="flex items-center gap-2 text-xs" title={item.detail}>
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: LSP_STATUS_COLOR[item.status] ?? "#8a8a93" }} aria-hidden />
+                    <span className="text-[color:var(--map-text-2)]">{langLabel(item.lang)}</span>
+                    <span className="text-[color:var(--map-text-3)]">{item.fileCount.toLocaleString()} files</span>
                   </div>
                 ))}
               </div>
               {installable.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-1">
+                <div className="flex flex-wrap gap-1.5">
                   {installable.map((item) => (
-                    <button
+                    <MapButton
                       key={item.recommendation}
-                      className="map-tool-button !py-0.5 flex items-center gap-1"
+                      size="xs"
+                      icon={Download}
                       onClick={() => actions.installExtension(item.recommendation!)}
                       title={`Open ${item.recommendation} in the Extensions view`}
                     >
-                      <span className="text-xs">↓</span>
-                      Install {EXTENSION_NAMES[item.recommendation!] ?? langLabel(item.lang)}
-                    </button>
+                      {EXTENSION_NAMES[item.recommendation!] ?? langLabel(item.lang)}
+                    </MapButton>
                   ))}
                 </div>
               )}
-              <div className="mt-1.5 text-2xs text-muted-foreground">
-                Then use <span className="text-foreground/80">Trace relationships</span> on a file to pull in its symbol links.
-              </div>
+              <p className="map-hint">Then use Trace relationships on a file to pull in its symbol links.</p>
             </>
           )}
           {showBackgroundPrompt && (
-            <div className={limited.length > 0 ? "mt-2.5 border-t border-border/40 pt-2" : "mt-1.5"}>
-              <div className="text-xs leading-relaxed text-muted-foreground">
-                A working language server was found. Turning on{" "}
-                <strong className="text-foreground/90">background indexing</strong> maps these links across the
-                whole repo automatically, instead of file-by-file via Trace relationships.
-              </div>
-              <button
-                className="map-tool-button !py-0.5 mt-1.5"
+            <div className={limited.length > 0 ? "flex flex-col gap-1.5 border-t border-[color:var(--map-line)] pt-2" : "flex flex-col gap-1.5"}>
+              <p className="map-hint !text-xs">
+                A working language server was found. <span className="text-[color:var(--map-text-2)]">Background indexing</span> maps
+                these links across the whole repo instead of file by file.
+              </p>
+              <MapButton
+                size="xs"
+                className="self-start"
                 onClick={() => actions.setBackgroundSymbols(true)}
                 title="Sets blacksite.graph.backgroundSymbols — runs on an idle budget and pauses while you edit."
               >
                 Enable background indexing
-              </button>
+              </MapButton>
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   );

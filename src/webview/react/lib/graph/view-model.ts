@@ -1725,18 +1725,27 @@ export function collapseSymbols(state: GraphViewState, path: string): GraphViewS
     "packages/frontend/src/components" for an oversized top-level package —
     show just the last two segments with a leading ellipsis so the label
     stays readable; the full key is still available as a title/tooltip. */
+/** The folder a cluster key belongs to. An oversized flat folder is split into
+    import-community chunks keyed `dir#0`, `dir#1`, … (host assignClusters);
+    every user-facing label names the folder, not the chunk. */
+export function clusterBaseDir(dir: string): string {
+  return dir.replace(/#\d+$/, "");
+}
+
 export function shortClusterLabel(dir: string): string {
-  if (dir === ".") return ".";
-  const segments = dir.split("/");
-  return segments.length <= 2 ? dir : `…/${segments.slice(-2).join("/")}`;
+  const base = clusterBaseDir(dir);
+  if (base === ".") return ".";
+  const segments = base.split("/");
+  return segments.length <= 2 ? base : `…/${segments.slice(-2).join("/")}`;
 }
 
 /** Parent hub key for a cluster label: the first one or two path segments.
     Adaptive clustering can produce deeper buckets under a shared top-level
     territory; this key is the user-facing "what area is this?" anchor. */
 export function clusterHubKey(dir: string): string {
-  if (dir === ".") return ".";
-  const segments = dir.split("/").filter(Boolean);
+  const base = clusterBaseDir(dir);
+  if (base === ".") return ".";
+  const segments = base.split("/").filter(Boolean);
   return segments.slice(0, Math.min(2, segments.length)).join("/") || ".";
 }
 
@@ -1752,9 +1761,10 @@ export function clusterHubLabel(dir: string): string {
     both the parent hub and one distinguishing subgroup cue without turning
     into a path dump. */
 export function clusterSubgroupLabel(dir: string): string | null {
-  const hub = clusterHubKey(dir);
-  if (dir === "." || dir === hub) return null;
-  const suffix = dir.slice(hub.length + 1);
+  const base = clusterBaseDir(dir);
+  const hub = clusterHubKey(base);
+  if (base === "." || base === hub) return null;
+  const suffix = base.slice(hub.length + 1);
   if (!suffix) return null;
   const segments = suffix.split("/").filter(Boolean);
   return segments.length <= 3 ? suffix : `…/${segments.slice(-2).join("/")}`;

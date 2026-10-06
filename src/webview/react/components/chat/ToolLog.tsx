@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from "react";
 import {
   AlertTriangle, Bot, BookOpen, Brain, ChevronRight, ChevronsDown, Check, Cloud, Code2, Copy, Database,
   ExternalLink, FileDiff, FileEdit, FilePlus2, FileSearch2, FileText, FileX2, FlaskConical, FolderGit2,
@@ -11,12 +11,21 @@ import { cn } from "@/lib/utils";
 import { changeVerb, countLabel, formatDuration, shortText, toolStateText, type ToolChange, type ToolFileChange } from "@/lib/format";
 import { tokenizeJson, type JsonToken } from "@/lib/json-highlight";
 import { formatDetailValue } from "@/lib/tool-presentation";
-import { approvalBinaryOf, toolCallLiveElapsedMs, toolDiffFor, toolGroupsOf, toolStateClass, turnIsLive, type ToolCall, type Turn } from "@/lib/chat-model";
+import { approvalBinaryOf, isTerminalTool, toolCallLiveElapsedMs, toolDiffFor, toolGroupsOf, toolStateClass, turnIsLive, type ToolCall, type Turn } from "@/lib/chat-model";
 import { useBrowserGates } from "@/lib/research-store";
 import { BrowserProposalBody, BrowserProposalPlaceholder } from "./BrowserApprovals";
 import { toolIconCategory, type ToolIconCategory } from "@/lib/tool-icons";
 import type { ApprovalDecision } from "@/lib/protocol";
-import { actions } from "@/lib/store";
+import { actions, useStore } from "@/lib/store";
+import { terminalTail } from "@/lib/terminal-output";
+import { TerminalPane, shellCommandLine } from "./TerminalPane";
+
+/** True when the reveal request (the live-action strip asking for its call) targets one of
+ *  these calls — each disclosure level on the way down opens itself for it. */
+function useRevealTarget(ids: readonly string[]): boolean {
+  const { revealToolCallId } = useStore();
+  return revealToolCallId != null && ids.includes(revealToolCallId);
+}
 import { useLiveClock } from "@/lib/use-live-clock";
 import { SignalDot, StatusPill, toneStyle, toolStateTone, type SignalTone } from "./signal";
 
@@ -356,6 +365,18 @@ function ApprovalActions({ call }: { call: ToolCall }) {
 
 function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }) {
   const [open, setOpen] = useState(call.approvalState === "pending");
+  const rootRef = useRef<HTMLDivElement>(null);
+  const revealed = useRevealTarget([call.id]);
+  useEffect(() => {
+    if (!revealed) return;
+    setOpen(true);
+    /* After the disclosures above this row have opened and laid out. */
+    const frame = requestAnimationFrame(() => {
+      rootRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      actions.revealToolCall(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [revealed]);
   const state = toolStateClass(call);
   // Gate ticking on the parent turn actually being live, not just this call's own
   // state — a restored/historical transcript can contain an orphaned call that never
@@ -376,19 +397,27 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
   const tierText = approvalTierLabel(call);
   if (tierText) previewParts.push(tierText);
   if (call.preview) previewParts.push(call.preview);
+  const terminal = isTerminalTool(call.toolName) && call.approvalState !== "pending";
+  if (terminal && previewParts.length === 0) previewParts.push(shellCommandLine(call.input));
+  /* A running command's newest line stands in for its preview, so a folded row still shows
+     the build moving. */
+  const tail = isLive && terminal ? terminalTail(call.output) : "";
 
   return (
-    <div id={`tool-${call.id}`} className="chat-surface overflow-hidden">
+    <div ref={rootRef} id={`tool-${call.id}`} className="chat-surface overflow-hidden">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
         className="chat-interactive flex w-full items-center gap-2 px-2 py-1.5 text-left hover:bg-white/[0.03]"
       >
         <ToolIcon toolName={call.toolName} />
         <StatusChip state={state} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium text-foreground">{call.label || call.displayName}</div>
-          <div className="truncate text-xs text-muted-foreground">{previewParts.join(" · ") || "No preview available"}</div>
+          {tail
+            ? <div className="terminal-tail truncate font-mono text-xs" title={tail}>{tail}</div>
+            : <div className="truncate text-xs text-muted-foreground">{previewParts.join(" · ") || "No preview available"}</div>}
         </div>
         {liveElapsed != null && (
           <span className={cn("shrink-0 font-mono text-xs tabular-nums text-muted-foreground", isLive && "text-[color:var(--s-info)]")}>
@@ -454,12 +483,23 @@ function ToolEntry({ call, parentLive }: { call: ToolCall; parentLive: boolean }
 
       {/* Deliverables (transcript documents) deliberately do NOT render here — they are
           promoted into the turn body by <Artifacts>. This stays a plain execution row. */}
-      {open && (
+      {open && (terminal ? (
+        <div className="reveal-in grid gap-1.5 px-2 pb-2">
+          <TerminalPane output={call.output} input={call.input} elapsedMs={liveElapsed} live={isLive} />
+          <details className="tool-raw">
+            <summary>Raw input and result</summary>
+            <div className="grid gap-1.5 pt-1.5">
+              <DetailCard title="Input" value={input.text} empty={input.empty} />
+              <DetailCard title="Result" value={result.text} empty={result.empty} error={state === "fail"} />
+            </div>
+          </details>
+        </div>
+      ) : (
         <div className="reveal-in grid gap-1.5 px-2 pb-2">
           <DetailCard title="Input" value={input.text} empty={input.empty} />
           <DetailCard title="Result" value={result.text} empty={result.empty} error={state === "fail"} />
         </div>
-      )}
+      ))}
     </div>
   );
 }
@@ -469,6 +509,8 @@ function ToolGroup({ group, parentLive }: { group: ReturnType<typeof toolGroupsO
   // groups folded when it opens so a busy turn remains scannable; each group
   // can still be expanded independently when the user needs its details.
   const [open, setOpen] = useState(false);
+  const revealed = useRevealTarget(group.calls.map((call) => call.id));
+  useEffect(() => { if (revealed) setOpen(true); }, [revealed]);
   const latest = group.calls[group.calls.length - 1];
   const summary = latest ? (latest.preview || latest.label || latest.displayName) : "";
   const tone = toolStateTone(group.state);
@@ -550,6 +592,8 @@ export function ToolLog({ turn }: { turn: Turn }) {
   const failed = calls.filter((c) => toolStateClass(c) === "fail").length;
   const needsSummary = calls.length >= 2 || pending > 0 || failed > 0;
   const [expanded, setExpanded] = useState(false);
+  const revealed = useRevealTarget(calls.map((call) => call.id));
+  useEffect(() => { if (revealed) setExpanded(true); }, [revealed]);
 
   const recentChanges = calls.filter((c) => c.change).slice(-3).reverse();
 

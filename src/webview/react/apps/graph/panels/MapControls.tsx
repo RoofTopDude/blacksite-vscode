@@ -1,5 +1,8 @@
-/* Codebase Map panel module, split out of GraphApp.tsx (move-only; see
-   docs/map-scale-implementation-plan.md B8). */
+/* The Map's display controls (right rail): what is drawn and how. Ordered by
+   how often each is reached for — the lens and the canvas actions first, the
+   link families that double as the legend, then layers, filters, and the
+   rarely-touched budget/layout knobs folded away. Every control's full
+   meaning is in its tooltip so its label can stay one or two words. */
 
 import { useEffect, useMemo, useState } from "react";
 import type { GraphRenderer } from "../scene/renderer";
@@ -31,13 +34,14 @@ import {
   type SavedView,
 } from "@/lib/graph/view-model";
 import type { EdgeKind } from "@/lib/graph/protocol";
-import { ChevronDown, Maximize2, RefreshCw, SlidersHorizontal } from "lucide-react";
+import { ChevronDown, Clock3, ExternalLink, Maximize2, Minus, Plus, RefreshCw, SlidersHorizontal, X } from "lucide-react";
 import { ROLE_MARK_GLYPHS, MAX_TERRITORY_RAIL_ITEMS } from "./shared";
 import { DepthSection } from "./Legend";
+import { MapButton, MapDisclosure, MapIconButton, MapSection, MapSegmented, MapSwitchRow } from "./ui";
 
 /** The file-lens link families, each carrying the exact hue its edges are
-    drawn with (same constants the renderer strokes), so the chips double as a
-    live legend: toggle a chip, and precisely that colored strand set appears
+    drawn with (same constants the renderer strokes), so the rows double as a
+    live legend: toggle one, and precisely that coloured strand set appears
     or disappears on the canvas. */
 export const LINK_TYPES: Array<{
   key: "showImports" | "showCalls" | "showRefs" | "showInheritance" | "showAnnotations";
@@ -54,20 +58,15 @@ export const LINK_TYPES: Array<{
   { key: "showAnnotations", kind: null, label: "Notes", color: ANNOTATION_COLOR, dashed: true, hint: "Working-memory notes the agent (or you) attached" },
 ];
 
-/** Color-coded, per-relationship link filters for the file lens. Every chip is
-    both a filter and a legend row: swatch = the edge family's true canvas
-    color, count = how many such links the current graph carries. */
 export function LinkTypesSection({ view }: { view: GraphViewState }) {
   const counts = useMemo(() => linkKindCounts(view.edges), [view.edges]);
   const noteCount = view.annotations.length;
   return (
-    <div className="map-control-section" data-map-region="link-types">
-      <div className="map-control-title">Link types</div>
-      <div className="flex flex-col gap-0.5">
+    <MapSection title="Links" region="link-types">
+      <div className="flex flex-col">
         {LINK_TYPES.map(({ key, kind, label, color, dashed, hint }) => {
           const count = kind ? counts[kind] ?? 0 : noteCount;
           const on = view.display[key];
-          const css = cssColor(color);
           return (
             <button
               type="button"
@@ -78,28 +77,23 @@ export function LinkTypesSection({ view }: { view: GraphViewState }) {
               disabled={count === 0 && !on}
               onClick={() => actions.setDisplay({ [key]: !on })}
               title={`${hint} — ${count.toLocaleString()} on the map. Click to ${on ? "hide" : "show"}.`}
-              style={on ? { borderColor: `${css}55`, background: `linear-gradient(90deg, ${css}1c, transparent)` } : undefined}
             >
-              <span
-                className={`h-0 w-5 shrink-0 border-t-[2px] ${dashed ? "border-dashed" : "border-solid"}`}
-                style={{ borderColor: css, opacity: on ? 1 : 0.35 }}
-                aria-hidden
-              />
-              <span className={`min-w-0 flex-1 truncate text-left text-xs ${on ? "text-foreground" : "text-muted-foreground"}`}>{label}</span>
-              <span className="shrink-0 font-mono text-2xs text-muted-foreground">{count.toLocaleString()}</span>
+              <span className={`map-link-swatch ${dashed ? "border-dashed" : ""}`} style={{ borderColor: cssColor(color), opacity: on ? 1 : 0.3 }} aria-hidden />
+              <span className="min-w-0 flex-1 truncate text-left">{label}</span>
+              <span className="shrink-0 font-mono text-2xs tabular-nums">{count.toLocaleString()}</span>
             </button>
           );
         })}
       </div>
-    </div>
+    </MapSection>
   );
 }
 
-export const EDGE_MODES: Array<{ value: EdgeMode; label: string }> = [
-  { value: "all", label: "Adaptive" },
-  { value: "selected", label: "Focus" },
-  { value: "clusters", label: "Bundles" },
-  { value: "off", label: "Off" },
+export const EDGE_MODES: Array<{ value: EdgeMode; label: string; title: string }> = [
+  { value: "all", label: "Adaptive", title: "Bundle dense architecture into routes at overview scale; reveal file links as you zoom in" },
+  { value: "selected", label: "Focus", title: "Only the links of the selected file or group" },
+  { value: "clusters", label: "Bundles", title: "Always draw folder-to-folder routes instead of file links" },
+  { value: "off", label: "Off", title: "Hide links" },
 ];
 
 export function MapControls({ renderer, view, savedViews, camera, viewport, onFocusNode }: {
@@ -112,9 +106,6 @@ export function MapControls({ renderer, view, savedViews, camera, viewport, onFo
 }) {
   const [controlsExpanded, setControlsExpanded] = useState<boolean | null>(null);
   const expanded = controlsExpanded ?? viewport.width > 720;
-  const setLayer = (key: "showImports" | "showAnnotations" | "showRelations" | "showEdgeLabels" | "showGitHeat" | "showTicketHeat" | "showApi" | "showEvents" | "showData" | "showConfig" | "showCycles" | "showCulDeSacs") => {
-    actions.setDisplay({ [key]: !view.display[key] });
-  };
   const gitData = useMemo(() => view.displayNodes.some((n) => n.lastCommitAt), [view.displayNodes]);
   const topologyIds = useMemo(
     () => visibleNodeIds(view.displayNodes, view.displayEdges, view.annotations, view.filter, view.selectedNodeId),
@@ -154,337 +145,226 @@ export function MapControls({ renderer, view, savedViews, camera, viewport, onFo
       : clusterBackboneEdges(topologyNodes, topologyEdges).length,
     [serviceBundles, topologyEdges, topologyNodes, view.display.lens],
   );
-  const presentationLabel = view.display.lens === "services"
-    ? presentation.strategy === "bundled"
-      ? `${bundleCount.toLocaleString()} backbone routes`
-      : presentation.strategy === "raw"
-        ? `${serviceBundles.length.toLocaleString()} typed routes`
-        : presentation.strategy === "selected"
-          ? "Focus only"
-          : "Connections off"
-    : presentation.strategy === "bundled"
-    ? `${bundleCount.toLocaleString()} routes`
+  const services = view.display.lens === "services";
+  const drawing = presentation.strategy === "bundled"
+    ? `${bundleCount.toLocaleString()} ${services ? "backbone routes" : "routes"}`
     : presentation.strategy === "raw"
-      ? "File detail"
-      : presentation.strategy === "selected"
-        ? "Focus only"
-        : "Connections off";
+      ? services ? `${serviceBundles.length.toLocaleString()} typed routes` : `${edgeCount.toLocaleString()} links`
+      : presentation.strategy === "selected" ? "selection only" : "links hidden";
+  const drawingDetail = services
+    ? presentation.strategy === "bundled"
+      ? `Showing the ${bundleCount.toLocaleString()} strongest of ${serviceBundles.length.toLocaleString()} typed routes. Select a service to see every direct relationship.`
+      : `Bundled from ${edgeCount.toLocaleString()} raw detections; select a service for evidence.`
+    : presentation.strategy === "bundled"
+      ? `Showing the ${bundleCount.toLocaleString()} strongest folder routes; select or zoom in for file-level links.`
+      : presentation.dense && view.display.edgeMode === "all"
+        ? `Zoom out below ${presentation.detailZoom.toFixed(1)}× fit to return to the folder routes.`
+        : "Adaptive changes how much is drawn, never what is indexed.";
+  const agentActive = view.liveActivity.length > 0;
+
   return (
     <aside
-      className="map-toolbar pointer-events-auto absolute right-3 top-[178px] flex w-[204px] flex-col"
+      className="map-toolbar pointer-events-auto absolute"
       data-expanded={expanded}
-      aria-label="Map controls"
+      data-minimap={view.displayNodes.length >= 3}
+      aria-label="Map display"
       data-map-region="controls"
     >
       <button
         type="button"
         className="map-toolbar-header"
-        aria-label="Display & analysis"
+        aria-label="Display"
         aria-expanded={expanded}
         aria-controls="map-controls-content"
+        title={expanded ? "Hide display controls" : "Show display controls: lens, links, layers, filters"}
         onClick={() => setControlsExpanded(!expanded)}
       >
-        <SlidersHorizontal size={15} aria-hidden="true" />
-        <span className="map-toolbar-title">Display &amp; analysis</span>
+        <SlidersHorizontal aria-hidden="true" />
+        <span className="map-toolbar-title">Display</span>
+        {!expanded && <span className="map-toolbar-summary">{view.display.lens === "files" ? "Structure" : services ? "Services" : "Work"}</span>}
         <ChevronDown className="map-toolbar-chevron" size={14} aria-hidden="true" />
       </button>
       <div id="map-controls-content" className="map-controls-content" hidden={!expanded}>
-      <div className="map-presentation-status" data-map-edge-strategy={presentation.strategy}>
-        <span>{view.display.lens === "services" ? "Services" : presentation.strategy === "bundled" ? "Overview" : presentation.strategy === "raw" ? "Detail" : "Mode"}</span>
-        <strong>{presentationLabel}</strong>
-      </div>
-      <div className="map-toolbar-scroll">
-      <div className="map-control-section">
-        <div className="map-control-title">View</div>
-        <div className="grid grid-cols-3 gap-1">
-          <button
-            type="button"
-            className={`map-tool-button ${view.display.lens === "files" ? "map-tool-button-active" : ""}`}
-            aria-pressed={view.display.lens === "files"}
-            data-map-control="lens-files"
-            onClick={() => actions.setDisplay({ lens: "files" })}
-            title="Files, folders, and codebases with their imports and structural links"
-          >
-            Structure
-          </button>
-          <button
-            type="button"
-            className={`map-tool-button ${view.display.lens === "services" ? "map-tool-button-active" : ""}`}
-            aria-pressed={view.display.lens === "services"}
-            data-map-control="lens-services"
-            onClick={() => actions.setDisplay({ lens: "services" })}
-            disabled={view.relationshipEdges.length === 0 && view.display.lens !== "services"}
-            title={view.relationshipEdges.length === 0 ? "No service API relationships detected yet" : "Show service/API relationships"}
-          >
-            Services
-          </button>
-          <button
-            type="button"
-            className={`map-tool-button ${view.display.lens === "work" ? "map-tool-button-active" : ""}`}
-            aria-pressed={view.display.lens === "work"}
-            data-map-control="lens-work"
-            onClick={() => actions.setDisplay({ lens: "work" })}
-            title={view.ticketCount === 0 ? "No open tickets yet — open the lens to see how to recover" : "Show tickets, their territory, blockers, and overlapping scope"}
-          >
-            Work
-          </button>
-        </div>
-        <div className="grid grid-cols-2 gap-1">
-          <button type="button" className="map-tool-button" data-map-control="fit" onClick={() => renderer?.zoomToFitAll()}><Maximize2 size={12} aria-hidden="true" /> Fit map</button>
-          <button type="button" className="map-tool-button" data-map-control="reindex" onClick={() => actions.rebuildIndex()} disabled={view.indexing}>
-            <RefreshCw size={12} aria-hidden="true" /> {view.indexing ? "Indexing" : "Re-index"}
-          </button>
-        </div>
-        <button
-          type="button"
-          className="map-tool-button"
-          data-map-control="open-full-map"
-          onClick={() => actions.openFullMap()}
-          title="Open the Map in an editor tab. Use VS Code's split-editor controls to keep code beside it."
-        >
-          Open in editor
-        </button>
-        <button
-          type="button"
-          className="map-tool-button"
-          data-map-control="open-notes-timeline"
-          onClick={() => actions.openNotesTimeline()}
-          title="Open the agent's working-memory notes as a scrollable timeline with revision trails and per-file git history."
-        >
-          Notes timeline
-        </button>
-        <button
-          type="button"
-          className={`map-layer-toggle ${view.display.followAgent ? "map-layer-toggle-on" : ""}`}
-          aria-pressed={view.display.followAgent}
-          data-map-control="follow-agent"
-          onClick={() => actions.setDisplay({ followAgent: !view.display.followAgent })}
-          title={view.display.lens === "services" ? "Gently pan to the service containing the file the agent is working on" : "Gently pan to the file the agent is working on"}
-        >
-          <span>Follow agent</span><strong>{view.display.followAgent ? "On" : "Off"}</strong>
-        </button>
-      </div>
-      {view.display.lens === "files" && (
-      <div className="map-control-section">
-        <div className="map-control-title">Clusters</div>
-        <div className="grid grid-cols-2 gap-1">
-          <button
-            type="button"
-            className="map-tool-button"
-            data-map-control="collapse-clusters"
-            onClick={() => actions.collapseAllClusters()}
-            title="Collapse every folder into a single super-node"
-          >
-            Collapse
-          </button>
-          <button
-            type="button"
-            className="map-tool-button"
-            data-map-control="expand-clusters"
-            onClick={() => actions.expandAllClusters()}
-            disabled={view.collapsedClusters.length === 0}
-            title="Expand all clusters back to individual files and their relations"
-          >
-            Expand all
-          </button>
-        </div>
-        {view.collapsedClusters.length > 0 && (
-          <div className="mt-1 text-2xs text-muted-foreground">
-            {view.collapsedClusters.length} collapsed · double-click one to open it
-          </div>
-        )}
-      </div>
-      )}
-      {view.display.lens === "files" && <LinkTypesSection view={view} />}
-      {/* Territories and hubs live in the outline rail when the host sent a
-          hierarchy; these flat lists remain the fallback before it arrives. */}
-      {view.display.lens === "files" && !view.hierarchy && <TerritoriesSection view={view} renderer={renderer} />}
-      {view.display.lens === "files" && !view.hierarchy && <HubsSection view={view} onFocusNode={onFocusNode} />}
-      <div className="map-control-section">
-        <div className="map-control-title">Edges</div>
-        <div className="grid grid-cols-2 gap-1">
-          {EDGE_MODES.map((mode) => (
-            <button
-              type="button"
-              key={mode.value}
-              className={`map-tool-button ${view.display.edgeMode === mode.value ? "map-tool-button-active" : ""}`}
-              aria-pressed={view.display.edgeMode === mode.value}
-              data-map-control={`edge-mode-${mode.value}`}
-              onClick={() => actions.setDisplay({ edgeMode: mode.value })}
-              title={mode.value === "all" ? "Automatically bundle dense architecture at overview scale and reveal file links as you zoom" : undefined}
-            >
-              {mode.label}
-            </button>
-          ))}
-        </div>
-        <div className="map-density-card">
-          <span>Visible projection</span>
-          <strong>{view.display.lens === "services"
-            ? `${serviceBundles.length.toLocaleString()} typed routes · ${topologyNodes.length.toLocaleString()} services`
-            : `${edgeCount.toLocaleString()} links · ${topologyNodes.length.toLocaleString()} nodes`}</strong>
-          <small>
-            {view.display.lens === "services"
-              ? presentation.strategy === "bundled"
-                ? `Showing ${bundleCount.toLocaleString()} strongest routes from ${serviceBundles.length.toLocaleString()} typed routes. Focus a service to inspect every direct relationship.`
-                : `Bundled from ${edgeCount.toLocaleString()} raw detections; select a service for evidence.`
-              : presentation.strategy === "bundled"
-              ? `Showing ${bundleCount.toLocaleString()} strongest routes; focus or zoom in for file-level evidence.`
-              : presentation.dense && view.display.edgeMode === "all"
-                ? `Zoom out below ${presentation.detailZoom.toFixed(1)}× fit to return to the architecture backbone.`
-                : "Adaptive changes detail without changing the indexed corpus."}
-          </small>
-        </div>
-      </div>
-      <details className="map-control-disclosure">
-        <summary>
-          <span>Layers</span>
-          <small>Overlays</small>
-        </summary>
-        <div className="map-control-body">
-        {view.display.lens === "services" && (
-          <>
-            <button type="button" className={`map-layer-toggle ${view.display.showApi ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showApi} data-map-control="layer-api" onClick={() => setLayer("showApi")}>
-              <span>APIs</span><strong>{view.display.showApi ? "On" : "Off"}</strong>
-            </button>
-            <button type="button" className={`map-layer-toggle ${view.display.showEvents ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showEvents} data-map-control="layer-events" onClick={() => setLayer("showEvents")}>
-              <span>Events</span><strong>{view.display.showEvents ? "On" : "Off"}</strong>
-            </button>
-            <button type="button" className={`map-layer-toggle ${view.display.showData ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showData} data-map-control="layer-data" onClick={() => setLayer("showData")}>
-              <span>Data</span><strong>{view.display.showData ? "On" : "Off"}</strong>
-            </button>
-            <button type="button" className={`map-layer-toggle ${view.display.showConfig ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showConfig} data-map-control="layer-config" onClick={() => setLayer("showConfig")}>
-              <span>Config</span><strong>{view.display.showConfig ? "On" : "Off"}</strong>
-            </button>
-          </>
-        )}
-        {view.display.lens === "files" && (
-          <>
-        <button type="button" className={`map-layer-toggle ${view.display.showRelations ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showRelations} data-map-control="layer-symbols" onClick={() => setLayer("showRelations")}>
-          <span>Symbols</span><strong>{view.display.showRelations ? "On" : "Off"}</strong>
-        </button>
-        <button type="button" className={`map-layer-toggle ${view.display.showEdgeLabels ? "map-layer-toggle-on" : ""}`} aria-pressed={view.display.showEdgeLabels} data-map-control="layer-labels" onClick={() => setLayer("showEdgeLabels")}>
-          <span>Labels</span><strong>{view.display.showEdgeLabels ? "On" : "Off"}</strong>
-        </button>
-        <button
-          type="button"
-          className={`map-layer-toggle ${view.display.showGitHeat ? "map-layer-toggle-on" : ""}`}
-          aria-pressed={view.display.showGitHeat}
-          data-map-control="layer-git-heat"
-          onClick={() => setLayer("showGitHeat")}
-          title="Tint stars by commit recency (warm = recently changed) and size them by churn"
-        >
-          <span>Git heat</span><strong>{view.display.showGitHeat ? "On" : "Off"}</strong>
-        </button>
-        {view.display.showGitHeat && !gitData && (
-          <div className="mt-1 text-2xs text-muted-foreground">No git history found in this workspace.</div>
-        )}
-        <button
-          type="button"
-          className={`map-layer-toggle ${view.display.showTicketHeat ? "map-layer-toggle-on" : ""}`}
-          aria-pressed={view.display.showTicketHeat}
-          data-map-control="layer-ticket-heat"
-          onClick={() => setLayer("showTicketHeat")}
-          title="Tint and size stars by the weight of open tickets covering them — where the work is piling up"
-        >
-          <span>Ticket heat</span><strong>{view.display.showTicketHeat ? "On" : "Off"}</strong>
-        </button>
-        {view.display.showTicketHeat && view.ticketCount === 0 && (
-          <div className="mt-1 text-2xs text-muted-foreground">No open tickets to show.</div>
-        )}
-        <button
-          type="button"
-          className={`map-layer-toggle ${view.display.showCycles ? "map-layer-toggle-on" : ""}`}
-          aria-pressed={view.display.showCycles}
-          data-map-control="layer-cycles"
-          onClick={() => setLayer("showCycles")}
-          title="Highlight cross-project reference cycles between codebases"
-        >
-          <span>Cycles</span><strong>{view.display.showCycles ? "On" : "Off"}</strong>
-        </button>
-        <button
-          type="button"
-          className={`map-layer-toggle ${view.display.showCulDeSacs ? "map-layer-toggle-on" : ""}`}
-          aria-pressed={view.display.showCulDeSacs}
-          data-map-control="layer-cul-de-sacs"
-          onClick={() => setLayer("showCulDeSacs")}
-          title="Highlight single-access pocket subgraphs and dim probably-unused orphan files"
-        >
-          <span>Cul-de-sacs</span><strong>{view.display.showCulDeSacs ? "On" : "Off"}</strong>
-        </button>
-        <button
-          type="button"
-          className={`map-layer-toggle ${view.display.showProjectRefs ? "map-layer-toggle-on" : ""}`}
-          aria-pressed={view.display.showProjectRefs}
-          data-map-control="layer-project-refs"
-          onClick={() => actions.setDisplay({ showProjectRefs: !view.display.showProjectRefs })}
-          title="Dependencies projects declare in their manifests (package.json, .csproj, Cargo.toml, …), drawn between project and codebase nodes"
-        >
-          <span>Declared deps</span><strong>{view.display.showProjectRefs ? "On" : "Off"}</strong>
-        </button>
-        <button
-          type="button"
-          className={`map-layer-toggle ${view.display.showCochange ? "map-layer-toggle-on" : ""}`}
-          aria-pressed={view.display.showCochange}
-          data-map-control="layer-cochange"
-          onClick={() => actions.setDisplay({ showCochange: !view.display.showCochange })}
-          disabled={view.cochangeEdges.length === 0}
-          title={view.cochangeEdges.length === 0
-            ? "No co-change found in the git history of the drawn files"
-            : "Files that keep changing in the same commits. Between codebases, co-change that nothing structural explains is always shown dashed as hidden coupling."}
-        >
-          <span>Co-change</span><strong>{view.display.showCochange ? "On" : "Off"}</strong>
-        </button>
-          </>
-        )}
-        </div>
-      </details>
-      {view.display.lens === "files" && (
-        <details className="map-control-disclosure">
-          <summary>
-            <span>Advanced</span>
-            <small>Depth · layout · budget</small>
-          </summary>
-          <div className="map-control-body">
-            <div className="map-control-title">Focus budget</div>
-            <div className="flex items-center justify-between gap-1">
-              <button type="button" className="map-tool-button !px-2" onClick={() => actions.setDisplay({ focusBudget: Math.max(200, view.display.focusBudget - 500) })} aria-label="Fewer nodes before folding">−</button>
-              <strong className="text-xs" title="How many stars a scoped view draws before folding areas into single nodes">{view.display.focusBudget.toLocaleString()} nodes</strong>
-              <button type="button" className="map-tool-button !px-2" onClick={() => actions.setDisplay({ focusBudget: Math.min(20000, view.display.focusBudget + 500) })} aria-label="More nodes before folding">+</button>
+        <div className="map-toolbar-scroll">
+          <MapSection>
+            <MapSegmented
+              label="Lens"
+              value={view.display.lens}
+              onChange={(lens) => actions.setDisplay({ lens })}
+              options={[
+                { value: "files", label: "Structure", title: "Files, folders, and codebases with their imports and structural links", control: "lens-files" },
+                {
+                  value: "services", label: "Services", control: "lens-services",
+                  disabled: view.relationshipEdges.length === 0 && !services,
+                  title: view.relationshipEdges.length === 0 ? "No service API relationships detected yet" : "Services and the API, event, and data routes between them",
+                },
+                { value: "work", label: "Work", control: "lens-work", title: view.ticketCount === 0 ? "No open tickets yet — open the lens to see how to add some" : "Open tickets, their territory, blockers, and overlapping scope" },
+              ]}
+            />
+            <div className="map-toolbar-actions">
+              <MapIconButton icon={Maximize2} label="Fit the whole map (F)" data-map-control="fit" onClick={() => renderer?.zoomToFitAll()} />
+              <MapIconButton
+                icon={RefreshCw}
+                label={view.indexing ? "Indexing…" : "Re-index the workspace"}
+                spin={view.indexing}
+                data-map-control="reindex"
+                onClick={() => actions.rebuildIndex()}
+                disabled={view.indexing}
+              />
+              <MapIconButton
+                icon={ExternalLink}
+                label="Open the map in an editor tab — split the editor to keep code beside it"
+                data-map-control="open-full-map"
+                onClick={() => actions.openFullMap()}
+              />
+              <MapIconButton
+                icon={Clock3}
+                label="Notes timeline: the agent's working-memory notes, with revisions and git history"
+                data-map-control="open-notes-timeline"
+                onClick={() => actions.openNotesTimeline()}
+              />
             </div>
-            {(() => {
-              const mode = view.config.neighborhoods ?? "auto";
-              const next = mode === "auto" ? "on" : mode === "on" ? "off" : "auto";
-              const label = mode === "auto" ? "Auto" : mode === "on" ? "On" : "Off";
-              return (
-                <button
-                  type="button"
-                  className={`map-layer-toggle ${mode === "on" ? "map-layer-toggle-on" : ""}`}
-                  aria-pressed={mode === "on"}
-                  data-map-control="neighborhoods"
-                  onClick={() => actions.setNeighborhoodMode(next)}
-                  disabled={view.indexing}
-                  title="Separate distinct codebases into neighborhood territories. Auto decides by workspace size; On forces it; Off keeps a flat map. Rebuilds the map."
+            <MapSwitchRow
+              label="Follow agent"
+              checked={view.display.followAgent}
+              onChange={(followAgent) => actions.setDisplay({ followAgent })}
+              control="follow-agent"
+              live={agentActive && !view.display.followAgent}
+              title={agentActive && !view.display.followAgent
+                ? "The agent is working now — follow to glide to each file it touches"
+                : services ? "Glide to the service containing the file the agent is working on" : "Glide to the file the agent is working on"}
+            />
+          </MapSection>
+
+          <MapSection title="Links drawn" action={<span className="map-hint" title={drawingDetail}>{drawing}</span>}>
+            <MapSegmented
+              label="How links are drawn"
+              value={view.display.edgeMode}
+              onChange={(edgeMode) => actions.setDisplay({ edgeMode })}
+              options={EDGE_MODES.map((mode) => ({ value: mode.value, label: mode.label, title: mode.title, control: `edge-mode-${mode.value}` }))}
+              size="xs"
+            />
+          </MapSection>
+
+          {view.display.lens === "files" && <LinkTypesSection view={view} />}
+
+          {view.display.lens === "files" && (
+            <MapSection
+              title="Folders"
+              action={view.collapsedClusters.length > 0 ? <span className="map-hint">{view.collapsedClusters.length} folded</span> : undefined}
+            >
+              <div className="grid grid-cols-2 gap-1.5">
+                <MapButton size="xs" data-map-control="collapse-clusters" onClick={() => actions.collapseAllClusters()} title="Fold every folder into a single star">Fold all</MapButton>
+                <MapButton
+                  size="xs"
+                  data-map-control="expand-clusters"
+                  onClick={() => actions.expandAllClusters()}
+                  disabled={view.collapsedClusters.length === 0}
+                  title="Unfold every folder back to its files (double-click a folded star to open just that one)"
                 >
-                  <span>Territory layout</span><strong>{label}</strong>
-                </button>
-              );
-            })()}
-            <DepthSection display={view.display} />
-          </div>
-        </details>
-      )}
-      {view.display.lens === "files" && <FilterSection view={view} />}
-      <SavedViewsSection savedViews={savedViews} />
-      </div>
+                  Unfold all
+                </MapButton>
+              </div>
+            </MapSection>
+          )}
+
+          {/* Territories and hubs live in the outline rail when the host sent a
+              hierarchy; these flat lists remain the fallback before it arrives. */}
+          {view.display.lens === "files" && !view.hierarchy && <TerritoriesSection view={view} renderer={renderer} />}
+          {view.display.lens === "files" && !view.hierarchy && <HubsSection view={view} onFocusNode={onFocusNode} />}
+
+          <MapDisclosure title="Layers" meta="Overlays" region="layers">
+            {services ? (
+              <>
+                <MapSwitchRow label="APIs" checked={view.display.showApi} onChange={(showApi) => actions.setDisplay({ showApi })} control="layer-api" title="HTTP/RPC calls between services" />
+                <MapSwitchRow label="Events" checked={view.display.showEvents} onChange={(showEvents) => actions.setDisplay({ showEvents })} control="layer-events" title="Published and consumed events" />
+                <MapSwitchRow label="Data" checked={view.display.showData} onChange={(showData) => actions.setDisplay({ showData })} control="layer-data" title="Tables, collections, and stores services share" />
+                <MapSwitchRow label="Config" checked={view.display.showConfig} onChange={(showConfig) => actions.setDisplay({ showConfig })} control="layer-config" title="Configuration one service reads from another" />
+              </>
+            ) : (
+              <>
+                <MapSwitchRow label="Symbols" checked={view.display.showRelations} onChange={(showRelations) => actions.setDisplay({ showRelations })} control="layer-symbols" title="Symbol relationships traced from the language server" />
+                <MapSwitchRow label="Link labels" checked={view.display.showEdgeLabels} onChange={(showEdgeLabels) => actions.setDisplay({ showEdgeLabels })} control="layer-labels" title="Name the links around the selection" />
+                <MapSwitchRow
+                  label="Git heat"
+                  checked={view.display.showGitHeat}
+                  onChange={(showGitHeat) => actions.setDisplay({ showGitHeat })}
+                  control="layer-git-heat"
+                  meta={view.display.showGitHeat && !gitData ? "no history" : undefined}
+                  title="Tint stars by commit recency (warm = recently changed) and size them by churn"
+                />
+                <MapSwitchRow
+                  label="Ticket heat"
+                  checked={view.display.showTicketHeat}
+                  onChange={(showTicketHeat) => actions.setDisplay({ showTicketHeat })}
+                  control="layer-ticket-heat"
+                  meta={view.display.showTicketHeat && view.ticketCount === 0 ? "none open" : undefined}
+                  title="Tint and size stars by the weight of open tickets covering them — where work is piling up"
+                />
+                <MapSwitchRow label="Cycles" checked={view.display.showCycles} onChange={(showCycles) => actions.setDisplay({ showCycles })} control="layer-cycles" title="Highlight reference cycles between codebases" />
+                <MapSwitchRow label="Cul-de-sacs" checked={view.display.showCulDeSacs} onChange={(showCulDeSacs) => actions.setDisplay({ showCulDeSacs })} control="layer-cul-de-sacs" title="Highlight single-access pockets and dim probably-unused orphan files" />
+                <MapSwitchRow
+                  label="Declared deps"
+                  checked={view.display.showProjectRefs}
+                  onChange={(showProjectRefs) => actions.setDisplay({ showProjectRefs })}
+                  control="layer-project-refs"
+                  title="Dependencies projects declare in their manifests (package.json, .csproj, Cargo.toml, …), drawn between project and codebase nodes"
+                />
+                <MapSwitchRow
+                  label="Co-change"
+                  checked={view.display.showCochange}
+                  onChange={(showCochange) => actions.setDisplay({ showCochange })}
+                  control="layer-cochange"
+                  disabled={view.cochangeEdges.length === 0}
+                  meta={view.cochangeEdges.length === 0 ? "none" : undefined}
+                  title={view.cochangeEdges.length === 0
+                    ? "No co-change found in the git history of the drawn files"
+                    : "Files that keep changing in the same commits. Between codebases, co-change nothing structural explains is always drawn dashed as hidden coupling."}
+                />
+              </>
+            )}
+          </MapDisclosure>
+
+          {view.display.lens === "files" && <FilterSection view={view} />}
+
+          {view.display.lens === "files" && (
+            <MapDisclosure title="Advanced" meta="Depth · layout · budget" region="advanced">
+              <div className="flex items-center justify-between gap-2">
+                <span className="map-hint" title="How many stars a scoped view draws before folding areas into single stars">Focus budget</span>
+                <span className="map-stepper">
+                  <MapIconButton icon={Minus} label="Fewer stars before folding" onClick={() => actions.setDisplay({ focusBudget: Math.max(200, view.display.focusBudget - 500) })} />
+                  <strong>{view.display.focusBudget.toLocaleString()}</strong>
+                  <MapIconButton icon={Plus} label="More stars before folding" onClick={() => actions.setDisplay({ focusBudget: Math.min(20000, view.display.focusBudget + 500) })} />
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="map-hint" title="Separate distinct codebases into their own regions. Auto decides by workspace size; On forces it; Off keeps one folder tree. Rebuilds the map.">Codebase regions</span>
+                <MapSegmented
+                  label="Codebase regions"
+                  size="xs"
+                  className="w-[132px]"
+                  value={view.config.neighborhoods ?? "auto"}
+                  onChange={(mode) => { if (!view.indexing) actions.setNeighborhoodMode(mode); }}
+                  options={[
+                    { value: "auto", label: "Auto", control: "neighborhoods-auto" },
+                    { value: "on", label: "On", control: "neighborhoods-on" },
+                    { value: "off", label: "Off", control: "neighborhoods-off" },
+                  ]}
+                />
+              </div>
+              <DepthSection display={view.display} />
+            </MapDisclosure>
+          )}
+          <SavedViewsSection savedViews={savedViews} />
+        </div>
       </div>
     </aside>
   );
 }
 
-/** Territory index: the biggest folder territories with their true canvas
-    colors, so the color-hashed map finally has a readable directory. Click a
-    row to frame that territory; Fold/Open toggles its cluster super-node —
-    organizational control anchored to the exact hues on screen. */
+/** Folder index before the host's hierarchy arrives: the biggest folders with
+    their true canvas colours. Click to frame one; Solo ghosts everything else;
+    Fold collapses it to one star. */
 export function TerritoriesSection({ view, renderer }: { view: GraphViewState; renderer: GraphRenderer | null }) {
   const territories = useMemo(() => folderTerritories(view.nodes, MAX_TERRITORY_RAIL_ITEMS), [view.nodes]);
   const totalDirs = useMemo(() => new Set(view.nodes.map((node) => node.dir)).size, [view.nodes]);
@@ -493,97 +373,57 @@ export function TerritoriesSection({ view, renderer }: { view: GraphViewState; r
   useEffect(() => () => actions.hoverTerritory(null), []);
   if (territories.length < 2) return null;
   return (
-    <details className="map-control-disclosure" open>
-      <summary>
-        <span>Territories</span>
-        <small>{totalDirs > territories.length ? `top ${territories.length} of ${totalDirs}` : totalDirs}</small>
-      </summary>
-      <div className="map-control-body">
-        {territories.map((territory) => {
-          const folded = view.collapsedClusters.includes(territory.dir);
-          const soloed = view.filter.dirs.includes(territory.dir);
-          return (
-            <div
-              key={territory.dir}
-              className="flex min-w-0 items-center gap-1"
-              onMouseEnter={() => actions.hoverTerritory(territory.dir)}
-              onMouseLeave={() => actions.hoverTerritory(null)}
+    <MapDisclosure title="Folders" meta={totalDirs > territories.length ? `top ${territories.length} of ${totalDirs}` : totalDirs} defaultOpen>
+      {territories.map((territory) => {
+        const folded = view.collapsedClusters.includes(territory.dir);
+        const soloed = view.filter.dirs.includes(territory.dir);
+        return (
+          <div
+            key={territory.dir}
+            className="flex min-w-0 items-center gap-1"
+            onMouseEnter={() => actions.hoverTerritory(territory.dir)}
+            onMouseLeave={() => actions.hoverTerritory(null)}
+          >
+            <button
+              type="button"
+              className="map-inspector-row min-w-0 flex-1"
+              onClick={() => renderer?.frameWorld([
+                { x: territory.bounds.minX, y: territory.bounds.minY },
+                { x: territory.bounds.maxX, y: territory.bounds.maxY },
+              ])}
+              title={`Fly to ${territory.dir}`}
             >
-              <button
-                className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-white/[0.08]"
-                onClick={() => renderer?.frameWorld([
-                  { x: territory.bounds.minX, y: territory.bounds.minY },
-                  { x: territory.bounds.maxX, y: territory.bounds.maxY },
-                ])}
-                title={`Fly to ${territory.dir}`}
-              >
-                <span
-                  className="h-2 w-2 shrink-0 rounded-[3px]"
-                  style={{ background: cssColor(folderColor(territory.dir)) }}
-                  aria-hidden
-                />
-                <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">
-                  {shortClusterLabel(territory.dir)}
-                </span>
-                <span className="shrink-0 text-2xs text-muted-foreground">{territory.count.toLocaleString()}</span>
-              </button>
-              <button
-                className={`map-tool-button shrink-0 !px-1.5 !py-0.5 !text-2xs uppercase tracking-wide ${soloed ? "map-tool-button-active" : ""}`}
-                aria-pressed={soloed}
-                onClick={() => actions.toggleDirFilter(territory.dir)}
-                title={soloed ? "Stop soloing — show every territory again" : "Solo this territory: ghost every file outside it"}
-              >
-                Solo
-              </button>
-              <button
-                className={`map-tool-button shrink-0 !px-1.5 !py-0.5 !text-2xs uppercase tracking-wide ${folded ? "map-tool-button-active" : ""}`}
-                onClick={() => actions.setClusterCollapsed(territory.dir, !folded)}
-                title={folded ? "Expand this folder back to individual files" : "Fold this folder into one star"}
-              >
-                {folded ? "Open" : "Fold"}
-              </button>
-            </div>
-          );
-        })}
-      </div>
-    </details>
+              <span className="h-2 w-2 shrink-0 rounded-[2px]" style={{ background: cssColor(folderColor(territory.dir)) }} aria-hidden />
+              <span className="min-w-0 flex-1 truncate font-mono">{shortClusterLabel(territory.dir)}</span>
+              <span className="shrink-0 font-mono text-2xs text-[color:var(--map-text-3)]">{territory.count.toLocaleString()}</span>
+            </button>
+            <MapButton size="xs" variant="ghost" active={soloed} onClick={() => actions.toggleDirFilter(territory.dir)} title={soloed ? "Stop soloing — show every folder again" : "Solo: ghost every file outside this folder"}>Solo</MapButton>
+            <MapButton size="xs" variant="ghost" active={folded} onClick={() => actions.setClusterCollapsed(territory.dir, !folded)} title={folded ? "Unfold back to individual files" : "Fold this folder into one star"}>{folded ? "Open" : "Fold"}</MapButton>
+          </div>
+        );
+      })}
+    </MapDisclosure>
   );
 }
 
-/** Hubs quick-list: the most-connected files in the corpus, one click from
-    anywhere. The gold ring on the canvas marks them; this is the same set as
-    a readable, sorted index. */
+/** The most-connected files, one click away. The gold ring on the canvas marks them. */
 export function HubsSection({ view, onFocusNode }: { view: GraphViewState; onFocusNode: (id: string) => void }) {
   const hubs = useMemo(() => topHubs(view.nodes, 8), [view.nodes]);
   if (hubs.length === 0) return null;
   return (
-    <details className="map-control-disclosure">
-      <summary>
-        <span>Hubs</span>
-        <small>Most connected</small>
-      </summary>
-      <div className="map-control-body">
-        {hubs.map((hub) => (
-          <button
-            key={hub.id}
-            className="flex min-w-0 items-center gap-1.5 rounded px-1 py-0.5 text-left hover:bg-white/[0.08]"
-            onClick={() => onFocusNode(hub.id)}
-            title={hub.id}
-          >
-            <span className="h-2 w-2 shrink-0 rounded-full border border-[#ffd66b]/80" aria-hidden />
-            <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">{baseName(hub.id)}</span>
-            <span className="shrink-0 font-mono text-2xs text-muted-foreground">↔{hub.inDegree + hub.outDegree}</span>
-          </button>
-        ))}
-      </div>
-    </details>
+    <MapDisclosure title="Hubs" meta="Most connected">
+      {hubs.map((hub) => (
+        <button key={hub.id} type="button" className="map-inspector-row" onClick={() => onFocusNode(hub.id)} title={hub.id}>
+          <span className="h-2 w-2 shrink-0 rounded-full border border-[#ffd66b]/80" aria-hidden />
+          <span className="min-w-0 flex-1 truncate font-mono">{baseName(hub.id)}</span>
+          <span className="shrink-0 font-mono text-2xs text-[color:var(--map-text-3)]" title="Imports in and out">{hub.inDegree + hub.outDegree}</span>
+        </button>
+      ))}
+    </MapDisclosure>
   );
 }
 
-/** Named, persisted snapshots of camera + display/filter/collapsed-cluster
-    state, so a user can jump back to a particular vantage (e.g. "auth flow")
-    instead of re-deriving it. Mirrors the Data workbench's Saved Queries list:
-    name + short descriptor, Open/Delete, no rename. */
+/** Named snapshots of camera + display/filter/fold state, to jump back to a vantage later. */
 export function SavedViewsSection({ savedViews }: { savedViews: SavedView[] }) {
   const [name, setName] = useState("");
   const save = () => {
@@ -592,57 +432,44 @@ export function SavedViewsSection({ savedViews }: { savedViews: SavedView[] }) {
     setName("");
   };
   return (
-    <details className="map-control-disclosure">
-      <summary>
-        <span>Saved views</span>
-        <small>{savedViews.length > 0 ? savedViews.length : "Snapshots"}</small>
-      </summary>
-      <div className="map-control-body">
-      <div className="flex gap-1">
+    <MapDisclosure title="Saved views" meta={savedViews.length > 0 ? savedViews.length : undefined} region="saved-views">
+      <div className="flex gap-1.5">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter") save(); }}
-          placeholder="Name this view..."
+          placeholder="Name this view…"
+          aria-label="Saved view name"
           spellCheck={false}
-          className="map-search-input"
+          className="map-search-input min-w-0 flex-1 !px-2 !min-h-[28px]"
         />
-        <button className="map-tool-button shrink-0" onClick={save} disabled={!name.trim()}>Save</button>
+        <MapButton size="sm" onClick={save} disabled={!name.trim()} title="Save the camera, filters, and folded folders under this name">Save</MapButton>
       </div>
       {savedViews.length === 0 ? (
-        <div className="mt-1 text-2xs text-muted-foreground">
-          Save the current camera, filters, and collapsed clusters to jump back later.
-        </div>
+        <div className="map-hint">Keep the current camera, filters, and folded folders to come back to later.</div>
       ) : (
-        <div className="mt-1 flex flex-col gap-1">
+        <div className="flex flex-col">
           {savedViews.map((v) => (
-            <div key={v.id} className="flex items-center gap-1 text-xs">
+            <div key={v.id} className="flex items-center gap-1">
               <button
-                className="flex-1 truncate text-left text-foreground/90 hover:text-foreground"
+                type="button"
+                className="map-inspector-row min-w-0 flex-1"
                 onClick={() => actions.applyView(v.id)}
-                title={`${v.collapsedClusters.length} collapsed · saved ${new Date(v.createdAt).toLocaleDateString()}`}
+                title={`${v.collapsedClusters.length} folded · saved ${new Date(v.createdAt).toLocaleDateString()}`}
               >
-                {v.name}
+                <span className="truncate">{v.name}</span>
               </button>
-              <button
-                className="shrink-0 text-muted-foreground hover:text-foreground"
-                onClick={() => actions.deleteView(v.id)}
-                title="Delete this saved view"
-              >
-                ✕
-              </button>
+              <MapIconButton icon={X} label={`Delete "${v.name}"`} onClick={() => actions.deleteView(v.id)} />
             </div>
           ))}
         </div>
       )}
-      </div>
-    </details>
+    </MapDisclosure>
   );
 }
 
-/** Language chips + a min-links stepper. Filtered-out stars ghost (they don't
-    vanish), so the map keeps its shape while you narrow focus. Isolate-by-hops
-    lives on the node card, where a selection gives it a root. */
+/** Language and role chips plus a minimum-links stepper. Filtered-out stars
+    ghost rather than vanish, so the map keeps its shape while focus narrows. */
 export function FilterSection({ view }: { view: GraphViewState }) {
   const langs = useMemo(() => languageCounts(view.nodes).slice(0, 8), [view.nodes]);
   const roles = useMemo(
@@ -656,30 +483,25 @@ export function FilterSection({ view }: { view: GraphViewState }) {
     actions.setFilter({ minDegree: Math.max(0, Math.min(20, filter.minDegree + delta)) });
   if (langs.length === 0 && roles.length === 0 && filter.dirs.length === 0) return null;
   return (
-    <div className="map-control-section">
-      <div className="flex items-center justify-between">
-        <div className="map-control-title">Filter</div>
-        {active && (
-          <button
-            className="text-2xs uppercase tracking-wide text-cyan-200/70 hover:text-cyan-200"
-            onClick={() => actions.clearFilter()}
-          >
-            Clear
-          </button>
-        )}
-      </div>
+    <MapDisclosure
+      title="Filter"
+      meta={active ? <button type="button" className="map-text-link" onClick={(e) => { e.preventDefault(); actions.clearFilter(); }} title="Clear every filter">Clear</button> : undefined}
+      defaultOpen={active}
+      region="filter"
+    >
       {filter.dirs.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {filter.dirs.map((dir) => (
             <button
               key={dir}
-              className="flex items-center gap-1 rounded bg-white/10 px-1.5 py-0.5 font-mono text-2xs text-foreground hover:bg-white/15"
+              type="button"
+              className="map-chip map-chip-on font-mono"
               onClick={() => actions.toggleDirFilter(dir)}
-              title={`Soloed territory — click to show every territory again (${dir})`}
+              title={`Soloed folder — click to show every folder again (${dir})`}
             >
               <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: cssColor(folderColor(dir)) }} aria-hidden />
               <span className="max-w-[120px] truncate">{shortClusterLabel(dir)}</span>
-              <span aria-hidden>✕</span>
+              <X className="size-3" aria-hidden />
             </button>
           ))}
         </div>
@@ -690,7 +512,9 @@ export function FilterSection({ view }: { view: GraphViewState }) {
           return (
             <button
               key={lang}
-              className={`rounded px-1.5 py-0.5 font-mono text-xs transition-colors ${on ? "bg-cyan-400/25 text-cyan-50" : "bg-white/5 text-muted-foreground hover:bg-white/10"}`}
+              type="button"
+              className={`map-chip font-mono ${on ? "map-chip-on" : ""}`}
+              aria-pressed={on}
               onClick={() => actions.toggleLanguage(lang)}
               title={`${count.toLocaleString()} ${lang} file${count === 1 ? "" : "s"}`}
             >
@@ -702,13 +526,15 @@ export function FilterSection({ view }: { view: GraphViewState }) {
       {/* Role chips: filter by what files are *for* (the same classification the
           star corner marks denote), ANDed with the language chips above. */}
       {roles.length > 0 && (
-        <div className="mt-1 flex flex-wrap gap-1">
+        <div className="flex flex-wrap gap-1">
           {roles.map(({ role, count }) => {
             const on = activeRoles.includes(role);
             return (
               <button
                 key={role}
-                className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-xs transition-colors ${on ? "bg-cyan-400/25 text-cyan-50" : "bg-white/5 text-muted-foreground hover:bg-white/10"}`}
+                type="button"
+                className={`map-chip ${on ? "map-chip-on" : ""}`}
+                aria-pressed={on}
                 onClick={() => actions.toggleRoleFilter(role)}
                 title={`${count.toLocaleString()} ${FILE_ROLE_LABELS[role].toLowerCase()} file${count === 1 ? "" : "s"}`}
               >
@@ -721,14 +547,14 @@ export function FilterSection({ view }: { view: GraphViewState }) {
           })}
         </div>
       )}
-      <div className="mt-1.5 flex items-center justify-between text-xs text-muted-foreground">
-        <span>Min links</span>
-        <div className="flex items-center gap-1">
-          <button className="map-tool-button !px-2 !py-0.5" onClick={() => stepMinDegree(-1)} disabled={filter.minDegree === 0}>–</button>
-          <strong className="w-4 text-center text-foreground">{filter.minDegree}</strong>
-          <button className="map-tool-button !px-2 !py-0.5" onClick={() => stepMinDegree(1)} disabled={filter.minDegree >= 20}>+</button>
-        </div>
+      <div className="flex items-center justify-between">
+        <span className="map-hint" title="Ghost files with fewer import links than this">Min links</span>
+        <span className="map-stepper">
+          <MapIconButton icon={Minus} label="Fewer links required" onClick={() => stepMinDegree(-1)} disabled={filter.minDegree === 0} />
+          <strong>{filter.minDegree}</strong>
+          <MapIconButton icon={Plus} label="More links required" onClick={() => stepMinDegree(1)} disabled={filter.minDegree >= 20} />
+        </span>
       </div>
-    </div>
+    </MapDisclosure>
   );
 }

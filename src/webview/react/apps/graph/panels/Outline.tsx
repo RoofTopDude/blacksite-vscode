@@ -230,7 +230,7 @@ export function OutlineRail({ view, onFocusNode, defaultOpen }: {
           )}
           {hubs.length > 0 && (
             <div className="map-outline-hubs">
-              <div className="map-control-title">Hubs in view</div>
+              <div className="map-section-title" title="The most-connected files currently drawn">Hubs in view</div>
               {hubs.map((node) => (
                 <button key={node.id} type="button" className="map-outline-hub" onClick={() => onFocusNode(node.id)} title={node.id}>
                   <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: cssColor(folderColor(node.dir)) }} aria-hidden />

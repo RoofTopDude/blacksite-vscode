@@ -1,7 +1,8 @@
-/* Codebase Map panel module, split out of GraphApp.tsx (move-only; see
-   docs/map-scale-implementation-plan.md B8). */
+/* The Map's legend card (bottom right), the full Map key behind it, and the
+   Depth control the Advanced section embeds. Every swatch reuses the colour
+   constants the renderer draws with, so neither can drift from the canvas. */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { actions } from "../store";
 import {
   ANNOTATION_COLOR,
@@ -22,6 +23,7 @@ import {
   type FlowSignature,
 } from "@/lib/graph/flow-signature";
 import { altitudeBand, type GraphDisplayOptions, type MapAltitude } from "@/lib/graph/view-model";
+import { BookOpen, X } from "lucide-react";
 import {
   LEGEND,
   RELATIONSHIP_LEGEND,
@@ -29,10 +31,11 @@ import {
   ROLE_MARK_LEGEND,
   PREFERS_REDUCED_MOTION,
 } from "./shared";
+import { MapIconButton, MapSegmented } from "./ui";
 
 export const ALTITUDE_BANDS: Array<{ band: MapAltitude; label: string; hint: string }> = [
-  { band: "overview", label: "Overview", hint: "Whole-map altitude: territories and the strongest routes" },
-  { band: "modules", label: "Modules", hint: "Module altitude: hub labels and folder structure" },
+  { band: "overview", label: "Overview", hint: "Whole-map altitude: codebases, folders, and the strongest routes" },
+  { band: "modules", label: "Folders", hint: "Folder altitude: folder labels and structure" },
   { band: "files", label: "Files", hint: "File altitude: individual stars, badges, and raw links" },
 ];
 
@@ -47,7 +50,7 @@ export function Legend({ fileCount, importCount, gitHeat, relationshipCount, ser
   onOpenMapKey: () => void;
 }) {
   const activeBand = altitudeBand(zoomRatio);
-  // The controls rail above reserves this height so the two never overlap. The legend grows
+  // The display rail above reserves this height so the two never overlap. The legend grows
   // with the lens (services add a row per relationship kind), so a fixed reservation can't.
   const legendRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -60,71 +63,42 @@ export function Legend({ fileCount, importCount, gitHeat, relationshipCount, ser
     return () => observer.disconnect();
   }, []);
   return (
-    <div ref={legendRef} className="map-legend pointer-events-none absolute bottom-3 right-3 flex flex-col gap-0.5 px-2 py-1.5">
-      <button
-        className="pointer-events-auto mb-0.5 self-end rounded border border-border/60 px-1.5 py-0.5 text-2xs text-slate-300/85 hover:bg-white/10 hover:text-foreground"
-        onClick={onOpenMapKey}
-        title="What am I looking at? Explains territories, stars, lines, and activity."
-      >
-        ? Map key
-      </button>
+    <div ref={legendRef} className="map-legend pointer-events-auto absolute bottom-3 right-3" data-map-region="legend">
       {/* Altitude meter: names the semantic zoom band the camera is at (the
           same bands the label overlay crossfades through) and flies there on
           click — the "where am I in the zoom hierarchy?" answer. */}
-      <div className="pointer-events-auto mb-0.5 flex items-center gap-0.5 border-b border-border/60 pb-1" role="group" aria-label="Zoom altitude">
-        {ALTITUDE_BANDS.map(({ band, label, hint }) => (
-          <button
-            key={band}
-            className={`rounded px-1 py-0.5 text-2xs uppercase tracking-wide transition-colors ${
-              activeBand === band ? "bg-white/15 text-foreground" : "text-muted-foreground hover:bg-white/8 hover:text-foreground"
-            }`}
-            aria-pressed={activeBand === band}
-            onClick={() => onAltitude(band)}
-            title={hint}
-          >
-            {label}
-          </button>
-        ))}
+      <div className="map-legend-head">
+        <MapSegmented
+          label="Zoom altitude"
+          size="xs"
+          value={activeBand}
+          onChange={onAltitude}
+          options={ALTITUDE_BANDS.map(({ band, label, hint }) => ({ value: band, label, title: hint }))}
+        />
+        <MapIconButton icon={BookOpen} label="Map key — what the regions, stars, lines, and motion mean" onClick={onOpenMapKey} />
       </div>
       {fileCount > 0 && !servicesLens && (
-        <div className="mb-0.5 border-b border-border/60 pb-1 text-xs text-slate-300/85">
+        <div className="map-legend-line" title="Files drawn and the import links between them">
           {fileCount.toLocaleString()} files · {importCount.toLocaleString()} imports
         </div>
       )}
-      {relationshipCount > 0 && (
-        <div className="mb-0.5 border-b border-border/60 pb-1 text-xs text-slate-300/85">
-          {relationshipCount.toLocaleString()} service edges
-        </div>
+      {relationshipCount > 0 && servicesLens && (
+        <div className="map-legend-line">{relationshipCount.toLocaleString()} service edges · faint → solid = confidence</div>
       )}
       {gitHeat && (
-        <div className="mb-0.5 flex items-center gap-1.5 border-b border-border/60 pb-1 text-xs text-muted-foreground">
-          <span
-            className="h-1.5 w-8 rounded-full"
-            style={{ background: `linear-gradient(90deg, #33405e, ${cssColor(GIT_WARM_COLOR)})` }}
-          />
+        <div className="map-legend-line" title="With git heat on, warmer stars changed more recently and bigger ones change more often">
+          <span className="h-1.5 w-8 shrink-0 rounded-full" style={{ background: `linear-gradient(90deg, #33405e, ${cssColor(GIT_WARM_COLOR)})` }} aria-hidden />
           older → recent · size = churn
         </div>
       )}
-      {servicesLens && (
-        <div className="mb-0.5 flex flex-col gap-0.5 border-b border-border/60 pb-1">
-          {RELATIONSHIP_LEGEND.map(({ label, kind }) => (
-            <div key={kind} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <span className="h-1.5 w-1.5 rounded-full" style={{ background: cssColor(RELATIONSHIP_EDGE_COLORS[kind] ?? 0x8fa9d6) }} />
-              {label}
-            </div>
-          ))}
-          <div className="mt-0.5 flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span className="h-px w-8 rounded-full bg-gradient-to-r from-white/10 to-white/70" />
-            faint → solid · detection confidence
-          </div>
-        </div>
-      )}
-      {LEGEND.map(({ label, kind }) => (
-        <div key={kind} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="h-1.5 w-1.5 rounded-full" style={{ background: cssColor(TRACE_COLORS[kind]) }} />
-          {label}
-        </div>
-      ))}
+      <div className="map-legend-grid" title="Pulses along the links show what the agent just did; a ring marks the file it is on right now">
+        {(servicesLens ? RELATIONSHIP_LEGEND.map(({ label, kind }) => ({ label, color: RELATIONSHIP_EDGE_COLORS[kind] ?? 0x8fa9d6 })) : LEGEND.map(({ label, kind }) => ({ label, color: TRACE_COLORS[kind] }))).map(({ label, color }) => (
+          <span key={label} className="map-legend-item">
+            <span className="map-legend-dot" style={{ background: cssColor(color) }} aria-hidden />
+            {label}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -199,11 +173,6 @@ export function MapKeySwatch({ color, dashed }: { color: number; dashed?: boolea
   );
 }
 
-/** The full explainer behind the "? Map key" button — this is the answer to
-    "why does the map look like this," always one click away rather than
-    something a user has to be told out-of-band. Every swatch here reuses the
-    same color constants the renderer actually draws with, so it can't drift
-    from what's on screen. */
 /** Depth control: which axis the map's spatial depth cue encodes, and how hard.
     Depth is real here — haze, draw order, size falloff, edge recession, and
     parallax all read it — so which axis it spends that dimension on is a
@@ -215,28 +184,31 @@ export function MapKeySwatch({ color, dashed }: { color: number; dashed?: boolea
 export function DepthSection({ display }: { display: GraphDisplayOptions }) {
   const flat = !(display.depthIntensity > 0);
   return (
-    <div className="mt-1.5 flex flex-col gap-1" data-map-region="depth">
-      <div className="map-eyebrow">Depth</div>
+    <div className="flex flex-col gap-1.5" data-map-region="depth">
+      <span className="map-hint">Depth means</span>
       <div className="flex flex-wrap gap-1">
-        {DEPTH_CHANNELS.map((channel) => (
-          <button
-            key={channel}
-            type="button"
-            className={`map-layer-toggle ${display.depthChannel === channel && !flat ? "map-layer-toggle-on" : ""}`}
-            aria-pressed={display.depthChannel === channel}
-            data-map-control={`depth-channel-${channel}`}
-            title={DEPTH_CHANNEL_HINTS[channel]}
-            onClick={() => actions.setDisplay({
-              depthChannel: channel,
-              /* Picking a channel from a flat map is a request to see it. */
-              ...(flat ? { depthIntensity: 1 } : {}),
-            })}
-          >
-            <span>{DEPTH_CHANNEL_LABELS[channel]}</span>
-          </button>
-        ))}
+        {DEPTH_CHANNELS.map((channel) => {
+          const on = display.depthChannel === channel && !flat;
+          return (
+            <button
+              key={channel}
+              type="button"
+              className={`map-chip ${on ? "map-chip-on" : ""}`}
+              aria-pressed={display.depthChannel === channel}
+              data-map-control={`depth-channel-${channel}`}
+              title={DEPTH_CHANNEL_HINTS[channel]}
+              onClick={() => actions.setDisplay({
+                depthChannel: channel,
+                /* Picking a channel from a flat map is a request to see it. */
+                ...(flat ? { depthIntensity: 1 } : {}),
+              })}
+            >
+              {DEPTH_CHANNEL_LABELS[channel]}
+            </button>
+          );
+        })}
       </div>
-      <label className="flex items-center gap-2 text-2xs text-muted-foreground">
+      <label className="flex items-center gap-2 text-2xs text-[color:var(--map-text-3)]">
         <span className="shrink-0">Intensity</span>
         <input
           type="range"
@@ -246,181 +218,162 @@ export function DepthSection({ display }: { display: GraphDisplayOptions }) {
           value={Math.round(display.depthIntensity * 100)}
           data-map-control="depth-intensity"
           aria-label="Depth intensity"
-          className="min-w-0 flex-1"
+          className="min-w-0 flex-1 accent-[color:var(--primary)]"
           onChange={(e) => actions.setDisplay({ depthIntensity: Number(e.target.value) / 100 })}
         />
         <span className="w-8 shrink-0 text-right tabular-nums">{flat ? "Flat" : `${Math.round(display.depthIntensity * 100)}%`}</span>
       </label>
-      <div className="text-2xs text-muted-foreground">
-        {flat ? "Depth off — every file draws flat" : DEPTH_CHANNEL_HINTS[display.depthChannel]}
-      </div>
+      <div className="map-hint">{flat ? "Depth off — every file draws flat" : DEPTH_CHANNEL_HINTS[display.depthChannel]}</div>
     </div>
   );
 }
 
+function KeySection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="flex flex-col gap-1.5">
+      <h3 className="map-section-title !text-xs !text-[color:var(--map-text-2)]">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+const keyText = "text-xs leading-relaxed text-[color:var(--map-text-3)]";
+const keyRow = "flex items-center gap-2 text-xs text-[color:var(--map-text-3)]";
+
+/** The full explainer behind the legend's key button — the answer to "why does
+    the map look like this," always one click away rather than out-of-band. */
 export function MapKeyPanel({ onClose }: { onClose: () => void }) {
   const motionNow = useMotionClock(true);
   return (
-    <div className="map-panel pointer-events-auto absolute bottom-3 right-3 z-10 flex max-h-[75%] w-[min(320px,calc(100vw-24px))] flex-col gap-3 overflow-y-auto px-3 py-2.5">
+    <div className="map-panel map-card pointer-events-auto absolute bottom-3 right-3 z-10 flex max-h-[78%] w-[min(340px,calc(100%-24px))] flex-col gap-4 overflow-y-auto" data-map-region="map-key">
       <div className="flex items-center justify-between">
-        <div className="text-base font-semibold text-foreground">Map key</div>
-        <button className="rounded border border-border/60 px-1.5 py-0.5 text-2xs text-muted-foreground hover:bg-white/10 hover:text-foreground" onClick={onClose}>
-          Close
-        </button>
+        <div className="text-sm font-semibold text-[color:var(--map-text)]">Map key</div>
+        <MapIconButton icon={X} label="Close the map key" onClick={onClose} />
       </div>
 
-      <div className="flex flex-col gap-1">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Territories</div>
-        <p className="text-sm leading-snug text-muted-foreground">
-          Each soft bordered region is a top-level folder. Its color is a fixed hash of the folder path — the same
-          folder is always the same hue, in every session. Overlapping regions just mean two folders' files sit
-          close together in the layout; it isn't a conflict.
+      <KeySection title="Layout">
+        <p className={keyText}>
+          The map follows your folders. Each folder is one region, nested inside its parent&apos;s, so everything under
+          a folder stays together and sibling folders never mix. Import links and declared dependencies only decide
+          which neighbours sit closest and which way a folder faces.
         </p>
-        <p className="text-sm leading-snug text-muted-foreground">
-          The border pattern names what a territory mostly holds: solid = source code, dashed = tests,
-          long-dash = config, dotted = docs, short-dash = styles — with the hue leaning toward that
-          purpose's color.
+        <p className={keyText}>
+          Large workspaces with several codebases give each codebase its own region with a wider gap around it.
+          A very large flat folder is split into chunks that stay side by side.
         </p>
-      </div>
+      </KeySection>
 
-      <div className="flex flex-col gap-1">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Stars</div>
-        <p className="text-sm leading-snug text-muted-foreground">
-          Every star is one file, colored by its territory. Size and brightness scale with how connected it is,
-          plus the file's size on disk — a heavily-imported or large file reads bigger and brighter. A dimmed,
-          ghosted star has been filtered out by search or isolation, not deleted.
+      <KeySection title="Regions">
+        <p className={keyText}>
+          A soft outline surrounds each folder&apos;s files. Its colour is a fixed hash of the folder path, the same in
+          every session. The outline pattern names what the folder mostly holds: solid for source, dashed for tests,
+          long dashes for config, dots for docs, short dashes for styles.
         </p>
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="h-1.5 w-8 rounded-full" style={{ background: `linear-gradient(90deg, #33405e, ${cssColor(GIT_WARM_COLOR)})` }} />
-          with git heat on: warmer = more recently changed
+      </KeySection>
+
+      <KeySection title="Stars">
+        <p className={keyText}>
+          Every star is one file, coloured by its folder. Size and brightness grow with how connected it is and its
+          size on disk. A ghosted star is filtered out by search or isolation, not deleted.
+        </p>
+        <div className={keyRow}>
+          <span className="h-1.5 w-8 shrink-0 rounded-full" style={{ background: `linear-gradient(90deg, #33405e, ${cssColor(GIT_WARM_COLOR)})` }} />
+          With git heat on: warmer means changed more recently
         </div>
-      </div>
+      </KeySection>
 
-      <div className="flex flex-col gap-1">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Depth</div>
-        <p className="text-sm leading-snug text-muted-foreground">
-          Stars sit at different distances. Near ones are crisp and full-size; far ones fade toward the
-          background, shrink slightly, draw behind their neighbors, and drift a little more slowly as you pan.
-          Set what distance means — folder nesting by default — under Layers &gt; Depth, or slide it to Flat
-          to turn the whole cue off.
+      <KeySection title="Depth">
+        <p className={keyText}>
+          Stars sit at different distances: near ones are crisp, far ones fade, shrink slightly, and drift more slowly
+          as you pan. Choose what distance means — folder nesting by default — under Display › Advanced, or set it
+          to flat.
         </p>
-      </div>
+      </KeySection>
 
-      <div className="flex flex-col gap-1">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Aggregates</div>
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <KeySection title="Folded groups">
+        <div className={keyRow}>
           <span className="h-3 w-3 shrink-0 rounded-full border border-slate-300/80" />
-          A ringed star is a whole folder collapsed into one — double-click it to unfold the files inside
+          A ringed star is a folded folder or codebase — double-click to step inside
         </div>
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <div className={keyRow}>
           <span className="h-2.5 w-2.5 shrink-0 rotate-45 border border-slate-300/80" />
-          A diamond outline is a service in the Services lens — one node per deployable unit
+          A diamond is a service in the Services lens
         </div>
-      </div>
+      </KeySection>
 
-      <div className="flex flex-col gap-1">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Badges</div>
-        <p className="text-sm leading-snug text-muted-foreground">
-          Small glyphs on a star only appear once you're zoomed in close enough to read them.
-        </p>
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="h-1.5 w-1.5 rounded-full bg-[#8fa9d6]" />
-          A dot colored by file kind — code, markup, styles, data/config, or docs
+      <KeySection title="Badges">
+        <div className={keyRow}>
+          <span className="h-2.5 w-2.5 shrink-0 rounded-full border-[1.5px] border-[#ffd66b]" />
+          Gold ring: one of the most-connected files (a hub)
         </div>
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="h-2.5 w-2.5 rounded-full border-[1.5px] border-[#ffd66b]" />
-          A gold ring on the small fraction of files with the most connections — the hubs
+        <div className={keyRow}>
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[#ffd66b]" />
+          Gold dot: the file has working-memory notes
         </div>
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="h-1.5 w-1.5 rounded-full bg-[#ffd66b]" />
-          A gold dot — this file has agent working-memory notes attached; open it to read them
-        </div>
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
-          <span className="shrink-0">Role marks:</span>
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-[color:var(--map-text-3)]">
           {ROLE_MARK_LEGEND.map(({ role, glyph }) => (
             <span key={role} className="flex items-center gap-1">
-              <span className="font-mono text-xs" style={{ color: cssColor(FILE_ROLE_COLORS[role]) }}>{glyph}</span>
+              <span className="font-mono" style={{ color: cssColor(FILE_ROLE_COLORS[role]) }}>{glyph}</span>
               {FILE_ROLE_LABELS[role].toLowerCase()}
             </span>
           ))}
         </div>
-        <p className="text-xs leading-snug text-muted-foreground">
-          A small shape in a star's lower-left corner names the file's job; plain source files carry none.
-        </p>
-      </div>
+        <p className={keyText}>Badges appear once you zoom in close enough to read them. The corner mark names a file&apos;s job; plain source files carry none.</p>
+      </KeySection>
 
-      <div className="flex flex-col gap-1">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Lines</div>
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <MapKeySwatch color={IMPORT_EDGE_COLOR} />
-          Import between two files
-        </div>
+      <KeySection title="Lines">
+        <div className={keyRow}><MapKeySwatch color={IMPORT_EDGE_COLOR} /> Import between two files</div>
         {RELATIONSHIP_LEGEND.map(({ label, kind }) => (
-          <div key={kind} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <div key={kind} className={keyRow}>
             <MapKeySwatch color={RELATIONSHIP_EDGE_COLORS[kind] ?? 0x8fa9d6} />
-            {label} relationship — thicker means more detections; brighter means higher detector confidence
+            {label} — thicker means more detections, brighter means more confident
           </div>
         ))}
         {SYMBOL_RELATION_LEGEND.map(({ label, relation }) => (
-          <div key={relation} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <div key={relation} className={keyRow}>
             <MapKeySwatch color={SYMBOL_RELATION_COLORS[relation]} />
-            {label} (from the language server)
+            {label} (language server)
           </div>
         ))}
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <MapKeySwatch color={ANNOTATION_COLOR} dashed />
-          A note an agent (or you) attached between two files
-        </div>
-      </div>
+        <div className={keyRow}><MapKeySwatch color={ANNOTATION_COLOR} dashed /> A note attached between two files</div>
+      </KeySection>
 
-      <div className="flex flex-col gap-1">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Motion</div>
-        <p className="text-sm leading-snug text-muted-foreground">
-          Relationships don't all move the same way — each one behaves like the thing it is, so you can read the
-          map by movement before reading a single label. These previews run the exact animation the canvas does.
-        </p>
+      <KeySection title="Motion">
+        <p className={keyText}>Each kind of relationship moves like the thing it is, so you can read the map by movement. These previews run the canvas&apos;s own animation.</p>
         {MOTION_LEGEND.map(({ label, signature, color }) => (
-          <div key={label} className="flex items-start gap-2 text-xs text-muted-foreground">
+          <div key={label} className="flex items-start gap-2 text-xs text-[color:var(--map-text-3)]">
             <MotionSwatch signature={signature} color={color} now={motionNow} />
-            <span className="leading-snug">
-              <span className="text-slate-300">{label}</span> — {MOTION_DESCRIPTIONS[signature.motion]}
+            <span className="leading-snug"><span className="text-[color:var(--map-text-2)]">{label}</span> — {MOTION_DESCRIPTIONS[signature.motion]}</span>
+          </div>
+        ))}
+        <p className={keyText}>
+          Stars breathe too: a file changed often and recently pulses visibly. A dashed line between two codebases is
+          hidden coupling — they change in the same commits, but nothing structural connects them.
+        </p>
+      </KeySection>
+
+      <KeySection title="Scope">
+        <p className={keyText}>
+          Double-click a folded group, or pick it in the outline, to step inside; the breadcrumb and Backspace take you
+          back out. Inside a scope, areas fold into single stars when there is more than the focus budget to draw, and
+          unfold around your selection and where the agent is working.
+        </p>
+      </KeySection>
+
+      <KeySection title="Live activity">
+        <p className={keyText}>
+          Coloured pulses along a line mean the agent just read, wrote, edited, or ran something near that file; a
+          steady ring marks the file it is on now. Parallel agents each get their own colour.
+        </p>
+        <div className="map-legend-grid">
+          {LEGEND.map(({ label, kind }) => (
+            <span key={kind} className="map-legend-item">
+              <span className="map-legend-dot" style={{ background: cssColor(TRACE_COLORS[kind]) }} />
+              {label}
             </span>
-          </div>
-        ))}
-        <p className="text-xs leading-snug text-muted-foreground">
-          Stars breathe too: a file changed often and recently pulses visibly, while an untouched corner of the
-          codebase sits almost perfectly still.
-        </p>
-        <p className="text-xs leading-snug text-muted-foreground">
-          A dashed line between two codebases is <span className="text-slate-300">hidden coupling</span>: they keep
-          changing in the same commits, but no import, route, or declared dependency connects them.
-        </p>
-      </div>
-
-      <div className="flex flex-col gap-1">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Codebases and scope</div>
-        <p className="text-sm leading-snug text-muted-foreground">
-          A large star with a ring and a label is a folded group — a codebase, project, or workspace folder — sized
-          by how many files it holds. Double-click it (or pick it in the outline) to step inside; the breadcrumb at
-          the top left and Backspace take you back out. Inside a scope, areas fold into single stars when there is
-          more than the focus budget to draw, and unfold around what you select and where the agent is working.
-        </p>
-      </div>
-
-      <div className="flex flex-col gap-1">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Live activity</div>
-        <p className="text-sm leading-snug text-muted-foreground">
-          Colored pulses flowing along a line mean an agent just read, wrote, edited, or ran a shell command near
-          that file. A steady ring around a star means an agent is working on it right now. When several agents run
-          in parallel, each gets its own identity color instead of the activity-kind color below.
-        </p>
-        {LEGEND.map(({ label, kind }) => (
-          <div key={kind} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span className="h-1.5 w-1.5 rounded-full" style={{ background: cssColor(TRACE_COLORS[kind]) }} />
-            {label}
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      </KeySection>
     </div>
   );
 }

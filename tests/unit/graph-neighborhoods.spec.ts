@@ -6,7 +6,7 @@ import {
   neighborhoodRoots,
   shouldTerritorialize,
 } from "../../src/graph/neighborhoods.js";
-import { createLayout, neighborhoodCenters, territorialClusterCentroids } from "../../src/graph/layout.js";
+import { createLayout, estimateClusterRadius, folderTreeGap, territorialClusterCentroids } from "../../src/graph/layout.js";
 import { buildProjectTopology, type ProjectTopology } from "../../src/graph/project-topology.js";
 import type { GraphEdge, GraphNode } from "../../src/graph/graph-model.js";
 
@@ -36,33 +36,49 @@ describe("assignNeighborhoods", () => {
     expect(nb.get("scripts/build.sh")).toBe("scripts");
   });
 
-  it("pulls an unowned file into the codebase it imports from (affinity over the segment fallback)", () => {
-    /* tools/gen.cs isn't under any project, but it imports portal code — so it
-       joins the portal territory instead of sitting in a lone "tools" bucket. */
+  it("keeps a file in its own folder's codebase even when it imports another codebase", () => {
+    /* Directory first: tools/gen.cs imports portal code but lives in tools/, so
+       it stays a tools file. Folding importers into what they import used to
+       merge whole unowned trees (src/, tests/) into the one package they use. */
     const edges = new Map<string, readonly string[]>([
       ["tools/gen.cs", ["portal/src/Core/Foo.cs"]],
+      ["src/agent.ts", ["packages/runtime/src/index.ts"]],
     ]);
-    const nb = assignNeighborhoods(
-      ["portal/src/Core/Foo.cs", "tools/gen.cs"],
-      topology,
-      edges,
-    );
-    expect(nb.get("tools/gen.cs")).toBe("portal");
+    const withPackage = buildProjectTopology([{ path: "packages/runtime/package.json", content: JSON.stringify({ name: "runtime" }) }]);
+    expect(assignNeighborhoods(["portal/src/Core/Foo.cs", "tools/gen.cs"], topology, edges).get("tools/gen.cs")).toBe("tools");
+    expect(assignNeighborhoods(["packages/runtime/src/index.ts", "src/agent.ts"], withPackage, edges).get("src/agent.ts")).toBe("src");
   });
 
-  it("propagates affinity across a chain of unowned files, but islands keep the segment", () => {
-    const edges = new Map<string, readonly string[]>([
-      ["scripts/a.cs", ["scripts/b.cs"]],
-      ["scripts/b.cs", ["cdm/Cdm/Baz.cs"]],
+  it("gives an unowned folder beside real projects its own codebase, not the shared container's", () => {
+    const services = buildProjectTopology([
+      { path: "services/auth/package.json", content: JSON.stringify({ name: "auth" }) },
+      { path: "services/payments/package.json", content: JSON.stringify({ name: "payments" }) },
     ]);
     const nb = assignNeighborhoods(
-      ["cdm/Cdm/Baz.cs", "scripts/a.cs", "scripts/b.cs", "loose/orphan.md"],
+      ["services/auth/src/a.ts", "services/billing/src/b.ts", "services/billing/c.ts", "services/README.md"],
+      services,
+    );
+    expect(nb.get("services/auth/src/a.ts")).toBe("services/auth");
+    expect(nb.get("services/billing/src/b.ts")).toBe("services/billing");
+    expect(nb.get("services/billing/c.ts")).toBe("services/billing");
+    expect(nb.get("services/README.md")).toBe("services");
+  });
+
+  it("pulls only loose top-level files toward the codebase they import, across chains", () => {
+    const edges = new Map<string, readonly string[]>([
+      ["a.cs", ["b.cs"]],
+      ["b.cs", ["cdm/Cdm/Baz.cs"]],
+      ["scripts/c.cs", ["cdm/Cdm/Baz.cs"]],
+    ]);
+    const nb = assignNeighborhoods(
+      ["cdm/Cdm/Baz.cs", "a.cs", "b.cs", "orphan.md", "scripts/c.cs"],
       topology,
       edges,
     );
-    expect(nb.get("scripts/b.cs")).toBe("cdm"); // one hop from owned
-    expect(nb.get("scripts/a.cs")).toBe("cdm"); // two hops, via b
-    expect(nb.get("loose/orphan.md")).toBe("loose"); // no path to any codebase
+    expect(nb.get("b.cs")).toBe("cdm"); // one hop from owned
+    expect(nb.get("a.cs")).toBe("cdm"); // two hops, via b
+    expect(nb.get("orphan.md")).toBe("."); // no path to any codebase
+    expect(nb.get("scripts/c.cs")).toBe("scripts"); // has a folder of its own
   });
 
   it("derives neighborhood roots from project containers", () => {
@@ -147,7 +163,7 @@ describe("territorial layout", () => {
   });
 });
 
-describe("neighborhoodCenters", () => {
+describe("codebase placement", () => {
   const nbNodes = (spec: Record<string, number>): Array<Pick<GraphNode, "id">> => {
     const nodes: Array<Pick<GraphNode, "id">> = [];
     for (const [nb, count] of Object.entries(spec)) {
@@ -161,28 +177,26 @@ describe("neighborhoodCenters", () => {
   const dist = (m: Map<string, { x: number; y: number }>, a: string, b: string): number =>
     Math.hypot(m.get(a)!.x - m.get(b)!.x, m.get(a)!.y - m.get(b)!.y);
 
-  it("places a coupled neighborhood pair nearer each other than an uncoupled one", () => {
-    const nodes = nbNodes({ A: 8, B: 8, C: 8 });
-    const edges = Array.from({ length: 8 }, (_, i) => imp(`A/f${i}.ts`, `B/f${i}.ts`));
-    const centers = neighborhoodCenters(nodes, edges, nbMap(nodes), 42);
-    expect(dist(centers, "A", "B")).toBeLessThan(dist(centers, "A", "C"));
-    expect(dist(centers, "A", "B")).toBeLessThan(dist(centers, "B", "C"));
-  });
+  /* One folder per codebase here, so a codebase's centre is its folder's. */
+  const centersOf = (nodes: Array<Pick<GraphNode, "id">>, edges: Array<Pick<GraphEdge, "from" | "to" | "kind">>): Map<string, { x: number; y: number }> =>
+    territorialClusterCentroids(nodes.map((n) => ({ id: n.id, dir: n.id.split("/")[0]! })), nbMap(nodes), 42, edges);
 
-  it("draws a neighborhood pair closer once they share imports (edges aggregated upward)", () => {
-    const nodes = nbNodes({ A: 5, B: 5 });
-    const edges = Array.from({ length: 5 }, (_, i) => imp(`A/f${i}.ts`, `B/f${i}.ts`));
-    const withEdges = neighborhoodCenters(nodes, edges, nbMap(nodes), 42);
-    const without = neighborhoodCenters(nodes, [], nbMap(nodes), 42);
-    expect(dist(withEdges, "A", "B")).toBeLessThan(dist(without, "A", "B"));
-    expect(dist(withEdges, "A", "B")).toBeGreaterThan(0); // coupled, not collapsed
+  it("packs a coupled codebase pair side by side, separated by the territory moat", () => {
+    const nodes = nbNodes({ A: 8, B: 8, C: 8, D: 8, E: 8 });
+    const edges = Array.from({ length: 8 }, (_, i) => imp(`A/f${i}.ts`, `B/f${i}.ts`));
+    const centers = centersOf(nodes, edges);
+    const radius = estimateClusterRadius(8, 42);
+    const touching = 2 * radius + folderTreeGap(1, true);
+    expect(dist(centers, "A", "B")).toBeCloseTo(touching, 3);
+    for (const other of ["C", "D", "E"]) {
+      expect(dist(centers, "A", other)).toBeGreaterThanOrEqual(touching - 1e-6);
+      expect(dist(centers, "B", other)).toBeGreaterThanOrEqual(touching - 1e-6);
+    }
   });
 
   it("is deterministic for identical input", () => {
     const nodes = nbNodes({ A: 4, B: 4, C: 4 });
     const edges = [imp("A/f0.ts", "B/f0.ts"), imp("B/f1.ts", "C/f1.ts")];
-    const first = neighborhoodCenters(nodes, edges, nbMap(nodes), 42);
-    const second = neighborhoodCenters(nodes, edges, nbMap(nodes), 42);
-    expect([...first.entries()]).toEqual([...second.entries()]);
+    expect([...centersOf(nodes, edges).entries()]).toEqual([...centersOf(nodes, edges).entries()]);
   });
 });

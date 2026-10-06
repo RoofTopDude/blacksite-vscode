@@ -1668,7 +1668,10 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
   }
 
   const ZONE_MIN_MEMBERS_FOR_HULL = 3;
-  const ZONE_MAX_ZONES = 48;
+  /* The host packs every folder as its own disc (graph/directory-pack.ts), so an
+     outline per folder is what makes that structure visible; 48 left most of a
+     large workspace's folders bare. Zones redraw only on structure change. */
+  const ZONE_MAX_ZONES = 160;
   const ZONE_PADDING_BASE = 36;
 
   /** Neighborhood (codebase-territory) hulls: one coarse, faint hull per
@@ -1695,7 +1698,9 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
     for (const [nb, points] of byNeighborhood) {
       if (points.length < ZONE_MIN_MEMBERS_FOR_HULL) continue;
       const color = folderColor(nb);
-      const padding = ZONE_PADDING_BASE * 2 + Math.sqrt(points.length) * 5;
+      /* Capped: codebases are separated by a fixed moat in the layout, and an
+         outline padded past it would reach into the neighbouring codebase. */
+      const padding = Math.min(120, ZONE_PADDING_BASE * 1.5 + Math.sqrt(points.length) * 2.5);
       drawRoundedPolygon(neighborhoodZoneGfx, paddedHull(points, padding));
       neighborhoodZoneGfx.fill({ color, alpha: 0.02 }).stroke({ width: 1.1, color, alpha: 0.2 });
     }
@@ -1747,12 +1752,15 @@ export function createGraphRenderer(host: HTMLElement, callbacks: RendererCallba
 
     const byCluster = new Map<string, { points: HullPoint[]; ids: string[] }>();
     for (const node of view.displayNodes) {
-      const entry = byCluster.get(node.dir);
+      /* One outline per folder: an oversized folder's chunks are packed side
+         by side by the host and read as the one folder they are. */
+      const folder = node.dir.replace(/#\d+$/, "");
+      const entry = byCluster.get(folder);
       if (entry) {
         entry.points.push({ x: node.x, y: node.y });
         if (!node.kind || node.kind === "file") entry.ids.push(node.id);
       } else {
-        byCluster.set(node.dir, {
+        byCluster.set(folder, {
           points: [{ x: node.x, y: node.y }],
           ids: !node.kind || node.kind === "file" ? [node.id] : [],
         });

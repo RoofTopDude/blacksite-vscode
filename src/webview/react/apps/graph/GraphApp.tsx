@@ -20,6 +20,7 @@ import { Minimap } from "./panels/Minimap";
 import { Legend, MapKeyPanel } from "./panels/Legend";
 import { MapControls } from "./panels/MapControls";
 import { LiveActivityChip, RunPlaybackControls, HelpChip, capacityWarning, LspDiagnostics } from "./panels/StatusChips";
+import { MapButton } from "./panels/ui";
 
 
 export function GraphApp() {
@@ -284,97 +285,85 @@ export function GraphApp() {
         <Minimap view={view} camera={camera} viewport={viewport} onJump={(x, y) => renderer?.focusWorld(x, y)} />
       )}
       <RunPlaybackControls view={view} />
-      {view.runPlayback.mode === "live" && <LiveActivityChip live={view.liveActivity} />}
+      {view.runPlayback.mode === "live" && <LiveActivityChip live={view.liveActivity} onFocus={focusNode} />}
       {view.truncated && (
         <div
-          className={`map-status-warning pointer-events-auto absolute left-1/2 -translate-x-1/2 px-2.5 py-0.5 text-xs ${
+          className={`map-status-warning pointer-events-auto absolute left-1/2 -translate-x-1/2 text-2xs ${
             view.runPlayback.mode === "playback"
               ? "top-20"
               : view.liveActivity.length > 0 && view.runPlayback.summaries.length > 0
-                ? "top-20"
+                ? "top-24"
                 : view.liveActivity.length > 0 || view.runPlayback.summaries.length > 0
-                ? "top-12"
+                ? "top-14"
                 : "top-3"
           }`}
-          title="Open Blacksite graph settings to raise indexed, rendered, or relationship caps on capable machines."
+          title="Raise the indexed, rendered, or relationship caps in Blacksite's graph settings on capable machines."
           role="status"
         >
           {capacityWarning(view)}
         </div>
       )}
       {!renderError && view.indexing && view.nodes.length === 0 && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/40">
-          <div className="map-panel px-3 py-1.5 text-sm text-muted-foreground" role="status" aria-live="polite">Indexing workspace...</div>
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="map-panel map-card map-analysis-progress flex items-center gap-2 !py-2 text-sm text-[color:var(--map-text-2)]" role="status" aria-live="polite">
+            <span className="map-live-pip" aria-hidden />
+            Indexing the workspace…
+          </div>
         </div>
       )}
       {!renderError && !view.indexing && view.nodes.length === 0 && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="map-panel flex flex-col items-center gap-1 px-4 py-3 text-center">
-            <span className="text-base font-semibold text-foreground">No files indexed yet</span>
-            <span className="text-xs text-muted-foreground">
-              Click <strong className="text-foreground/80">Re-index</strong> in the toolbar to build the map.
-            </span>
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-3">
+          <div className="map-panel map-card pointer-events-auto flex max-w-[300px] flex-col items-center gap-2 text-center">
+            <span className="text-sm font-semibold text-[color:var(--map-text)]">Nothing indexed yet</span>
+            <span className="map-hint !text-xs">Build the map to see every file, folder, and how they connect.</span>
+            <MapButton variant="primary" onClick={() => actions.rebuildIndex()}>Index workspace</MapButton>
           </div>
         </div>
       )}
       {!renderError && !view.indexing && view.relationshipIndexing && view.display.lens === "services" && view.displayNodes.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="map-panel map-analysis-progress px-3 py-1.5 text-sm text-muted-foreground" role="status" aria-live="polite">
-            Tracing API, event, and data contracts in the background…
+          <div className="map-panel map-card map-analysis-progress flex items-center gap-2 !py-2 text-sm text-[color:var(--map-text-2)]" role="status" aria-live="polite">
+            <span className="map-live-pip" aria-hidden />
+            Tracing API, event, and data contracts…
           </div>
         </div>
       )}
       {!renderError && serviceProjectionEmpty && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-3">
-          <div className="map-panel pointer-events-auto flex max-w-[320px] flex-col items-center gap-2 px-4 py-3 text-center" role="status" aria-live="polite" data-map-region="service-empty">
-            <span className="text-base font-semibold text-foreground">No visible service routes</span>
-            <span className="text-xs text-muted-foreground">
+          <div className="map-panel map-card pointer-events-auto flex max-w-[320px] flex-col items-center gap-2 text-center" role="status" aria-live="polite" data-map-region="service-empty">
+            <span className="text-sm font-semibold text-[color:var(--map-text)]">No visible service routes</span>
+            <span className="map-hint !text-xs">
               {view.relationshipEdges.length === 0
                 ? "No service/API relationships have been detected in this workspace yet."
                 : "Every service relationship layer is currently hidden."}
             </span>
             <div className="flex gap-1.5">
               {view.relationshipEdges.length > 0 && (
-                <button
-                  className="rounded bg-white/10 px-2 py-0.5 text-xs text-foreground hover:bg-white/20"
-                  onClick={() => actions.setDisplay({ showApi: true, showEvents: true, showData: true, showConfig: true })}
-                >
-                  Show routes
-                </button>
+                <MapButton size="xs" variant="primary" onClick={() => actions.setDisplay({ showApi: true, showEvents: true, showData: true, showConfig: true })}>Show routes</MapButton>
               )}
-              <button
-                className="rounded bg-white/5 px-2 py-0.5 text-xs text-muted-foreground hover:bg-white/15"
-                onClick={() => actions.setDisplay({ lens: "files" })}
-              >
-                Browse files
-              </button>
               {view.relationshipEdges.length === 0 && (
-                <button
-                  className="rounded bg-white/10 px-2 py-0.5 text-xs text-foreground hover:bg-white/20"
-                  onClick={() => actions.rebuildIndex()}
-                >
-                  Re-index
-                </button>
+                <MapButton size="xs" variant="primary" onClick={() => actions.rebuildIndex()}>Re-index</MapButton>
               )}
+              <MapButton size="xs" variant="ghost" onClick={() => actions.setDisplay({ lens: "files" })}>Browse files</MapButton>
             </div>
           </div>
         </div>
       )}
       {!renderError && workProjectionEmpty && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-3">
-          <div className="map-panel pointer-events-auto flex max-w-[320px] flex-col items-center gap-2 px-4 py-3 text-center" role="status" aria-live="polite" data-map-region="work-empty">
-            <span className="text-base font-semibold text-foreground">No open work tickets</span>
-            <span className="text-xs text-muted-foreground">File a ticket from the Tickets view, a todo/risk map note, or a plan phase when it discovers work it should not absorb.</span>
+          <div className="map-panel map-card pointer-events-auto flex max-w-[320px] flex-col items-center gap-2 text-center" role="status" aria-live="polite" data-map-region="work-empty">
+            <span className="text-sm font-semibold text-[color:var(--map-text)]">No open work tickets</span>
+            <span className="map-hint !text-xs">File a ticket from the Tickets view, a todo or risk map note, or a plan phase that finds work it should not absorb.</span>
             <div className="flex gap-1.5">
-              <button className="rounded bg-white/10 px-2 py-0.5 text-xs text-foreground hover:bg-white/20" onClick={() => actions.openTickets()}>Open tickets</button>
-              <button className="rounded bg-white/5 px-2 py-0.5 text-xs text-muted-foreground hover:bg-white/15" onClick={() => actions.setDisplay({ lens: "files" })}>Browse files</button>
+              <MapButton size="xs" variant="primary" onClick={() => actions.openTickets()}>Open Tickets</MapButton>
+              <MapButton size="xs" variant="ghost" onClick={() => actions.setDisplay({ lens: "files" })}>Browse files</MapButton>
             </div>
           </div>
         </div>
       )}
       {renderError && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/60">
-          <div className="map-panel max-w-[280px] px-3 py-2 text-center text-sm text-muted-foreground" role="alert">
+          <div className="map-panel max-w-[280px] text-center text-sm text-[color:var(--map-text-2)]" role="alert">
             <div>Couldn&apos;t start the map&apos;s renderer.</div>
             <div className="mt-1 text-xs opacity-70" title={renderError}>{renderError}</div>
           </div>

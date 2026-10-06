@@ -9,6 +9,7 @@ import {
   toolDisplayName, toolChangePresentation, type ToolChange, type ToolFileChange, type ToolState,
 } from "./format";
 import { toolInputPreview, toolResultPresentation, parseToolResult } from "./tool-presentation";
+import { appendTerminalOutput, createTerminalOutput, settleTerminalOutput, terminalFromResult, type TerminalOutput } from "./terminal-output";
 import type { ApprovalDecision, ChatMessage, QCardOption, QCardQuestion, SessionRuntime, SteerState, ToolDiffInfo } from "./protocol";
 import type { BrowserProposal } from "../../../browser/approval-types";
 
@@ -65,6 +66,9 @@ export interface ToolCall {
   diffs: ToolDiffInfo[];
   mediaDataUrl: string;
   mediaLabel: string;
+  /** A shell command's terminal view: streamed while it runs, rebuilt from the result's
+   *  stdout/stderr for a restored conversation. Null for every other tool. */
+  output: TerminalOutput | null;
 }
 
 export interface QuestionItem {
@@ -657,6 +661,7 @@ export function ensureToolCall(_state: ChatState, turn: Turn, payload: any): Too
     diffs: [],
     mediaDataUrl: "",
     mediaLabel: "",
+    output: null,
   };
   turn.toolCalls.set(toolCallId, call);
   turn.toolCallList.push(call);
@@ -699,9 +704,31 @@ export function boundRetainedResult(value: any): any {
   return `${pretty.slice(0, MAX_RETAINED_RESULT_CHARS)}\n… [truncated — ${pretty.length.toLocaleString()} chars]`;
 }
 
+/** Tools whose output is a terminal stream (see AgentSessionOptions.onToolOutput). */
+export function isTerminalTool(toolName: string): boolean {
+  return toolName === "shell_run";
+}
+
+/** Append a running command's output to its terminal view. */
+export function applyToolOutput(call: ToolCall, chunks: ReadonlyArray<{ stream?: unknown; text?: unknown }>, capped: boolean): void {
+  const output = call.output ?? (call.output = createTerminalOutput());
+  for (const chunk of chunks) {
+    if (typeof chunk.text !== "string") continue;
+    appendTerminalOutput(output, chunk.stream === "stderr" ? "stderr" : "stdout", chunk.text);
+  }
+  if (capped) output.capped = true;
+}
+
 export function applyToolResult(turn: Turn, call: ToolCall, rawResult: any, elapsedMs: any, diffs?: ToolDiffInfo[]): void {
   const presentation = toolResultPresentation(call.toolName, rawResult);
   const parsed = parseToolResult(rawResult);
+  // Read the terminal view out of the full result before it is bounded below: a restored
+  // conversation has no stream, and a long build's stdout would otherwise survive only as a
+  // truncated JSON string.
+  if (isTerminalTool(call.toolName)) {
+    if (call.output) settleTerminalOutput(call.output, parsed);
+    else call.output = terminalFromResult(parsed);
+  }
   call.state = presentation.state;
   call.label = presentation.label || call.displayName;
   call.preview = presentation.preview || "";

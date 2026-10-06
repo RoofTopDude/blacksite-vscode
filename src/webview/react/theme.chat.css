@@ -927,3 +927,138 @@
   .dock-live::before { animation: dock-live-breathe 2.6s ease-in-out infinite; }
   @keyframes dock-live-breathe { 0%, 100% { opacity: 0.2; } 50% { opacity: 0.62; } }
 }
+
+/* ── Terminal pane ────────────────────────────────────────────────────────
+   A shell command's output inside its tool row (TerminalPane.tsx). One step
+   darker than the chat surface so it reads as a terminal; the border warms
+   while the command runs, the same "run" accent the live-action strip uses. */
+.terminal-pane {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: #0a0a0d;
+  font-family: var(--font-mono);
+  transition: border-color var(--dur-3) var(--ease-out), box-shadow var(--dur-3) var(--ease-out);
+}
+.terminal-pane[data-live] {
+  border-color: color-mix(in srgb, var(--s-warn) 30%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--s-warn) 6%, transparent);
+}
+.terminal-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px 5px 10px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--foreground);
+  font-size: var(--text-xs);
+}
+.terminal-prompt { color: var(--s-ok); font-weight: 700; }
+.terminal-status {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0 7px;
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  line-height: 18px;
+}
+.terminal-status-live { color: var(--s-warn); background: color-mix(in srgb, var(--s-warn) 12%, transparent); border-color: color-mix(in srgb, var(--s-warn) 26%, transparent); }
+.terminal-status-ok { color: var(--s-ok); background: color-mix(in srgb, var(--s-ok) 12%, transparent); border-color: color-mix(in srgb, var(--s-ok) 26%, transparent); }
+.terminal-status-err { color: var(--s-err); background: color-mix(in srgb, var(--s-err) 12%, transparent); border-color: color-mix(in srgb, var(--s-err) 26%, transparent); }
+.terminal-status-warn { color: var(--s-warn); background: color-mix(in srgb, var(--s-warn) 10%, transparent); border-color: color-mix(in srgb, var(--s-warn) 22%, transparent); }
+.terminal-status-idle { color: var(--muted-foreground); background: rgba(255, 255, 255, 0.05); border-color: var(--border); }
+.terminal-status-dot { width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
+.terminal-body {
+  min-height: 40px;
+  max-height: 300px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 7px 10px 8px;
+  color: #d4d4d8;
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  tab-size: 4;
+}
+.terminal-body:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+.terminal-wrap .terminal-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+.terminal-nowrap .terminal-line { width: max-content; min-width: 100%; white-space: pre; }
+/* stderr is where many tools print progress, not only errors — tint, don't alarm. */
+.terminal-line-stderr { color: color-mix(in srgb, var(--s-warn) 58%, #d4d4d8); }
+.terminal-line-error { color: var(--s-err); }
+.terminal-note { padding: 1px 0 3px; color: var(--muted-foreground); font-family: var(--font-sans); font-size: var(--text-2xs); font-style: italic; }
+.terminal-caret {
+  display: inline-block;
+  width: 0.55em;
+  height: 1.15em;
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  background: color-mix(in srgb, var(--foreground) 70%, transparent);
+}
+.terminal-foot {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 10px;
+  border-top: 1px solid var(--border);
+  color: var(--muted-foreground);
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+}
+.terminal-tool {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  border-radius: 5px;
+  padding: 2px 6px;
+  color: var(--muted-foreground);
+  transition: color var(--dur-1) var(--ease-out), background-color var(--dur-1) var(--ease-out);
+}
+.terminal-tool:hover:not(:disabled) { background: rgba(255, 255, 255, 0.06); color: var(--foreground); }
+.terminal-tool-on { color: var(--foreground); }
+.terminal-jump {
+  position: absolute;
+  right: 12px;
+  bottom: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 9px 2px 7px;
+  background: var(--popover);
+  box-shadow: var(--elev-2);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--text-2xs);
+  font-weight: 600;
+  animation: reveal-in 0.18s var(--ease-out) both;
+}
+.terminal-jump:hover { border-color: color-mix(in srgb, var(--s-warn) 40%, var(--border)); }
+/* The newest output line, shown in a folded row and under the live-action verb. */
+.terminal-tail { color: color-mix(in srgb, var(--s-warn) 34%, var(--muted-foreground)); }
+.tool-raw > summary {
+  width: max-content;
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 1px 4px;
+  color: var(--muted-foreground);
+  font-size: var(--text-2xs);
+  list-style: none;
+}
+.tool-raw > summary::-webkit-details-marker { display: none; }
+.tool-raw > summary::before { content: "▸ "; }
+.tool-raw[open] > summary::before { content: "▾ "; }
+.tool-raw > summary:hover { color: var(--foreground); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .terminal-caret { animation: bls-blink 1.05s steps(1) infinite; }
+  .terminal-status-dot { animation: live-action-ping 1.6s ease-out infinite; --activity-accent: var(--s-warn); }
+}

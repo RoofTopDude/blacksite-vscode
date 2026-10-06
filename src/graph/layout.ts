@@ -19,9 +19,9 @@ import type { GraphEdge, GraphNode } from "./graph-model.js";
 import {
   buildProjectReferenceMap,
   owningProjectForPath,
-  shareContainer,
   type ProjectTopology,
 } from "./project-topology.js";
+import { couplingKey, packDirectoryTree } from "./directory-pack.js";
 
 export interface LayoutOptions {
   seed: number;
@@ -50,24 +50,12 @@ interface SimNode extends SimulationNodeDatum {
   degree: number;
 }
 
-interface ClusterSimNode extends SimulationNodeDatum {
-  id: string;
-  count: number;
-  anchorX: number;
-  anchorY: number;
-}
-
-interface ClusterLink extends SimulationLinkDatum<ClusterSimNode> {
-  weight: number;
-}
-
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const NODE_COLLISION_BASE_RADIUS = 14;
 const NODE_COLLISION_DEGREE_SCALE = 2.6;
 const NODE_COLLISION_DEGREE_CAP = 18;
 const NODE_COLLISION_ITERATIONS = 2;
 const DEFAULT_CLUSTER_SPACING = 42;
-const DEFAULT_WORLD_PADDING = 150;
 
 /** Radius used by both d3's collision force and the large-graph packer. Exported
     so scale tests can assert the packer's no-overlap contract without copying a
@@ -106,340 +94,114 @@ export function seededRandom(seed: number): () => number {
   };
 }
 
-/** Arrange cluster centroids on a golden-angle spiral, larger clusters closer
-    to the middle so hub folders anchor the map. Packing is area-proportional:
-    each cluster's spiral radius grows with the cumulative node count placed so
-    far, so the whole world spans ~O(sqrt(totalNodes)) regardless of how many
-    clusters there are. (The old uniform `spacing * sqrt(i)` spread blew the
-    world up to tens of thousands of units on big multi-cluster projects,
-    which is what made the map look like 1-2 dots at minimum zoom.) */
-function baseClusterCentroids(
-  nodes: readonly Pick<GraphNode, "id" | "dir">[],
-  spacingPerNode = DEFAULT_CLUSTER_SPACING,
-): Map<string, { x: number; y: number }> {
-  const counts = new Map<string, number>();
-  for (const node of nodes) counts.set(node.dir, (counts.get(node.dir) ?? 0) + 1);
-  const entries = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-  const centroids = new Map<string, { x: number; y: number }>();
-  let cumulative = 0;
-  entries.forEach(([dir, count], i) => {
-    const radius = i === 0 ? 0 : spacingPerNode * Math.sqrt(cumulative + count / 2);
-    const angle = i * GOLDEN_ANGLE;
-    centroids.set(dir, { x: radius * Math.cos(angle), y: radius * Math.sin(angle) });
-    cumulative += count;
-  });
-  return centroids;
+/** Clear space between sibling folder discs. Territories (whole codebases) get
+    the widest moat; each level of nesting below sits closer than the one above
+    (every level's margin compounds into its parent's), so siblings read as one
+    unit and cousins stay visibly apart. `depth` is the siblings' nesting level,
+    1 being the top. */
+export function folderTreeGap(depth: number, territorial: boolean, base = 48, territoryGap = 96): number {
+  if (territorial && depth === 1) return territoryGap;
+  const level = Math.max(1, territorial ? depth - 1 : depth);
+  return Math.max(12, base * 0.62 ** (level - 1));
 }
 
-function addClusterWeight(weights: Map<string, number>, fromDir: string, toDir: string, weight: number): void {
-  if (!fromDir || !toDir || fromDir === toDir || weight <= 0) return;
-  const a = fromDir < toDir ? fromDir : toDir;
-  const b = fromDir < toDir ? toDir : fromDir;
-  const key = `${a}\u0000${b}`;
-  weights.set(key, (weights.get(key) ?? 0) + weight);
+/** Seed radius for a folder before its files are laid out: roughly the disc its
+    members need at the default spacing. Replaced by the measured radius once
+    the force pass has arranged them (see repackFolderTree). */
+export function estimateClusterRadius(count: number, spacingPerNode = DEFAULT_CLUSTER_SPACING): number {
+  return 18 + spacingPerNode * 0.5 * Math.sqrt(Math.max(1, count));
 }
 
-function clusterGraphLinks(
+/** Coupling between folders, for ordering and orienting siblings in the folder
+    tree: import counts between their files, plus each declared project
+    reference (package.json dependencies, .csproj references, …) as a link
+    between the two projects' largest folders. One link per reference is enough
+    to turn a project toward the one it depends on, without an all-pairs blow-up
+    on a project with hundreds of folders. */
+export function clusterCouplings(
   nodes: readonly Pick<GraphNode, "id" | "dir">[],
   edges: readonly Pick<GraphEdge, "from" | "to" | "kind">[],
   topology?: ProjectTopology | null,
-): ClusterLink[] {
+): Map<string, number> {
   const dirById = new Map(nodes.map((node) => [node.id, node.dir]));
-  const weights = new Map<string, number>();
+  const out = new Map<string, number>();
+  const add = (a: string | undefined, b: string | undefined, weight: number): void => {
+    if (!a || !b || a === b || !(weight > 0)) return;
+    const key = couplingKey(a, b);
+    out.set(key, (out.get(key) ?? 0) + weight);
+  };
   for (const edge of edges) {
     if (edge.kind !== "import") continue;
-    const fromDir = dirById.get(edge.from);
-    const toDir = dirById.get(edge.to);
-    if (!fromDir || !toDir) continue;
-    addClusterWeight(weights, fromDir, toDir, 1);
+    add(dirById.get(edge.from), dirById.get(edge.to), 1);
   }
-
-  if (topology) {
-    const projectRefs = buildProjectReferenceMap(topology);
-    const projectByRoot = new Map(topology.projects.map((project) => [project.root, project]));
-    const clustersByProject = new Map<string, Set<string>>();
+  if (topology && topology.references.length > 0) {
+    const sizes = new Map<string, Map<string, number>>();
     for (const node of nodes) {
       const project = owningProjectForPath(topology, node.id);
       if (!project) continue;
-      const clusters = clustersByProject.get(project.root) ?? new Set<string>();
-      clusters.add(node.dir);
-      clustersByProject.set(project.root, clusters);
+      const dirs = sizes.get(project.root) ?? new Map<string, number>();
+      dirs.set(node.dir, (dirs.get(node.dir) ?? 0) + 1);
+      sizes.set(project.root, dirs);
     }
-
-    for (const [projectRoot, clusters] of clustersByProject) {
-      const clusterList = [...clusters].sort();
-      if (clusterList.length < 2) continue;
-      const pairWeight = 3 / Math.max(1, clusterList.length - 1);
-      for (let i = 0; i < clusterList.length; i += 1) {
-        for (let j = i + 1; j < clusterList.length; j += 1) {
-          addClusterWeight(weights, clusterList[i]!, clusterList[j]!, pairWeight);
-        }
+    const largest = new Map<string, string>();
+    for (const [root, dirs] of sizes) {
+      let best = "";
+      let bestCount = -1;
+      for (const [dir, count] of dirs) {
+        if (count > bestCount || (count === bestCount && dir < best)) { best = dir; bestCount = count; }
       }
-      /* Explicit project references should pull sibling project clusters into
-         the same neighborhood more strongly than sparse file-import density.
-         Normalize by cluster fan-out so a big multi-cluster project does not
-         overwhelm the whole world. */
-      for (const targetRoot of projectRefs.get(projectRoot) ?? []) {
-        const targetClusters = clustersByProject.get(targetRoot);
-        if (!targetClusters || targetClusters.size === 0) continue;
-        const sourceProject = projectByRoot.get(projectRoot) ?? null;
-        const targetProject = projectByRoot.get(targetRoot) ?? null;
-        const baseWeight = shareContainer(sourceProject, targetProject) ? 20 : 14;
-        const pairScale = Math.sqrt(Math.max(1, clusterList.length * targetClusters.size));
-        for (const fromDir of clusterList) {
-          for (const toDir of targetClusters) addClusterWeight(weights, fromDir, toDir, baseWeight / pairScale);
-        }
-      }
+      largest.set(root, best);
     }
-
-    const groups = new Map<string, string[]>();
-    for (const project of topology.projects) {
-      if (!project.containerRoot) continue;
-      const rootList = groups.get(project.containerRoot) ?? [];
-      if (clustersByProject.has(project.root)) rootList.push(project.root);
-      groups.set(project.containerRoot, rootList);
-    }
-    for (const projectRoots of groups.values()) {
-      const uniqueRoots = [...new Set(projectRoots)].sort();
-      for (let i = 0; i < uniqueRoots.length; i += 1) {
-        const aRoot = uniqueRoots[i]!;
-        const aClusters = [...(clustersByProject.get(aRoot) ?? [])];
-        if (aClusters.length === 0) continue;
-        for (let j = i + 1; j < uniqueRoots.length; j += 1) {
-          const bRoot = uniqueRoots[j]!;
-          const bClusters = [...(clustersByProject.get(bRoot) ?? [])];
-          if (bClusters.length === 0) continue;
-          const direct = projectRefs.get(aRoot)?.has(bRoot) || projectRefs.get(bRoot)?.has(aRoot);
-          if (direct) continue;
-          const pairScale = Math.sqrt(Math.max(1, aClusters.length * bClusters.length));
-          for (const fromDir of aClusters) {
-            for (const toDir of bClusters) addClusterWeight(weights, fromDir, toDir, 4 / pairScale);
-          }
-        }
-      }
+    for (const [from, targets] of buildProjectReferenceMap(topology)) {
+      for (const to of targets) add(largest.get(from), largest.get(to), 8);
     }
   }
-  return [...weights.entries()].map(([key, weight]): ClusterLink => {
-    const parts = key.split("\u0000");
-    const source = parts[0] ?? "";
-    const target = parts[1] ?? "";
-    return { source, target, weight };
-  });
-}
-
-function refinedClusterCentroids(
-  nodes: readonly Pick<GraphNode, "id" | "dir">[],
-  base: ReadonlyMap<string, { x: number; y: number }>,
-  edges: readonly Pick<GraphEdge, "from" | "to" | "kind">[],
-  topology?: ProjectTopology | null,
-): Map<string, { x: number; y: number }> {
-  const links = clusterGraphLinks(nodes, edges, topology);
-  if (base.size <= 1 || links.length === 0) return new Map(base);
-
-  const counts = new Map<string, number>();
-  for (const node of nodes) counts.set(node.dir, (counts.get(node.dir) ?? 0) + 1);
-  const totalNodes = nodes.length;
-  const worldRadius = DEFAULT_CLUSTER_SPACING * Math.sqrt(Math.max(1, totalNodes)) + DEFAULT_WORLD_PADDING;
-  const simNodes: ClusterSimNode[] = [...base.entries()].map(([dir, pos]) => ({
-    id: dir,
-    count: counts.get(dir) ?? 1,
-    x: pos.x,
-    y: pos.y,
-    anchorX: pos.x,
-    anchorY: pos.y,
-  }));
-  const simulation: Simulation<ClusterSimNode, ClusterLink> = forceSimulation(simNodes)
-    .randomSource(seededRandom(1))
-    .force(
-      "link",
-      forceLink<ClusterSimNode, ClusterLink>(links)
-        .id((node) => node.id)
-        .strength((link) => Math.min(0.42, 0.08 + Math.log1p(link.weight) * 0.08))
-        .distance((link) => {
-          const source = typeof link.source === "object" ? link.source : simNodes.find((node) => node.id === link.source);
-          const target = typeof link.target === "object" ? link.target : simNodes.find((node) => node.id === link.target);
-          const combined = (source?.count ?? 1) + (target?.count ?? 1);
-          return Math.max(80, 170 + Math.sqrt(combined) * 2 - Math.log1p(link.weight) * 32);
-        }),
-    )
-    .force("charge", forceManyBody<ClusterSimNode>().strength((node) => -120 - Math.sqrt(node.count) * 14).distanceMax(Math.max(450, worldRadius * 0.55)))
-    .force("anchorX", forceX<ClusterSimNode>((node) => node.anchorX).strength(0.06))
-    .force("anchorY", forceY<ClusterSimNode>((node) => node.anchorY).strength(0.06))
-    .force("collide", forceCollide<ClusterSimNode>((node) => 18 + Math.min(48, Math.sqrt(node.count) * 3.5)).iterations(1))
-    .stop();
-
-  let ticks = 90;
-  if (simNodes.length > 80) ticks = 60;
-  if (simNodes.length > 180) ticks = 40;
-  for (let i = 0; i < ticks; i += 1) simulation.tick();
-
-  const out = new Map<string, { x: number; y: number }>();
-  for (const node of simNodes) out.set(node.id, { x: node.x ?? node.anchorX, y: node.y ?? node.anchorY });
   return out;
 }
 
+/** Each folder's territory: whichever codebase most of its files belong to. */
+function clusterTerritories(
+  nodes: readonly Pick<GraphNode, "id" | "dir">[],
+  neighborhoods: ReadonlyMap<string, string>,
+): Map<string, string> {
+  const votes = new Map<string, Map<string, number>>();
+  for (const node of nodes) {
+    const nb = neighborhoods.get(node.id) ?? ".";
+    const dirVotes = votes.get(node.dir) ?? new Map<string, number>();
+    dirVotes.set(nb, (dirVotes.get(nb) ?? 0) + 1);
+    votes.set(node.dir, dirVotes);
+  }
+  const out = new Map<string, string>();
+  for (const [dir, dirVotes] of votes) out.set(dir, majorityVote(dirVotes, "."));
+  return out;
+}
+
+function clusterCounts(nodes: readonly Pick<GraphNode, "dir">[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const node of nodes) counts.set(node.dir, (counts.get(node.dir) ?? 0) + 1);
+  return counts;
+}
+
+/** Folder centres for the flat (single-territory) map, laid out directory-first:
+    every folder subtree is one disc nested inside its parent's, siblings never
+    overlap, and import/project coupling only orders and orients siblings. */
 export function clusterCentroids(
   nodes: readonly Pick<GraphNode, "id" | "dir">[],
   spacingPerNode = DEFAULT_CLUSTER_SPACING,
   edges: readonly Pick<GraphEdge, "from" | "to" | "kind">[] = [],
   topology?: ProjectTopology | null,
 ): Map<string, { x: number; y: number }> {
-  const base = baseClusterCentroids(nodes, spacingPerNode);
-  return refinedClusterCentroids(nodes, base, edges, topology);
+  const counts = clusterCounts(nodes);
+  return packDirectoryTree(
+    [...counts].map(([dir, count]) => ({ dir, count, radius: estimateClusterRadius(count, spacingPerNode) })),
+    { gap: (depth) => folderTreeGap(depth, false), couplings: clusterCouplings(nodes, edges, topology) },
+  ).centers;
 }
 
-/** Extra separation between neighborhood centers vs. clusters within one, so
-    codebases read as distinct regions rather than adjacent folders. */
-const NEIGHBORHOOD_SPREAD = 2.4;
-
-interface NbSimNode extends SimulationNodeDatum {
-  id: string;
-  count: number;
-  anchorX: number;
-  anchorY: number;
-}
-
-interface NbLink extends SimulationLinkDatum<NbSimNode> {
-  weight: number;
-}
-
-/** Aggregate every cross-neighborhood import edge into a weighted graph over
-    neighborhoods — the coupling that force placement uses to pull related
-    codebases nearer each other. Intra-neighborhood edges are irrelevant here
-    (they shape the layout *inside* a territory, not where territories sit). */
-function neighborhoodLinks(
-  nodes: readonly Pick<GraphNode, "id">[],
-  edges: readonly Pick<GraphEdge, "from" | "to" | "kind">[],
-  neighborhoods: ReadonlyMap<string, string>,
-): NbLink[] {
-  const nbById = new Map(nodes.map((node) => [node.id, neighborhoods.get(node.id) ?? "."]));
-  const weights = new Map<string, number>();
-  for (const edge of edges) {
-    if (edge.kind !== "import") continue;
-    const a = nbById.get(edge.from);
-    const b = nbById.get(edge.to);
-    if (!a || !b || a === b) continue;
-    const key = a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`;
-    weights.set(key, (weights.get(key) ?? 0) + 1);
-  }
-  return [...weights.entries()].map(([key, weight]): NbLink => {
-    const parts = key.split("\u0000");
-    return { source: parts[0] ?? "", target: parts[1] ?? "", weight };
-  });
-}
-
-/** Level one of the hierarchy: place neighborhood centers. A golden-angle
-    spiral by member count seeds the positions deterministically, then — when
-    cross-neighborhood edges exist — a seeded force pass lets that coupling pull
-    related territories together, while a member-count collision radius keeps
-    every territory a distinct region (heavily-coupled ≠ collapsed). With no
-    cross edges it stays the pure spiral. Deterministic for a given input. */
-export function neighborhoodCenters(
-  nodes: readonly Pick<GraphNode, "id">[],
-  edges: readonly Pick<GraphEdge, "from" | "to" | "kind">[],
-  neighborhoods: ReadonlyMap<string, string>,
-  spacingPerNode = DEFAULT_CLUSTER_SPACING,
-): Map<string, { x: number; y: number }> {
-  const counts = new Map<string, number>();
-  for (const node of nodes) {
-    const nb = neighborhoods.get(node.id) ?? ".";
-    counts.set(nb, (counts.get(nb) ?? 0) + 1);
-  }
-  const entries = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  const seed = new Map<string, { x: number; y: number }>();
-  let cumulative = 0;
-  entries.forEach(([nb, count], i) => {
-    const radius = i === 0 ? 0 : spacingPerNode * NEIGHBORHOOD_SPREAD * Math.sqrt(cumulative + count / 2);
-    const angle = i * GOLDEN_ANGLE;
-    seed.set(nb, { x: radius * Math.cos(angle), y: radius * Math.sin(angle) });
-    cumulative += count;
-  });
-
-  const links = neighborhoodLinks(nodes, edges, neighborhoods);
-  if (entries.length <= 1 || links.length === 0) return new Map(seed);
-
-  const simNodes: NbSimNode[] = entries.map(([nb, count]) => {
-    const pos = seed.get(nb)!;
-    return { id: nb, count, x: pos.x, y: pos.y, anchorX: pos.x, anchorY: pos.y };
-  });
-  const worldRadius = spacingPerNode * NEIGHBORHOOD_SPREAD * Math.sqrt(Math.max(1, nodes.length)) + DEFAULT_WORLD_PADDING;
-  const base = spacingPerNode * NEIGHBORHOOD_SPREAD;
-  /* Collision radius scales with a territory's size so a big codebase claims
-     proportional room and no two centers can be pulled closer than the sum of
-     their radii — the guarantee that keeps territories legibly separate even
-     when they're heavily coupled. */
-  const collisionRadius = (node: NbSimNode): number => base * Math.sqrt(Math.max(1, node.count)) * 0.45;
-  const simNodeById = new Map(simNodes.map((node) => [node.id, node]));
-  const resolve = (end: NbSimNode | string | number): NbSimNode | undefined =>
-    typeof end === "object" ? end : simNodeById.get(String(end));
-  const simulation: Simulation<NbSimNode, NbLink> = forceSimulation(simNodes)
-    .randomSource(seededRandom(1))
-    .force(
-      "link",
-      forceLink<NbSimNode, NbLink>(links)
-        .id((node) => node.id)
-        .strength((link) => Math.min(0.5, 0.12 + Math.log1p(link.weight) * 0.1))
-        /* Pull coupled territories toward *touching* (the collision sum), more
-           tightly the heavier the coupling — always ≥ the collision sum, so this
-           never fights separation, and < the seed spacing, so coupling visibly
-           draws them together. */
-        .distance((link) => {
-          const source = resolve(link.source);
-          const target = resolve(link.target);
-          const collisionSum = (source ? collisionRadius(source) : base) + (target ? collisionRadius(target) : base);
-          return collisionSum + base / (1 + link.weight);
-        }),
-    )
-    .force("charge", forceManyBody<NbSimNode>().strength((node) => -base * 3 - Math.sqrt(node.count) * spacingPerNode).distanceMax(Math.max(600, worldRadius * 0.7)))
-    .force("anchorX", forceX<NbSimNode>((node) => node.anchorX).strength(0.04))
-    .force("anchorY", forceY<NbSimNode>((node) => node.anchorY).strength(0.04))
-    .force("collide", forceCollide<NbSimNode>(collisionRadius).iterations(2))
-    .stop();
-
-  let ticks = 120;
-  if (simNodes.length > 60) ticks = 80;
-  if (simNodes.length > 150) ticks = 50;
-  for (let i = 0; i < ticks; i += 1) simulation.tick();
-
-  const out = new Map<string, { x: number; y: number }>();
-  for (const node of simNodes) out.set(node.id, { x: node.x ?? node.anchorX, y: node.y ?? node.anchorY });
-  return out;
-}
-
-/** Level two of the hierarchy: which subdivision each cluster belongs to. When
-    topology is known, a subdivision is the owning project (a real sub-project),
-    so a project's folders sit together within its territory; otherwise the
-    cluster is its own subdivision, collapsing back to the flat two-level layout. */
-function clusterSubdivisions(
-  nodes: readonly Pick<GraphNode, "id" | "dir">[],
-  topology: ProjectTopology | null | undefined,
-): Map<string, string> {
-  const votes = new Map<string, Map<string, number>>();
-  for (const node of nodes) {
-    const project = topology ? owningProjectForPath(topology, node.id) : null;
-    const subdivision = project?.root ?? node.dir;
-    const dirVotes = votes.get(node.dir) ?? new Map<string, number>();
-    dirVotes.set(subdivision, (dirVotes.get(subdivision) ?? 0) + 1);
-    votes.set(node.dir, dirVotes);
-  }
-  const out = new Map<string, string>();
-  for (const [dir, dirVotes] of votes) {
-    let best = dir;
-    let bestCount = -1;
-    for (const [subdivision, count] of dirVotes) {
-      if (count > bestCount || (count === bestCount && subdivision < best)) { best = subdivision; bestCount = count; }
-    }
-    out.set(dir, best);
-  }
-  return out;
-}
-
-/** Territorial cluster centroids, laid out as a three-level hierarchy:
-    neighborhoods (codebases) placed by force over aggregated cross-neighborhood
-    edges, subdivisions (topology sub-projects) placed within each neighborhood,
-    and clusters (folders) placed within each subdivision. Cross-codebase edges
-    influence where territories sit but never collapse them; layout inside a
-    territory stays local. Deterministic for a given input. */
+/** Folder centres for a multi-codebase map: codebases are the top level of the
+    tree, each with its own folder tree inside, so a codebase is one separated
+    region and its folders stay nested by path within it. Cross-codebase
+    coupling turns territories toward each other but never merges them. */
 export function territorialClusterCentroids(
   nodes: readonly Pick<GraphNode, "id" | "dir">[],
   neighborhoods: ReadonlyMap<string, string>,
@@ -447,66 +209,61 @@ export function territorialClusterCentroids(
   edges: readonly Pick<GraphEdge, "from" | "to" | "kind">[] = [],
   topology: ProjectTopology | null = null,
 ): Map<string, { x: number; y: number }> {
-  const clusterVotes = new Map<string, Map<string, number>>();
-  const clusterCounts = new Map<string, number>();
+  const counts = clusterCounts(nodes);
+  const territories = clusterTerritories(nodes, neighborhoods);
+  return packDirectoryTree(
+    [...counts].map(([dir, count]) => ({
+      dir, count, radius: estimateClusterRadius(count, spacingPerNode), territory: territories.get(dir) ?? ".",
+    })),
+    { gap: (depth) => folderTreeGap(depth, true), couplings: clusterCouplings(nodes, edges, topology) },
+  ).centers;
+}
+
+/** Final placement for the force path: measure each folder as its files were
+    actually arranged, then pack those discs as the folder tree and move every
+    folder whole to its slot. The force pass decides how a folder looks inside;
+    this decides where it sits — always inside its parent folder, never
+    overlapping a sibling. */
+function repackFolderTree(
+  nodes: SimNode[],
+  territories: ReadonlyMap<string, string> | null,
+  couplings: ReadonlyMap<string, number>,
+  gap: (depth: number) => number,
+): void {
+  const groups = new Map<string, SimNode[]>();
   for (const node of nodes) {
-    const nb = neighborhoods.get(node.id) ?? ".";
-    clusterCounts.set(node.dir, (clusterCounts.get(node.dir) ?? 0) + 1);
-    const votes = clusterVotes.get(node.dir) ?? new Map<string, number>();
-    votes.set(nb, (votes.get(nb) ?? 0) + 1);
-    clusterVotes.set(node.dir, votes);
+    const members = groups.get(node.dir) ?? [];
+    members.push(node);
+    groups.set(node.dir, members);
   }
-  /* Each cluster belongs to whichever neighborhood most of its members are in. */
-  const clusterNeighborhood = new Map<string, string>();
-  for (const [dir, votes] of clusterVotes) {
-    let best = ".";
-    let bestCount = -1;
-    for (const [nb, count] of votes) {
-      if (count > bestCount || (count === bestCount && nb < best)) { best = nb; bestCount = count; }
+  const folders = [...groups].map(([dir, members]) => {
+    const x = members.reduce((sum, node) => sum + node.x!, 0) / members.length;
+    const y = members.reduce((sum, node) => sum + node.y!, 0) / members.length;
+    /* Same outline allowance the renderer's folder hull needs. */
+    const pad = 36 + Math.sqrt(members.length) * 4;
+    const radius = members.reduce((bound, node) => Math.max(bound,
+      Math.hypot(node.x! - x, node.y! - y) + Math.max(layoutNodeCollisionRadius(node.degree), pad)), 0);
+    return { dir, members, x, y, radius };
+  });
+  const pack = packDirectoryTree(
+    folders.map((folder) => ({
+      dir: folder.dir,
+      count: folder.members.length,
+      radius: folder.radius,
+      ...(territories ? { territory: territories.get(folder.dir) ?? "." } : {}),
+    })),
+    { gap, couplings },
+  );
+  for (const folder of folders) {
+    const center = pack.centers.get(folder.dir);
+    if (!center) continue;
+    const dx = center.x - folder.x;
+    const dy = center.y - folder.y;
+    for (const node of folder.members) {
+      node.x! += dx;
+      node.y! += dy;
     }
-    clusterNeighborhood.set(dir, best);
   }
-
-  const nbCenter = neighborhoodCenters(nodes, edges, neighborhoods, spacingPerNode);
-  const subdivisionOf = clusterSubdivisions(nodes, topology);
-
-  /* Group clusters as neighborhood → subdivision → [cluster dirs]. */
-  const byNeighborhood = new Map<string, Map<string, string[]>>();
-  for (const [dir, nb] of clusterNeighborhood) {
-    const subdivision = subdivisionOf.get(dir) ?? dir;
-    const subdivisions = byNeighborhood.get(nb) ?? new Map<string, string[]>();
-    const list = subdivisions.get(subdivision) ?? [];
-    list.push(dir);
-    subdivisions.set(subdivision, list);
-    byNeighborhood.set(nb, subdivisions);
-  }
-
-  const out = new Map<string, { x: number; y: number }>();
-  for (const [nb, subdivisions] of byNeighborhood) {
-    const center = nbCenter.get(nb) ?? { x: 0, y: 0 };
-    /* Subdivisions on a spiral around the neighborhood center, biggest first. */
-    const subList = [...subdivisions.entries()]
-      .map(([subdivision, dirs]) => ({ subdivision, dirs, count: dirs.reduce((sum, dir) => sum + (clusterCounts.get(dir) ?? 1), 0) }))
-      .sort((a, b) => b.count - a.count || a.subdivision.localeCompare(b.subdivision));
-    let subCumulative = 0;
-    subList.forEach((entry, i) => {
-      const radius = i === 0 ? 0 : spacingPerNode * Math.sqrt(subCumulative + entry.count / 2);
-      const angle = i * GOLDEN_ANGLE;
-      const subCenter = { x: center.x + radius * Math.cos(angle), y: center.y + radius * Math.sin(angle) };
-      subCumulative += entry.count;
-      /* Clusters on a tighter spiral around their subdivision center. */
-      const dirs = entry.dirs.sort((a, b) => (clusterCounts.get(b) ?? 0) - (clusterCounts.get(a) ?? 0) || a.localeCompare(b));
-      let clusterCumulative = 0;
-      dirs.forEach((dir, j) => {
-        const count = clusterCounts.get(dir) ?? 1;
-        const r = j === 0 ? 0 : spacingPerNode * 0.7 * Math.sqrt(clusterCumulative + count / 2);
-        const a = j * GOLDEN_ANGLE;
-        out.set(dir, { x: subCenter.x + r * Math.cos(a), y: subCenter.y + r * Math.sin(a) });
-        clusterCumulative += count;
-      });
-    });
-  }
-  return out;
 }
 
 /** Jitter radius for seeding a cluster's members around its centroid: tight
@@ -676,16 +433,7 @@ interface LargeCluster {
   nodes: GraphNode[];
   neighborhoodVotes: Map<string, number>;
   neighborhood: string;
-  connectivity: number;
   nodePlacements: Map<string, { x: number; y: number }>;
-  radius: number;
-}
-
-interface LargeNeighborhood {
-  id: string;
-  clusters: LargeCluster[];
-  connectivity: number;
-  clusterPlacements: Map<string, { x: number; y: number }>;
   radius: number;
 }
 
@@ -701,15 +449,13 @@ function majorityVote(votes: ReadonlyMap<string, number>, fallback: string): str
   return best;
 }
 
-/** Linear-time hierarchical path for very large maps. Files are packed inside
-    folder clusters; clusters are packed inside codebase neighborhoods; the
-    neighborhoods are packed into the world. Every level uses the same guarded
-    phyllotaxis primitive, so no lower-level disc can overlap a peer disc. Import
-    edges are scanned once to rank architectural hubs toward each pack's center.
-    No force tick, comparison sort, or all-pairs collision pass occurs here. */
+/** Near-linear hierarchical path for very large maps. Files are packed inside
+    their folder cluster (guarded phyllotaxis, hubs at the centre); the folder
+    discs are then packed as the directory tree, codebases on top when the map
+    is territorial (see directory-pack.ts). No level can overlap a peer disc,
+    and no force tick or all-pairs collision pass occurs here. */
 function createLargeGraphLayout(nodes: readonly GraphNode[], edges: readonly GraphEdge[], opts: LayoutOptions): LayoutHandle {
   const clusterByDir = new Map<string, LargeCluster>();
-  const dirByNodeId = new Map<string, string>();
   for (const node of nodes) {
     let cluster = clusterByDir.get(node.dir);
     if (!cluster) {
@@ -718,29 +464,14 @@ function createLargeGraphLayout(nodes: readonly GraphNode[], edges: readonly Gra
         nodes: [],
         neighborhoodVotes: new Map<string, number>(),
         neighborhood: ".",
-        connectivity: 0,
         nodePlacements: new Map<string, { x: number; y: number }>(),
         radius: 0,
       };
       clusterByDir.set(node.dir, cluster);
     }
     cluster.nodes.push(node);
-    dirByNodeId.set(node.id, node.dir);
     const neighborhood = opts.neighborhoods?.get(node.id) ?? ".";
     cluster.neighborhoodVotes.set(neighborhood, (cluster.neighborhoodVotes.get(neighborhood) ?? 0) + 1);
-  }
-
-  /* One edge pass supplies cluster/neighborhood architectural importance. The
-     actual file placement is intentionally not spring-driven at this scale. */
-  for (const edge of edges) {
-    if (edge.kind !== "import") continue;
-    const fromDir = dirByNodeId.get(edge.from);
-    const toDir = dirByNodeId.get(edge.to);
-    if (!fromDir || !toDir || fromDir === toDir) continue;
-    const from = clusterByDir.get(fromDir);
-    const to = clusterByDir.get(toDir);
-    if (from) from.connectivity += 1;
-    if (to) to.connectivity += 1;
   }
 
   const clusters = [...clusterByDir.values()];
@@ -761,66 +492,30 @@ function createLargeGraphLayout(nodes: readonly GraphNode[], edges: readonly Gra
     }
   }
 
+  /* Folders are placed as their directory tree (codebases on top when the map
+     is territorial): a folder's subtree is one disc inside its parent's, so
+     sibling services never interleave. Coupling orders and turns siblings. */
   const territorial = Boolean(opts.neighborhoods)
     && new Set(clusters.map((cluster) => cluster.neighborhood)).size >= 2;
-  const neighborhoodById = new Map<string, LargeNeighborhood>();
-  for (const cluster of clusters) {
-    const id = territorial ? cluster.neighborhood : "__all__";
-    let neighborhood = neighborhoodById.get(id);
-    if (!neighborhood) {
-      neighborhood = {
-        id,
-        clusters: [],
-        connectivity: 0,
-        clusterPlacements: new Map<string, { x: number; y: number }>(),
-        radius: 0,
-      };
-      neighborhoodById.set(id, neighborhood);
-    }
-    neighborhood.clusters.push(cluster);
-    neighborhood.connectivity += cluster.connectivity;
-  }
-
-  const neighborhoods = [...neighborhoodById.values()];
-  for (const neighborhood of neighborhoods) {
-    const packed = packPhyllotaxis(
-      neighborhood.clusters.map((cluster): PackItem<LargeCluster> => ({
-        value: cluster,
-        radius: cluster.radius,
-        score: cluster.connectivity * 4 + cluster.nodes.length,
-      })),
-      LARGE_CLUSTER_GAP,
-      stablePhase(opts.seed, `clusters:${neighborhood.id}`),
-    );
-    neighborhood.radius = packed.radius;
-    for (const placement of packed.placements) {
-      neighborhood.clusterPlacements.set(placement.value.dir, { x: placement.x, y: placement.y });
-    }
-  }
-
-  const worldPack = packPhyllotaxis(
-    neighborhoods.map((neighborhood): PackItem<LargeNeighborhood> => ({
-      value: neighborhood,
-      radius: neighborhood.radius,
-      score: neighborhood.connectivity * 4 + neighborhood.clusters.reduce((sum, cluster) => sum + cluster.nodes.length, 0),
+  const pack = packDirectoryTree(
+    clusters.map((cluster) => ({
+      dir: cluster.dir,
+      count: cluster.nodes.length,
+      radius: cluster.radius,
+      ...(territorial ? { territory: cluster.neighborhood } : {}),
     })),
-    LARGE_NEIGHBORHOOD_GAP,
-    stablePhase(opts.seed, "neighborhoods"),
+    {
+      gap: (depth) => folderTreeGap(depth, territorial, LARGE_CLUSTER_GAP, LARGE_NEIGHBORHOOD_GAP),
+      couplings: clusterCouplings(nodes, edges, opts.topology),
+    },
   );
-  const neighborhoodPositions = new Map(worldPack.placements.map((placement) => [placement.value.id, { x: placement.x, y: placement.y }]));
 
   const positions = new Map<string, { x: number; y: number }>();
-  for (const neighborhood of neighborhoods) {
-    const neighborhoodPosition = neighborhoodPositions.get(neighborhood.id) ?? { x: 0, y: 0 };
-    for (const cluster of neighborhood.clusters) {
-      const clusterPosition = neighborhood.clusterPlacements.get(cluster.dir) ?? { x: 0, y: 0 };
-      for (const node of cluster.nodes) {
-        const local = cluster.nodePlacements.get(node.id) ?? { x: 0, y: 0 };
-        positions.set(node.id, {
-          x: neighborhoodPosition.x + clusterPosition.x + local.x,
-          y: neighborhoodPosition.y + clusterPosition.y + local.y,
-        });
-      }
+  for (const cluster of clusters) {
+    const center = pack.centers.get(cluster.dir) ?? { x: 0, y: 0 };
+    for (const node of cluster.nodes) {
+      const local = cluster.nodePlacements.get(node.id) ?? { x: 0, y: 0 };
+      positions.set(node.id, { x: center.x + local.x, y: center.y + local.y });
     }
   }
 
@@ -848,18 +543,25 @@ export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphE
   if (nodes.length >= LARGE_GRAPH_LAYOUT_THRESHOLD) return createLargeGraphLayout(nodes, edges, opts);
   const random = seededRandom(opts.seed);
   /* Territorial layout kicks in only with ≥2 distinct codebases to separate;
-     otherwise the flat, force-refined layout is used unchanged. */
+     otherwise codebases are just the top of the folder tree. */
   const neighborhoods = opts.neighborhoods;
   const territorial = Boolean(neighborhoods) && new Set(neighborhoods!.values()).size >= 2;
-  const centroids = territorial
-    ? territorialClusterCentroids(nodes, neighborhoods!, DEFAULT_CLUSTER_SPACING, edges, opts.topology ?? null)
-    : clusterCentroids(nodes, DEFAULT_CLUSTER_SPACING, edges, opts.topology);
-  const clusterSizes = new Map<string, number>();
-  for (const node of nodes) clusterSizes.set(node.dir, (clusterSizes.get(node.dir) ?? 0) + 1);
-  /* World radius under area-proportional packing is ~spacingPerNode*sqrt(N);
-     used to bound the long-range charge so force cost stays sane. The
-     territorial layout spreads neighborhoods wider, so the bound scales with it. */
-  const worldRadius = DEFAULT_CLUSTER_SPACING * (territorial ? NEIGHBORHOOD_SPREAD : 1) * Math.sqrt(Math.max(1, nodes.length)) + DEFAULT_WORLD_PADDING;
+  const territories = territorial ? clusterTerritories(nodes, neighborhoods!) : null;
+  const couplings = clusterCouplings(nodes, edges, opts.topology);
+  const gap = (depth: number): number => folderTreeGap(depth, territorial);
+  const clusterSizes = clusterCounts(nodes);
+  const centroids = packDirectoryTree(
+    [...clusterSizes].map(([dir, count]) => ({
+      dir, count, radius: estimateClusterRadius(count),
+      ...(territories ? { territory: territories.get(dir) ?? "." } : {}),
+    })),
+    { gap, couplings },
+  ).centers;
+  /* Folders are re-placed as whole discs once the force pass ends, so repulsion
+     only has to shape a folder's interior: bound it to about a folder's reach. */
+  let largestFolder = 1;
+  for (const size of clusterSizes.values()) largestFolder = Math.max(largestFolder, size);
+  const chargeReach = Math.max(300, clusterJitterRadius(largestFolder) * 2.5);
 
   const simNodes: SimNode[] = nodes.map((node) => {
     const prev = opts.prevPositions?.get(node.id);
@@ -923,7 +625,7 @@ export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphE
       forceManyBody<SimNode>()
         .strength((node) => -48 - Math.min(72, Math.sqrt(Math.max(0, node.degree)) * 6))
         .theta(0.9)
-        .distanceMax(Math.max(450, worldRadius * 0.55)),
+        .distanceMax(chargeReach),
     )
     .force("clusterX", clusterX)
     .force("clusterY", clusterY)
@@ -939,7 +641,11 @@ export function createLayout(nodes: readonly GraphNode[], edges: readonly GraphE
       for (let i = 0; i < steps; i += 1) simulation.tick();
       remaining -= steps;
       if (remaining === 0 && !separated) {
-        separateFolderBounds(simNodes, opts.seed);
+        /* Pins are an explicit caller contract (incremental re-index keeps
+           survivors where the user last saw them), so a pinned map only
+           resolves overlaps; otherwise folders take their place in the tree. */
+        if (simNodes.some((node) => node.fx != null || node.fy != null)) separateFolderBounds(simNodes, opts.seed);
+        else repackFolderTree(simNodes, territories, couplings, gap);
         separated = true;
       }
       return remaining > 0;

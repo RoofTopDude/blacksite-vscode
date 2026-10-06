@@ -1,7 +1,7 @@
 import os from "os";
 import fs from "fs";
 import path from "path";
-import { handleShell, ProcessManager, buildEnv } from "./shell.js";
+import { handleShell, ProcessManager, buildEnv, type OutputListener } from "./shell.js";
 import {
   listDirectory, readFile, writeFile, deletePath, createDirectory, glob, searchFiles, copyPath,
   type ReadAccess, type SearchOutputMode,
@@ -138,6 +138,8 @@ export class LocalRuntime {
   async handleMessage(
     message: { type: string; payload?: Record<string, unknown> },
     signal?: AbortSignal,
+    /** Live output of a command while it runs (system.shell); other message types ignore it. */
+    hooks?: { onOutput?: OutputListener },
   ): Promise<JsonRpcResponse> {
     const payload = message.payload ?? {};
 
@@ -153,6 +155,7 @@ export class LocalRuntime {
             this.policy,
             signal,
             { readableRoots: roots.readable, executableDirs: roots.executableDirs },
+            hooks?.onOutput,
           );
           break;
         }

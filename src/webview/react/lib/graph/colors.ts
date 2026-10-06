@@ -164,7 +164,10 @@ const MUDDY_HUE_GAP_WIDTH = 20;
     makeGlowTexture's own comment for why overall brightness here is handled
     carefully (a previous, wider glow halo blew out into a white glare once
     already). */
-export function folderColor(dir: string): number {
+export function folderColor(rawDir: string): number {
+  /* The chunks of an oversized folder (`dir#0`, `dir#1`, …) are one folder and
+     share its colour; hashing the chunk key painted each a different hue. */
+  const dir = rawDir.replace(/#\d+$/, "");
   const codebase = codebaseForDir(dir);
   if (codebase === null) return hslToRgb(hueFor(dir), 0.62, 0.63);
   /* Hierarchical color: every folder of a codebase shares its hue family, and

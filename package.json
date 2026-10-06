@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.31.0-pre.3",
+  "version": "1.31.0-pre.4",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -1258,6 +1258,7 @@
     "@jsquash/webp": "^1.5.0",
     "class-variance-authority": "^0.7.1",
     "d3-force": "^3.0.0",
+    "d3-hierarchy": "^3.1.2",
     "dompurify": "^3.4.11",
     "esbuild": "^0.25.0",
     "esbuild-wasm": "^0.25.12",
@@ -1290,6 +1291,7 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
     "@types/d3-force": "^3.0.10",
+    "@types/d3-hierarchy": "^3.1.7",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^20.0.0",
     "@types/react": "^19.2.17",

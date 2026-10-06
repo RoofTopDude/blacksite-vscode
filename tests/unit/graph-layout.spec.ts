@@ -226,24 +226,23 @@ describe("clusterCentroids / placeNearCluster", () => {
     const big = centroids.get("big")!;
     const small = centroids.get("small")!;
     expect(Math.hypot(big.x, big.y)).toBeLessThan(Math.hypot(small.x, small.y));
-    expect(Math.hypot(big.x, big.y)).toBe(0);
   });
 
-  it("pulls strongly related clusters closer together than unrelated ones", () => {
-    const nodes = [
-      ...Array.from({ length: 12 }, (_, i) => makeNode(`a/x${i}.ts`, "a")),
-      ...Array.from({ length: 12 }, (_, i) => makeNode(`c/y${i}.ts`, "c")),
-      ...Array.from({ length: 12 }, (_, i) => makeNode(`b/z${i}.ts`, "b")),
-    ];
+  it("packs strongly related sibling clusters side by side", () => {
+    /* Tight packing makes the first few siblings mutually tangent, so the
+       property is adjacency: the coupled pair touches, and on average sits
+       closer than the uncoupled siblings do. */
+    const dirs = ["a", "c", "d", "e", "f", "g", "b"];
+    const nodes = dirs.flatMap((dir) => Array.from({ length: 12 }, (_, i) => makeNode(`${dir}/x${i}.ts`, dir)));
     const edges: GraphEdge[] = [];
     for (let i = 0; i < 10; i += 1) {
-      edges.push({ id: importEdgeId(`a/x${i}.ts`, `b/z${i}.ts`), from: `a/x${i}.ts`, to: `b/z${i}.ts`, kind: "import" });
+      edges.push({ id: importEdgeId(`a/x${i}.ts`, `b/x${i}.ts`), from: `a/x${i}.ts`, to: `b/x${i}.ts`, kind: "import" });
     }
     const centroids = clusterCentroids(nodes, 30, edges);
-    const a = centroids.get("a")!;
-    const b = centroids.get("b")!;
-    const c = centroids.get("c")!;
-    expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeLessThan(Math.hypot(a.x - c.x, a.y - c.y));
+    const d = (p: string, q: string): number => Math.hypot(centroids.get(p)!.x - centroids.get(q)!.x, centroids.get(p)!.y - centroids.get(q)!.y);
+    const others = dirs.filter((dir) => dir !== "a" && dir !== "b");
+    for (const other of others) expect(d("a", "b")).toBeLessThanOrEqual(d("a", other) + 1e-6);
+    expect(d("a", "b")).toBeLessThan(others.reduce((sum, other) => sum + d("a", other), 0) / others.length);
   });
 
   it("pulls referenced sibling projects together even when import density is sparse", () => {

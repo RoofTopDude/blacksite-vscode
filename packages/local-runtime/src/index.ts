@@ -1,5 +1,5 @@
 export { LocalRuntime } from "./runtime.js";
-export { ProcessManager, handleShell } from "./shell.js";
+export { ProcessManager, handleShell, type OutputListener } from "./shell.js";
 export { handleGitOp, parseGitStatus, parseGitLog, parseGitDiff } from "./git.js";
 export { listDirectory, readFile, writeFile, deletePath, createDirectory, glob, searchFiles, copyPath } from "./file-ops.js";
 export type { ReadAccess, ReadConfirmationRequired } from "./file-ops.js";
