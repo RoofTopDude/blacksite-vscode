@@ -3,6 +3,40 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.31.0-pre.3
+
+Prerelease. The stable update channel remains on 1.30.0.
+
+A research session was seen failing in a way that was hard to explain: every request for a source was
+denied in under a millisecond, no approval card ever appeared, and the log said only "denied". The
+evidence points to an older build reading a research setting written by a newer one: it rejected the
+value, failed to load its policy, and silently turned every unknown site into a refusal. The log also
+hid the reason, so the exact value was never seen. This release makes that failure impossible to miss
+and much harder to cause.
+
+### Fixed
+
+- **One value this build does not recognize no longer switches research off.** A search provider or
+  scope written by a newer build, a hostname that is not valid, or an unreadable saved confirmation is
+  now set aside on its own: grants that cannot be read are dropped, an unknown search provider means
+  search off, an unknown scope means approved sites only. Nothing is ever widened. **Browser &
+  Research** shows what was set aside.
+- **If the policy truly cannot be loaded, it says so.** Research still stays off, but the panel, the
+  log and the message to the agent now give the reason, where before it was silent.
+- **A denial no longer blames the sites.** When unknown sites are refused without asking, the agent is
+  told that nothing is wrong with the sites and that retrying other hosts will not help. Before, it was
+  told to "retry without this host" and spent three more attempts doing that. A request for more than
+  ten URLs now says how many it contained.
+- **The execution log keeps the reason a research request failed**, with URL query strings removed.
+  Failure text for browser input tools stays hidden because it can quote what was typed.
+- **An unreachable secret store no longer blanks the Browser & Research panel.**
+
+### Added
+
+- **A reminder that an update needs a reload.** After Blacksite installs an update, a status bar item
+  stays up until the window reloads. An installed update does nothing until then, and a toast is easy to
+  miss; the session above was running the previous build's code.
+
 ## 1.31.0-pre.2
 
 Prerelease. The stable update channel remains on 1.30.0.

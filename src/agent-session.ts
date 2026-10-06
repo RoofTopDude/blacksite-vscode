@@ -5974,7 +5974,7 @@ export class AgentSession {
               toolName: tc.name,
               ok,
               summary,
-              result: browserTool(tc.name) ? redactBrowserPayload(result) : result,
+              result: browserTool(tc.name) ? redactBrowserPayload(result, { keepErrors: tc.name.startsWith("web_") }) : result,
               elapsedMs: Math.max(Date.now() - toolStartedAt, 0),
               ...(diffs.length ? { diffs } : {}),
             };

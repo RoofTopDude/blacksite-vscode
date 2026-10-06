@@ -1,4 +1,13 @@
+export const StatusBarAlignment = { Left: 1, Right: 2 } as const;
+export const ProgressLocation = { Notification: 15, Window: 10, SourceControl: 1 } as const;
+export const createdStatusBarItems: Array<{ text: string; command?: string; shown: boolean; disposed: boolean }> = [];
 export const window = {
+  withProgress: async <T>(_options: unknown, task: (progress: { report: (value: unknown) => void }) => Promise<T>): Promise<T> => task({ report: () => undefined }),
+  createStatusBarItem: (..._args: unknown[]) => {
+    const item = { text: "", tooltip: undefined as unknown, command: undefined as string | undefined, shown: false, disposed: false, show() { this.shown = true; }, hide() { this.shown = false; }, dispose() { this.disposed = true; } };
+    createdStatusBarItems.push(item);
+    return item;
+  },
   showWarningMessage: async (..._args: unknown[]): Promise<string | undefined> => "Deny",
   showInformationMessage: async (..._args: unknown[]): Promise<string | undefined> => undefined,
   tabGroups: { all: [] as Array<{ tabs: unknown[] }>, close: async (): Promise<void> => undefined },

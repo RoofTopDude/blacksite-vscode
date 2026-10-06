@@ -41,6 +41,48 @@ export function normalizePolicy(value: ResearchPolicy): ResearchPolicy {
     || !["any", "approved"].includes(searchScope)) throw new Error("Invalid research policy.");
   return { ...value, searchScope, allowedDomains: [...new Set(value.allowedDomains.map(normalizeDomain))], deniedDomains: [...new Set(value.deniedDomains.map(normalizeDomain))] };
 }
+/**
+ * Read a stored or configured policy without letting one bad value take the whole thing down.
+ *
+ * `normalizePolicy` is for input a person just typed, where an error should be shown. A saved
+ * policy is different: it can hold an entry this build no longer accepts, or a value a newer or
+ * older build wrote (a search provider this one has never heard of). Rejecting the whole policy
+ * for that left research denied with no explanation. Here each problem narrows what is allowed
+ * (an unreadable grant is dropped, an unknown search provider means search off, an unknown scope
+ * means approved sites only) and is reported, so nothing is widened and nothing fails silently.
+ */
+export function readPolicy(value: unknown): { policy: ResearchPolicy; notes: string[] } {
+  const v = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const notes: string[] = [];
+  const domains = (key: string, label: string): string[] => {
+    const raw = v[key];
+    if (raw === undefined) return [];
+    if (!Array.isArray(raw)) { notes.push(`${label} must be a list; it was ignored.`); return []; }
+    const kept: string[] = [];
+    for (const entry of raw) {
+      try { kept.push(normalizeDomain(String(entry))); } catch { notes.push(`${label}: "${String(entry).slice(0, 80)}" is not a usable hostname and was ignored.`); }
+    }
+    return [...new Set(kept)];
+  };
+  const provider = v["searchProvider"] ?? "none";
+  const scope = v["searchScope"] ?? "any";
+  const searchProvider: ResearchPolicy["searchProvider"] = provider === "hosted" || provider === "brave" || provider === "none" ? provider : "none";
+  if (searchProvider !== provider) notes.push(`This version of Blacksite does not know the search provider "${String(provider).slice(0, 40)}", so search is off.`);
+  const searchScope: ResearchPolicy["searchScope"] = scope === "any" || scope === "approved" ? scope : "approved";
+  if (searchScope !== scope) notes.push(`This version of Blacksite does not know the search scope "${String(scope).slice(0, 40)}", so search is limited to approved sites.`);
+  const unknown = v["unknownDomainPolicy"];
+  return {
+    notes,
+    policy: {
+      allowedDomains: domains("allowedDomains", "Allowed domains"),
+      deniedDomains: domains("deniedDomains", "Denied domains"),
+      // Asking is never a widening: a person still decides. Only an explicit "deny" is kept as deny.
+      unknownDomainPolicy: unknown === "deny" ? "deny" : "ask",
+      searchProvider,
+      searchScope,
+    },
+  };
+}
 export function researchUrl(raw: string): URL {
   const url = new URL(raw);
   if (url.protocol !== "https:" || url.port || url.username || url.password) throw new BrowserPolicyError("denied", "Research requires HTTPS on port 443 without embedded credentials. Use an explicitly scoped local browser for local testing.");
@@ -53,6 +95,9 @@ export function redactedUrl(raw: string): string {
 }
 export class DomainPolicy {
   version = 0;
+  /** Set when the policy could not be loaded and research is shut off as a result, so a denial can
+   *  say why instead of blaming the site. */
+  loadError?: string;
   private sessions = new Set<string>();
   private pages = new Set<string>();
   constructor(public settings: ResearchPolicy = { ...EMPTY_POLICY }) { this.replace(settings); }
@@ -63,6 +108,11 @@ export class DomainPolicy {
     if (this.settings.deniedDomains.some(d => matchesDomain(url.hostname, d))) return "deny";
     if (this.pages.has(url.href) || [...this.settings.allowedDomains, ...this.sessions].some(d => matchesDomain(url.hostname, d))) return "allow";
     return this.settings.unknownDomainPolicy;
+  }
+  /** Whether a deny rule names this host, as opposed to the host being unknown while unknown sites are denied. */
+  explicitlyDenied(raw: string): boolean {
+    const url = researchUrl(raw);
+    return this.settings.deniedDomains.some(d => matchesDomain(url.hostname, d));
   }
   /** A session grant is registrable-domain wide: approving one Wikipedia article approves
    *  Wikipedia. A page grant stays exact — it is the deliberate one-shot. */

@@ -479,6 +479,21 @@ export class ExtensionUpdater {
 
   /** The version whose update prompt is on screen now, so a later tick does not stack a second. */
   private promptOpenFor?: string;
+  /** Stays in the status bar from the moment an update installs until the window reloads. The
+   *  installed copy does nothing until then, and a toast is easy to miss: a session was seen
+   *  running the previous build's research policy hours after a newer one had been installed. */
+  private reloadItem?: vscode.StatusBarItem;
+
+  private showReloadNeeded(version: string): void {
+    if (!vscode.window.createStatusBarItem) return;
+    this.reloadItem?.dispose();
+    const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1000);
+    item.text = "$(sync) Reload to finish updating Blacksite";
+    item.tooltip = `Blacksite ${version} is installed, but this window is still running the previous version until it reloads.`;
+    item.command = "workbench.action.reloadWindow";
+    item.show();
+    this.reloadItem = item;
+  }
   private retryTimer?: ReturnType<typeof setTimeout>;
 
   /**
@@ -524,6 +539,7 @@ export class ExtensionUpdater {
     return new vscode.Disposable(() => {
       clearInterval(timer);
       if (this.retryTimer) clearTimeout(this.retryTimer);
+      this.reloadItem?.dispose();
     });
   }
 
@@ -772,6 +788,7 @@ export class ExtensionUpdater {
       );
 
       await this.context.globalState.update(DISMISSED_VERSION_KEY, undefined);
+      this.showReloadNeeded(updateInfo.version);
 
       const action = await vscode.window.showInformationMessage(
         `Blacksite ${updateInfo.version} was installed. Reload Window to activate it.`,

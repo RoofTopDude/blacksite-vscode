@@ -655,3 +655,30 @@ describe("ExtensionUpdater prerelease channel", () => {
     await first;
   });
 });
+
+/**
+ * An installed update does nothing until the window reloads. A session was seen applying the previous
+ * build's research policy hours after a newer build had been installed, so a toast alone is not
+ * enough: the status bar keeps saying so until the window is reloaded.
+ */
+describe("ExtensionUpdater reload reminder", () => {
+  afterEach(() => { vi.restoreAllMocks(); vscodeMock.createdStatusBarItems.length = 0; });
+
+  it("keeps a status bar item up after an install, even when the toast is dismissed", async () => {
+    const warnings: string[] = [];
+    vi.spyOn(vscodeMock.window, "showWarningMessage").mockImplementation(async (message: unknown) => { warnings.push(String(message)); return undefined; });
+    vi.spyOn(vscodeMock.window, "showInformationMessage").mockResolvedValue(undefined);
+    const vsix = Buffer.from(zipSync({ "extension/package.json": strToU8(JSON.stringify({ engines: { vscode: "^1.100.0" } })) }));
+    const digest = createHash("sha256").update(vsix).digest("hex");
+    const fetcher = vi.fn(async () => ({ ok: true, status: 200, statusText: "OK", arrayBuffer: async () => vsix.buffer.slice(vsix.byteOffset, vsix.byteOffset + vsix.byteLength) }));
+    const installFromVsix = vi.fn(async () => undefined);
+    const context = { extensionMode: vscodeMock.ExtensionMode.Production, extension: { packageJSON: { name: "blacksite-vscode", version: "1.0.0" } }, globalState: { get: () => undefined, update: async () => undefined } };
+    const updater = new ExtensionUpdater(context as never, fetcher as never, undefined, installFromVsix, "1.140.0");
+    const asset = { name: "blacksite-vscode-2.0.0.vsix", browser_download_url: "https://github.com/o/r/releases/download/v2.0.0/blacksite-vscode-2.0.0.vsix", digest: `sha256:${digest}` };
+    await (updater as unknown as { installUpdate(u: unknown): Promise<void> }).installUpdate({ version: "2.0.0", asset, releaseUrl: "https://example.com", releaseTitle: "Blacksite 2.0.0" });
+    expect(warnings).toEqual([]);
+    expect(installFromVsix).toHaveBeenCalledOnce();
+    expect(vscodeMock.createdStatusBarItems).toHaveLength(1);
+    expect(vscodeMock.createdStatusBarItems[0]).toMatchObject({ text: expect.stringContaining("Reload"), command: "workbench.action.reloadWindow", shown: true, disposed: false });
+  });
+});

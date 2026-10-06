@@ -114,8 +114,19 @@ export class BrowserApprovalCoordinator {
     if (!urls.length) throw new BrowserPolicyError("denied", "No research URL was supplied to authorize.");
     // Name every denied host at once: a batch that fails one URL at a time teaches the agent
     // nothing about the rest, and it retries into the same wall.
-    const denied = [...new Set(urls.filter(url => this.policy.status(url.href) === "deny").map(url => url.hostname))];
-    if (denied.length) throw new BrowserPolicyError("denied", `Research access denied for ${denied.join(", ")}. Retry without ${denied.length > 1 ? "these hosts" : "this host"}.`);
+    const deniedUrls = urls.filter(url => this.policy.status(url.href) === "deny");
+    if (deniedUrls.length) {
+      const named = [...new Set(deniedUrls.filter(url => this.policy.explicitlyDenied(url.href)).map(url => url.hostname))];
+      // Nothing here is denied by name: unknown sites are denied without asking, either because the
+      // settings say so or because the policy failed to load. Retrying other hosts cannot help, and
+      // saying "retry without this host" sent a model through three more batches doing exactly that.
+      if (!named.length) {
+        throw new BrowserPolicyError("denied", this.policy.loadError
+          ? `Web research is switched off because the research policy could not be loaded (${this.policy.loadError}). Nothing is wrong with these sites; do not retry other hosts. The user can fix it in Browser & Research settings.`
+          : "The user's settings deny every site that has not been approved (blacksite.research.unknownDomainPolicy is \"deny\"), so no request will ask for approval. Nothing is wrong with these sites; do not retry other hosts. The user can change this in Browser & Research settings.");
+      }
+      throw new BrowserPolicyError("denied", `Research access denied for ${named.join(", ")}. Retry without ${named.length > 1 ? "these hosts" : "this host"}.`);
+    }
     const ask = urls.filter(url => this.policy.status(url.href) !== "allow");
     if (!ask.length) return undefined;
     // Named and granted by registrable domain, so the card states the decision the human is

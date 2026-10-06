@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import { createHash } from "node:crypto";
 import { BrowserApprovalCoordinator } from "./approval-coordinator.js";
 import { BrowserPolicyError, type BrowserAnchor, type BrowserAudit, type BrowserDecision, type BrowserDelegation, type BrowserProposal, type HostedSearchPolicy, type ResearchUiState, type SearchProvider, type SearchScope } from "./approval-types.js";
-import { DomainPolicy, EMPTY_POLICY, normalizeDomain, normalizePolicy, redactedUrl, type ResearchPolicy } from "./domain-policy.js";
+import { DomainPolicy, EMPTY_POLICY, normalizeDomain, normalizePolicy, readPolicy, redactedUrl, type ResearchPolicy } from "./domain-policy.js";
 import { ResearchService, type ResearchContext } from "./research-service.js";
 import type { ContinuationModel } from "../continuation/continuation-model.js";
 
@@ -82,25 +82,45 @@ export class ResearchHost {
       }
     });
   }
-  private configured(): ResearchPolicy {
+  /** What was wrong with the settings or the saved confirmation the last time they were read. */
+  private loadNotes: string[] = [];
+  private readConfigured(): { policy: ResearchPolicy; notes: string[] } {
     const c = vscode.workspace.getConfiguration("blacksite");
-    return normalizePolicy({ allowedDomains: c.get<string[]>("research.allowedDomains", []), deniedDomains: c.get<string[]>("research.deniedDomains", []), unknownDomainPolicy: c.get<"ask" | "deny">("research.unknownDomainPolicy", "ask"), searchProvider: c.get<SearchProvider>("research.searchProvider", "none"), searchScope: c.get<SearchScope>("research.searchScope", "any") });
+    return readPolicy({ allowedDomains: c.get<string[]>("research.allowedDomains", []), deniedDomains: c.get<string[]>("research.deniedDomains", []), unknownDomainPolicy: c.get<"ask" | "deny">("research.unknownDomainPolicy", "ask"), searchProvider: c.get<SearchProvider>("research.searchProvider", "none"), searchScope: c.get<SearchScope>("research.searchScope", "any") });
   }
+  private configured(): ResearchPolicy { return this.readConfigured().policy; }
   private async refresh(): Promise<void> {
     try {
-      const configured = this.configured();
+      const read = this.readConfigured();
+      const configured = read.policy;
+      const notes = [...read.notes];
       const saved = await this.context.secrets.get(this.attestation);
-      const trusted = saved ? normalizePolicy(JSON.parse(saved) as ResearchPolicy) : EMPTY_POLICY;
+      let trusted: ResearchPolicy = EMPTY_POLICY;
+      if (saved) {
+        // An unreadable confirmation means earlier grants cannot be trusted, which narrows access;
+        // it must not also shut off research for everything else.
+        try { const parsed = readPolicy(JSON.parse(saved)); trusted = parsed.policy; } catch { notes.push("The saved confirmation for this workspace could not be read, so earlier grants need confirming again."); }
+      }
       // Settings-file edits can restrict access immediately, but cannot widen it.
       const effective = { ...configured, allowedDomains: configured.allowedDomains.filter(d => trusted.allowedDomains.includes(d)), deniedDomains: [...new Set([...configured.deniedDomains, ...trusted.deniedDomains])], searchProvider: trusted.searchProvider === configured.searchProvider ? configured.searchProvider : "none" as const,
         // Narrowing to approved sites is a restriction any edit may make; widening back to any
         // site needs this panel, like every other grant.
         searchScope: (trusted.searchScope ?? "any") === configured.searchScope ? configured.searchScope : "approved" as const };
       this.policy.replace(effective);
+      this.policy.loadError = undefined;
+      this.loadNotes = notes;
       // Remember revocations too: removing a deny or restoring a removed allow in a
       // settings file must never reactivate a historical human grant.
       await this.context.secrets.store(this.attestation, JSON.stringify(effective));
-    } catch { this.policy.replace({ ...EMPTY_POLICY, unknownDomainPolicy: "deny" }); }
+    } catch (error) {
+      // Genuinely unexpected: shut research off, but say so. This used to be silent, which left
+      // every request denied in under a millisecond with nothing to point at.
+      const message = error instanceof Error ? error.message : String(error);
+      this.policy.replace({ ...EMPTY_POLICY, unknownDomainPolicy: "deny" });
+      this.policy.loadError = message.slice(0, 200);
+      this.loadNotes = [];
+      console.error("Blacksite: research policy failed to load; web research is off until it does.", error);
+    }
   }
   private async save(policy: ResearchPolicy, scope: "workspace" | "global"): Promise<void> {
     const normalized = normalizePolicy(policy);
@@ -181,9 +201,9 @@ export class ResearchHost {
   async send(error?: string): Promise<void> {
     if (this.disposed) return;
     let configured = EMPTY_POLICY;
-    try { configured = this.configured(); } catch { /* fail closed; expose settings validation error */ }
+    try { configured = this.configured(); } catch { /* readPolicy does not throw; kept so a future change cannot break the panel */ }
     const preference = vscode.workspace.getConfiguration("blacksite").get<string>("browser.inputApprovalMode", "human");
-    const state: ResearchUiState = { policy: this.policy.settings, configured, hostedSession: this.hostedGrant, delegation: this.delegation, inputApprovalPreference: preference === "reviewer" ? "reviewer" : "human", keyConfigured: !!await this.context.secrets.get("blacksite.research.braveKey"), pending: [...this.pending.values()].map(p => p.proposal), audits: this.audits, error };
+    const state: ResearchUiState = { policy: this.policy.settings, configured, hostedSession: this.hostedGrant, delegation: this.delegation, inputApprovalPreference: preference === "reviewer" ? "reviewer" : "human", keyConfigured: !!await Promise.resolve(this.context.secrets.get("blacksite.research.braveKey")).catch(() => undefined), pending: [...this.pending.values()].map(p => p.proposal), audits: this.audits, error: error ?? this.policy.loadError ?? (this.loadNotes.length ? this.loadNotes.join(" ") : undefined) };
     this.post({ type: "research_state", state });
   }
   private async ask(proposal: BrowserProposal, signal?: AbortSignal): Promise<BrowserDecision> {

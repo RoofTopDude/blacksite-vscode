@@ -54,7 +54,7 @@ export class ResearchService {
       cancelled(signal);
       if (action === "request_access") {
         const urls = Array.isArray(p.urls) ? p.urls : [p.url];
-        if (!urls.length || urls.length > 10) throw new Error("Request between 1 and 10 URLs.");
+        if (!urls.length || urls.length > 10) throw new Error(`Request between 1 and 10 URLs per call; this call had ${urls.length}. Ask for the most useful sources first, in batches of at most ten.`);
         // One decision for the whole batch. Ten serial cards for one research step was the
         // worst single piece of this flow, and nothing about the grant needs them separated.
         await this.approvals.access(urls.map(u => String(u)), String(p.purpose ?? "Research requested sources"), signal, { anchor });

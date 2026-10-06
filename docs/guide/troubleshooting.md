@@ -92,6 +92,16 @@ If the command carries an inline-eval flag (`node -e`, `python -c`), it's blocke
 If the binary simply isn't in the built-in allowlist, add it to
 `blacksite.permissions.allowedCommands`.
 
+### Web research is denied and no approval card appears
+
+A request denied in a fraction of a second means no one was asked: a rule answered for you. The
+reason is in the tool result and in the execution log. Either a domain you denied matches, or
+**Unknown domains** in **Browser & Research** is set to *Deny* (`blacksite.research.unknownDomainPolicy`),
+which refuses every site not already approved. The panel also shows a notice when a saved value could
+not be used (a hostname that is not valid, a search provider this version does not know) or when the
+whole policy could not be loaded; in that case research stays off until it can be. Reload the window if
+Blacksite was just updated (see below), then confirm the policy in the panel.
+
 ### Responses are getting slow or expensive
 
 Long conversations carry a large prefix. Two things help:
@@ -219,6 +229,14 @@ network makes it unreliable.
 
 Set `blacksite.updates.includePrerelease: true` in your **user** settings. A workspace's
 `.vscode/settings.json` cannot choose where updates come from, so the setting is ignored there.
+
+### Blacksite updated but still behaves like the old version
+
+An update installs into VS Code but does not run until the window reloads. After a self-update,
+Blacksite keeps **Reload to finish updating Blacksite** in the status bar until you do. A window left
+open for days keeps running the previous build, including its tool descriptions and its research
+policy, so a setting written by the new build can be rejected by the old one. Run **Developer:
+Reload Window**.
 
 ### A release was published but I was not offered it
 
