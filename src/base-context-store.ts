@@ -174,16 +174,22 @@ export function summarizeBaseContextForPrompt(workspaceRoot: string, maxChars = 
     }
     const block = lines.join("\n");
     if (block.length > remaining && sections.length > 0) break;
-    sections.push(block.slice(0, remaining));
+    // A block that does not fit ends visibly, not mid-word.
+    sections.push(block.length > remaining ? `${block.slice(0, Math.max(0, remaining - 1))}…` : block);
     remaining -= block.length + 1;
     if (remaining <= 180) break;
   }
 
+  const omitted = enabledTopics.length - sections.length;
+  if (omitted > 0) {
+    sections.push(`- […${omitted} more enabled topic${omitted === 1 ? "" : "s"} not shown here; the whole list is in .blacksite/base-context.json]`);
+  }
   return sections.join("\n");
 }
 
-/** User-authored operating rules kept separate from reusable factual Base Context topics. */
-export function summarizeWorkspaceRulesForPrompt(workspaceRoot: string, maxChars = MAX_WORKSPACE_RULES_CHARS): string {
+/** The normalized, unbudgeted rules text ("" when there is no file). Budgeting stays per call so
+ *  callers passing different limits keep the original slice-then-trim semantics. */
+function loadWorkspaceRulesText(workspaceRoot: string): string {
   const filePath = path.join(workspaceRoot, BLACKSITE_DIR, WORKSPACE_RULES_FILE);
   let stat: fs.Stats | null;
   try {
@@ -199,13 +205,11 @@ export function summarizeWorkspaceRulesForPrompt(workspaceRoot: string, maxChars
 
   const cached = _workspaceRulesCache;
   if (cached && cached.path === filePath && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-    return cached.text.slice(0, Math.max(0, maxChars)).trim();
+    return cached.text;
   }
 
   let text: string;
   try {
-    // Cache the normalized-but-unbudgeted text; slice+trim stays per-call so callers
-    // passing different maxChars keep the original slice-then-trim semantics.
     text = fs.readFileSync(filePath, "utf8")
       .replace(/\r\n/g, "\n")
       .replace(/\0/g, "");
@@ -214,7 +218,23 @@ export function summarizeWorkspaceRulesForPrompt(workspaceRoot: string, maxChars
     return "";
   }
   _workspaceRulesCache = { path: filePath, mtimeMs: stat.mtimeMs, size: stat.size, text };
-  return text.slice(0, Math.max(0, maxChars)).trim();
+  return text;
+}
+
+/** User-authored operating rules kept separate from reusable factual Base Context topics.
+ *  Plain text, no notices: the Workspace Rules editor reads this too and saves what it shows. */
+export function summarizeWorkspaceRulesForPrompt(workspaceRoot: string, maxChars = MAX_WORKSPACE_RULES_CHARS): string {
+  return loadWorkspaceRulesText(workspaceRoot).slice(0, Math.max(0, maxChars)).trim();
+}
+
+/** The same rules for the model's context: when the file is longer than the budget, say so rather
+ *  than ending mid-sentence in what the model reads as the user's own message. */
+export function summarizeWorkspaceRulesForContext(workspaceRoot: string, maxChars = MAX_WORKSPACE_RULES_CHARS): string {
+  const text = loadWorkspaceRulesText(workspaceRoot);
+  const limit = Math.max(0, maxChars);
+  const shown = text.slice(0, limit).trim();
+  if (!shown || !text.slice(limit).trim()) return shown;
+  return `${shown}\n[…workspace-rules.md continues beyond this point; the rest is not shown here. Use file_read on .blacksite/workspace-rules.md for the whole file.]`;
 }
 
 export class BaseContextStore implements vscode.Disposable {

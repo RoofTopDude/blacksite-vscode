@@ -3,6 +3,40 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.31.0
+
+Stable release. It includes every change from 1.31.0-pre.1 through 1.31.0-pre.4, listed below, plus
+the fixes in this entry. If you are updating from 1.30.0, the larger changes are:
+
+- **Web search through your model provider** (pre.1): on Claude (Anthropic API), OpenRouter and
+  ChatGPT sign-in, the agent's first search asks once whether the provider's own search may run,
+  with no key to set up. Updates are also easier to trust: every check is logged to a **Blacksite
+  Updates** output channel, and a failed check retries after 30 minutes instead of three hours.
+- **ChatGPT sign-in is much quicker on tool-heavy work** (pre.2): one conversation stays open across
+  the agent's steps instead of starting over at every tool call, thinking is requested more firmly,
+  and answers are longer by default.
+- **Research no longer fails silently** (pre.3): a setting this build cannot read is set aside on its
+  own instead of switching research off, and a refusal now says why. After an update installs, a
+  status bar item reminds you to reload the window.
+- **A folder-first Codebase Map** (pre.4): each folder is one region nested inside its parent, files
+  stay in their own folder's codebase, the Map's controls are cleaner and more compact, and shell
+  commands the agent runs stream their output live into the chat.
+
+### Fixed
+
+- **The agent no longer takes the context Blacksite attaches for part of your message.** Every
+  request carries a block with the project's current state: open files, git status, your project
+  instructions, Base Context, memory, plans and tickets. It was added to the end of your turn with
+  nothing to say where your words stopped. Models, most noticeably Claude on Bedrock, read it as a
+  message that had been cut off, or as you sending your context again after every tool call, and
+  said so. The block is now wrapped in a labelled envelope that states it was attached automatically
+  and that your message is complete, and the agent's instructions explain the envelope.
+- **Text that does not fit is marked as cut off.** `.blacksite/context.md`, `memory.md`, your workspace
+  rules and a long Base Context list used to end mid-sentence when they went over their space, which
+  made the cut-off reading more likely. Each now says that the rest is not shown and where to read
+  it. `memory.md` also starts on a whole note rather than the end of an older one, and Base Context
+  says how many topics did not fit.
+
 ## 1.31.0-pre.4
 
 Prerelease. The stable update channel remains on 1.30.0.

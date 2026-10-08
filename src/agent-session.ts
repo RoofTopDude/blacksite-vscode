@@ -131,6 +131,7 @@ import {
   sanitizeToolMessages,
   stripImagesForPersistence,
   stripUnsignedThinking,
+  wrapAttachedContext,
 } from "./agent/transcript-hygiene.js";
 import {
   appendBedrockWorkspaceContextTail,
@@ -2108,9 +2109,11 @@ export class AgentSession {
   }
 
   private _dynamicContext(): string {
-    return [this._requestModePrompt, this._skillContext(), this._workspaceContext, this._completionChecklist()]
-      .filter(Boolean)
-      .join("\n\n");
+    return wrapAttachedContext(
+      [this._requestModePrompt, this._skillContext(), this._workspaceContext, this._completionChecklist()]
+        .filter(Boolean)
+        .join("\n\n"),
+    );
   }
 
   /**

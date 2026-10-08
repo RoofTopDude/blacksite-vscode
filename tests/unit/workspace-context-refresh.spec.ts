@@ -14,6 +14,7 @@ import {
   type WorkspaceSnapshot,
 } from "../../src/workspace-context.js";
 import type { AgentMessage, ContentBlock } from "../../src/agent-loop-contract.js";
+import { ATTACHED_CONTEXT_TAG, wrapAttachedContext } from "../../src/agent/transcript-hygiene.js";
 
 function snapshot(overrides: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot {
   return {
@@ -41,6 +42,10 @@ describe("static / volatile system-prompt split", () => {
     expect(staticPrompt).not.toContain("Diagnostics:");
     // …but it should tell the model where the live state comes from.
     expect(staticPrompt).toContain("Current workspace state");
+    // …and that the block is the harness's, not something the user typed or pasted.
+    expect(staticPrompt).toContain(`<${ATTACHED_CONTEXT_TAG}>`);
+    expect(staticPrompt).toContain("never a sign that their message was cut off");
+    expect(staticPrompt).toContain("that message is complete");
   });
 
   it("puts live workspace facts in the refreshable block under a clear header", () => {
@@ -134,6 +139,20 @@ describe("appendBedrockWorkspaceContextTail — cache-preserving tail injection 
     // …and sits PAST the cachePoint, which must be the block immediately before it — otherwise
     // the per-turn block would land inside the cached prefix and miss the cache every turn.
     expect((priorBlock as { cachePoint?: unknown }).cachePoint).toBeDefined();
+  });
+
+  it("keeps the user's words and the labelled block in separate blocks, the user's first", () => {
+    const asked: AgentMessage[] = [{ role: "user", content: "Can you fix the login form" }];
+    const cached = withBedrockRollingCacheBreakpoint(toBedrockMessages(asked));
+    const out = appendBedrockWorkspaceContextTail(cached, wrapAttachedContext("# Current workspace state\nBranch: main"));
+
+    const blocks = out[0]!.content as Array<{ text?: string; cachePoint?: unknown }>;
+    expect(blocks.map((block) => (block.cachePoint ? "cachePoint" : "text"))).toEqual(["text", "cachePoint", "text"]);
+    expect(blocks[0]!.text).toBe("Can you fix the login form");
+    expect(blocks[2]!.text!.startsWith(`<${ATTACHED_CONTEXT_TAG}>\n`)).toBe(true);
+    expect(blocks[2]!.text).toContain("Branch: main");
+    // Nothing of the harness leaks into the block that holds the user's own words.
+    expect(blocks[0]!.text).not.toContain(ATTACHED_CONTEXT_TAG);
   });
 
   it("is a no-op for an empty context block and never mutates the input", () => {

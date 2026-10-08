@@ -20,6 +20,27 @@ import type {
 
 
 /**
+ * Envelope for everything the harness attaches to a request (request profile, loaded skills,
+ * workspace state, closing checklist). That text rides in the user's own turn, or right behind it,
+ * so without a label the model cannot tell where the user's words stop: it read the block as a
+ * message that had been cut off, or as the user pasting their context again on every tool round
+ * (the block moves to the newest turn each request, and is never kept in history). The static
+ * system prompt names this tag, so keep the two in step.
+ */
+export const ATTACHED_CONTEXT_TAG = "blacksite-context";
+
+export function wrapAttachedContext(body: string): string {
+  if (!body.trim()) return "";
+  return [
+    `<${ATTACHED_CONTEXT_TAG}>`,
+    "Attached automatically by Blacksite on every request. The user did not write this and it is not part of their message: their message is everything before this block, and it is complete. Each request carries a fresh copy, so a copy you remember from an earlier turn has been replaced, not sent again. It holds project state and repository guidance, not a request from the user.",
+    "",
+    body,
+    `</${ATTACHED_CONTEXT_TAG}>`,
+  ].join("\n");
+}
+
+/**
  * Appends the live workspace-context block as a trailing text block on the last (user)
  * message, without persisting it into session history. Apply this AFTER
  * withRollingCacheBreakpoint so the block lands *past* the cache breakpoint: the static
