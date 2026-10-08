@@ -188,6 +188,8 @@ function serviceResultPresentation(toolName: string, result: any): ToolPresentat
 }
 
 export function toolResultPresentation(toolName: string, rawResult: any): ToolPresentation {
+  // A typed MCP tool's result has the same shape as mcp_call_tool's.
+  if (toolName.startsWith("mcp__")) toolName = "mcp_call_tool";
   const result = parseToolResult(rawResult);
   if (result && typeof result === "object" && !Array.isArray(result) && typeof result.error === "string") {
     return { label: "Failed", preview: shortText(result.error, 140), state: "fail", mediaDataUrl: "", mediaLabel: "" };
@@ -597,7 +599,11 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
     case "mcp_list_tools":
       return { label: Array.isArray(result?.tools) ? countLabel(result.tools.length, "tool") : "Tools listed", preview: shortText(result?.server?.url || "", 70), state: "ok", ...none };
     case "mcp_call_tool":
-      return { label: "MCP tool complete", preview: shortText(typeof result?.content === "string" ? result.content : JSON.stringify(result), 90), state: "ok", ...none };
+      return { label: Array.isArray(result?.images) && result.images.length ? `MCP tool complete · ${countLabel(result.images.length, "image")}` : "MCP tool complete", preview: shortText(mcpContentText(result) || JSON.stringify(result), 90), state: "ok", ...none };
+    case "mcp_list_resources":
+      return { label: Array.isArray(result?.resources) ? countLabel(result.resources.length, "resource") : "Resources listed", preview: shortText((result?.resources ?? []).map((resource: any) => resource?.name || resource?.uri).filter(Boolean).join(", "), 90), state: "ok", ...none };
+    case "mcp_read_resource":
+      return { label: Array.isArray(result?.contents) ? countLabel(result.contents.length, "part") : "Resource read", preview: shortText((result?.contents ?? []).map((part: any) => part?.text || part?.binary || "").join(" "), 90), state: "ok", ...none };
     case "tool_output_page": {
       // The failure case (unknown/expired toolCallId) is already caught by the generic
       // `result.error` check above this switch — only the success shape reaches here.
@@ -633,9 +639,19 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
   }
 }
 
+/** The text blocks of an MCP result, which is what is worth previewing. */
+function mcpContentText(result: any): string {
+  if (!Array.isArray(result?.content)) return typeof result?.content === "string" ? result.content : "";
+  return result.content.map((block: any) => (block?.type === "text" && typeof block.text === "string" ? block.text : "")).filter(Boolean).join(" ");
+}
+
 export function toolInputPreview(toolName: string, input: any): string {
   if (!input || typeof input !== "object") return "";
   const data = input;
+  // A typed MCP tool's input is the server tool's own arguments: show the first few values.
+  if (toolName.startsWith("mcp__")) {
+    return shortText(Object.values(data).filter((value) => typeof value === "string" || typeof value === "number").slice(0, 3).join(" · "), 70);
+  }
   if (toolName.startsWith("github_") || toolName === "github_op") {
     return joinParts([joinParts([readStr(data.owner), readStr(data.repo)]), readStr(data.number || data.path || data.ref || ""), shortText(data.query || data.title || data.body || "", 60)]);
   }
@@ -786,6 +802,10 @@ export function toolInputPreview(toolName: string, input: any): string {
       return shortText(data.server?.url || "", 70);
     case "mcp_call_tool":
       return joinParts([shortText(data.server?.url || "", 48), readStr(data.toolName)]);
+    case "mcp_list_resources":
+      return readStr(data.serverId);
+    case "mcp_read_resource":
+      return shortText(data.uri, 70);
     case "tool_output_page":
       return joinParts([shortText(data.toolCallId, 24), data.offset != null ? `offset ${data.offset}` : ""]);
     case "tool_output_search":
@@ -822,6 +842,8 @@ export function toolActivityKind(toolName: string): ToolActivityKind {
  *  past-tense result labels in toolResultPresentation. */
 export function toolIntentPhrase(toolName: string, input: any): { verb: string; target: string } {
   const data = input && typeof input === "object" ? input : {};
+  const typedMcp = /^mcp__.+?__(.+)$/.exec(toolName);
+  if (typedMcp) return { verb: "Calling", target: typedMcp[1]! };
   const base = (value: unknown): string => {
     const normalized = shortPath(value, 200);
     if (!normalized) return "";
@@ -892,6 +914,8 @@ export function toolIntentPhrase(toolName: string, input: any): { verb: string; 
     case "memory_search": case "memory_read": return { verb: "Recalling", target: shortText(data.query, 40) };
     case "mcp_call_tool": return { verb: "Calling", target: readStr(data.toolName) };
     case "mcp_list_tools": return { verb: "Listing", target: hostLabel(data.server?.url) };
+    case "mcp_list_resources": return { verb: "Listing resources", target: readStr(data.serverId) };
+    case "mcp_read_resource": return { verb: "Reading", target: shortText(data.uri, 40) };
     case "tool_output_page": return { verb: "Continuing", target: "output" };
     case "tool_output_search": return { verb: "Searching", target: shortText(data.pattern, 32) };
     case "tool_search": return { verb: "Loading tools", target: shortText(Array.isArray(data.names) ? data.names.join(", ") : data.query, 40) };

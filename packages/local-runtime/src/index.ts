@@ -7,8 +7,15 @@ export type {
   ReadFileOptions, ReadFileResult, SearchFilesOptions, SearchFilesResult, SearchOutputMode,
   WriteFileOptions, WriteFileResult, ExclusionOptions, SearchResultSkips, GlobResultSkips,
 } from "./file-ops.js";
-export { listMcpTools, callMcpTool, discoverMcpTools, pingMcpServer, closeMcpConnections, McpAuthError } from "./mcp-client.js";
-export type { McpServerSummary, McpToolListResult, McpToolCallResult, McpFailure } from "./mcp-client.js";
+export {
+  listMcpTools, callMcpTool, discoverMcpTools, pingMcpServer, closeMcpConnections, McpAuthError, setMcpLogger,
+  listMcpResources, readMcpResource, listMcpPrompts, getMcpPrompt,
+} from "./mcp-client.js";
+export type {
+  McpServerSummary, McpToolListResult, McpToolCallResult, McpFailure, McpImage, McpLogEntry, McpLogLevel,
+  McpResourceDescriptor, McpResourceTemplate, McpResourceListResult, McpResourceContent, McpResourceReadResult,
+  McpPromptDescriptor, McpPromptListResult, McpPromptMessage, McpPromptResult,
+} from "./mcp-client.js";
 export {
   LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS, SseParser,
   filterToolsByPolicy, isToolAllowed, negotiateProtocolVersion, normalizeToolDescriptor,

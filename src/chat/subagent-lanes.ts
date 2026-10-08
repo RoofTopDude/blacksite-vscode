@@ -53,6 +53,8 @@ export const DELEGATED_TOOL_NAMES = [
   // Delegates request them through the supervising parent rather than inheriting that authority.
   "mcp_list_tools",
   "mcp_call_tool",
+  "mcp_list_resources",
+  "mcp_read_resource",
 ];
 
 export function makeLaneId(prefix: string): string {

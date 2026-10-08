@@ -179,6 +179,8 @@ export interface McpServer {
   /** Host callback used to invalidate its persisted inventory when the server announces a
    *  changed tool list. Never exposed to the model or serialized onto the wire. */
   onToolsChanged?: () => void;
+  /** Human-readable name used only in the MCP log (see setMcpLogger). */
+  label?: string;
   /** Which of this server's tools the agent may see and call. Absent means all of them. */
   toolPolicy?: McpToolPolicy;
 }

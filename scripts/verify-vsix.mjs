@@ -24,6 +24,8 @@ const required = [
   "extension/out/diagram-check-worker.js",
   "extension/out/webview/shell.html",
   "extension/out/webview/diagram.js",
+  // The Hooks page ("Blacksite: Manage Hooks"); its command answered "not found" before 1.32.0.
+  "extension/out/webview/hooks.js",
   // The Markdown-preview Mermaid fallback: loader, its styles, and the library it loads on demand.
   "extension/out/markdown-preview/mermaid-preview.js",
   "extension/out/markdown-preview/mermaid-preview.css",

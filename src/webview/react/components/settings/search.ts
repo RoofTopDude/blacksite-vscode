@@ -71,6 +71,7 @@ export const SETTINGS_INDEX: SettingResult[] = [
   {"section": "multimodal", "label": "Language hint", "description": "Optional, for example en or es. Leave blank for automatic detection.", "anchor": "language-hint", "keywords": ""},
   {"section": "advanced", "label": "Execution Logs", "description": "", "anchor": "execution-logs", "keywords": ""},
   {"section": "advanced", "label": "API Keys", "description": "", "anchor": "api-keys", "keywords": ""},
+  {"section": "advanced", "label": "MCP servers and hooks", "description": "Open the MCP server manager (add, import, sign in, choose tools, share across projects) or the Hooks page (lifecycle scripts).", "anchor": "mcp-servers-and-hooks", "keywords": "mcp model context protocol server servers tools import claude desktop cursor hooks hook lifecycle scripts pretooluse posttooluse stop"},
   {"section": "advanced", "label": "VS Code Settings", "description": "", "anchor": "vs-code-settings", "keywords": ""},
   {"section": "model", "label": "Credentials and API keys", "description": "Connect your provider or configure AWS credentials.", "anchor": "", "keywords": "authentication token secret bedrock"},
   {"section": "subagent", "label": "Subagent provider and model", "description": "Choose the provider and model used by delegated agents.", "anchor": "", "keywords": "delegation specialist"},

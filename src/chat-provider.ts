@@ -83,7 +83,8 @@ import { extractReadableTextFromBytes } from "@blacksite/file-content";
 import type { DiagnosticsProvider } from "./diagnostics-publisher.js";
 import { gatherWorkspaceSnapshot, buildStaticSystemPrompt, buildWorkspaceContextBlock } from "./workspace-context.js";
 import type { McpServerInfo } from "./workspace-context.js";
-import { McpRegistry } from "./mcp-registry.js";
+import { McpRegistry, toolIsDestructive } from "./mcp-registry.js";
+import { buildMcpToolCatalog, type McpTypedTool } from "./mcp-tool-catalog.js";
 import { confirmProjectAutoApprove, normalizeCommandBinary, readCommandPolicy } from "./command-policy.js";
 import { clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
@@ -662,6 +663,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     // Falls back to its own registry so a host that does not wire one (tests, embedded uses)
     // still resolves MCP servers — the state all lives in the extension context either way.
     this._mcp = mcpRegistry ?? new McpRegistry(_context, () => [_workspaceRoot]);
+    this._mcp.onDidChange(() => { this._mcpCatalogCache = undefined; });
     this._runner  = new BackgroundRunner();
     this._chromium = browserRunner ?? new ChromiumRunner();
     this._research = new ResearchHost(_context, _workspaceRoot, message => this._post(message), () => !!this._view?.visible, {
@@ -1352,6 +1354,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       serviceKeyProvider: (svc) => this._secrets.getApiKey(svc),
       serviceEndpointProvider: (svc) => this._serviceEndpoint(svc),
       mcpServerProvider: (serverId) => this._resolveMcpServer(serverId),
+      mcpToolCatalog: () => this._mcpCatalog(),
       browserRunner: this._chromium,
       researchProvider: this._research,
       sequenceProvider: this._sequences,
@@ -2136,17 +2139,45 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   setChangeLog(log: ChangeLog): void { this._changeLog = log; }
 
   private _enabledMcpServers(): McpServerInfo[] {
+    // A turn is a good moment to notice a server nobody has discovered yet (added in settings,
+    // by a plugin, or by import). Background, once per server per window.
+    this._mcp.ensureDiscovered();
+    const catalog = this._mcpCatalog();
     return this._mcp.enabledEntries()
-      .map((entry) => ({
-        id: entry.id,
-        name: entry.name,
-        transport: entry.transport,
-        target: (entry.transport === "http" ? entry.url : entry.command) ?? "",
-        tools: this._mcp.enabledToolNames(entry.id),
-        discovered: !!this._mcp.cacheEntry(entry.id),
-      }))
-      .filter((server) => server.target && (!server.discovered || server.tools.length > 0))
-      .map(({ discovered: _discovered, ...server }) => server);
+      .map((entry) => {
+        const cache = this._mcp.cacheEntry(entry.id);
+        const typed = catalog.filter((tool) => tool.serverId === entry.id);
+        return {
+          id: entry.id,
+          name: entry.name,
+          transport: entry.transport,
+          target: (entry.transport === "http" ? entry.url : entry.command) ?? "",
+          tools: this._mcp.enabledToolNames(entry.id),
+          typedPrefix: typed[0] ? /^(mcp__.+?__)/.exec(typed[0].name)?.[1] : undefined,
+          typedCount: typed.length,
+          resources: !!cache?.capabilities?.includes("resources"),
+          instructions: cache?.instructions,
+          discovered: !!cache,
+        };
+      })
+      .filter((server) => server.target && (!server.discovered || server.tools.length > 0 || server.resources));
+  }
+
+  private _mcpCatalogCache?: McpTypedTool[];
+
+  /** Typed definitions for every admitted tool of every enabled server. Rebuilt only when the
+   *  registry changes, since the session asks for its tool list many times per turn. */
+  private _mcpCatalog(): McpTypedTool[] {
+    this._mcpCatalogCache ??= buildMcpToolCatalog(this._mcp.agentTools());
+    return this._mcpCatalogCache;
+  }
+
+  /** The server and tool an MCP "Always allow" answer names, or undefined for a shell binary. */
+  private _mcpAlwaysAllowTarget(command: string): { serverId: string; toolName: string } | undefined {
+    const proxy = /^mcp:([^/]+)\/(.+)$/.exec(command);
+    if (proxy) return this._mcp.getEntry(proxy[1]!) ? { serverId: proxy[1]!, toolName: proxy[2]! } : undefined;
+    const typed = this._mcpCatalog().find((tool) => tool.name === command);
+    return typed ? { serverId: typed.serverId, toolName: typed.toolName } : undefined;
   }
 
   /**
@@ -2164,6 +2195,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         ok: true,
         server: resolution.server,
         toolSchema: (toolName) => this._mcp.cachedTools(serverId).find((tool) => tool.name === toolName)?.inputSchema,
+        autoApproval: (toolName) => this._mcp.autoApproval(serverId, toolName),
+        destructive: (toolName) => toolIsDestructive(this._mcp.cachedTools(serverId).find((tool) => tool.name === toolName)),
       };
     }
     if (resolution.reason === "auth_required") this._promptMcpSignIn(serverId, resolution.message);
@@ -3049,7 +3082,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         if (decision === "allow_always") {
           const command = String(msg.command ?? "").trim();
           const scope = msg.scope === "workspace" || msg.scope === "global" ? msg.scope : undefined;
-          if (command) void this._persistAutoApprove(command, scope);
+          // An MCP tool's "Always allow" is stored with that server's tool choices, not as a
+          // shell binary: "mcp:<serverId>/<tool>" from mcp_call_tool, or a typed tool name.
+          const mcpTarget = this._mcpAlwaysAllowTarget(command);
+          if (mcpTarget) void this._mcp.setToolAutoApprove(mcpTarget.serverId, mcpTarget.toolName, true);
+          else if (command && !/^mcp(:|__)/.test(command)) void this._persistAutoApprove(command, scope);
         }
         const resolve = this._pendingApprovals.get(toolCallId);
         if (!resolve) {

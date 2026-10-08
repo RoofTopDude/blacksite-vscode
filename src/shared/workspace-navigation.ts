@@ -9,6 +9,8 @@ export const WORKSPACE_DESTINATIONS = [
   { id: "data", label: "Data", command: "blacksite.data.focus" },
   { id: "context", label: "Base context", command: "blacksite.baseContext.focus" },
   { id: "skills", label: "Skills", command: "blacksite.skills.focus" },
+  { id: "mcp", label: "MCP servers", command: "blacksite.manageMcp" },
+  { id: "hooks", label: "Hooks", command: "blacksite.manageHooks" },
   { id: "pau", label: "PAU (Beta)", command: "blacksite.pau.focus" },
 ] as const;
 export type WorkspaceDestination = typeof WORKSPACE_DESTINATIONS[number]["id"];

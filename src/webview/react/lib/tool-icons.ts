@@ -25,6 +25,8 @@ export type ToolIconCategory =
   | "default";
 
 export function toolIconCategory(toolName: string): ToolIconCategory {
+  // Typed MCP tools (mcp__<server>__<tool>) wear the MCP icon like the generic call.
+  if (toolName.startsWith("mcp__")) return "mcp";
   switch (toolName) {
     case "file_read": return "file-read";
     case "transcript_document": return "file-write";
@@ -70,7 +72,7 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "tool_output_page": return "page";
     case "tool_output_search": return "search";
     case "tool_search": return "search";
-    case "mcp_list_tools": case "mcp_call_tool": return "mcp";
+    case "mcp_list_tools": case "mcp_call_tool": case "mcp_list_resources": case "mcp_read_resource": return "mcp";
     case "question_card": return "question";
     // Both exist to make a question card's previews faithful, so they read as part of the same
     // family in the transcript rather than as unrelated utilities.

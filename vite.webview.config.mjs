@@ -91,6 +91,7 @@ export default defineConfig(({ mode }) => ({
         "run-theater": resolve(rootDir, "src/webview/react/apps/run-theater/main.tsx"),
         pau: resolve(rootDir, "src/webview/react/apps/pau/main.tsx"),
         diagram: resolve(rootDir, "src/webview/react/apps/diagram/main.tsx"),
+        hooks: resolve(rootDir, "src/webview/react/apps/hooks/main.tsx"),
       },
       output: {
         format: "es",
@@ -106,7 +107,7 @@ export default defineConfig(({ mode }) => ({
     emitPreviewStylesheet(),
     cssInjectedByJsPlugin({
       jsAssetsFilterFunction(outputChunk) {
-        return ["webview.js", "planning.js", "base-context.js", "data.js", "graph.js", "notes.js", "tickets.js", "skills.js", "board.js", "runs.js", "loops.js", "run-theater.js", "pau.js", "diagram.js"].includes(outputChunk.fileName);
+        return ["webview.js", "planning.js", "base-context.js", "data.js", "graph.js", "notes.js", "tickets.js", "skills.js", "board.js", "runs.js", "loops.js", "run-theater.js", "pau.js", "diagram.js", "hooks.js"].includes(outputChunk.fileName);
       },
     }),
   ],

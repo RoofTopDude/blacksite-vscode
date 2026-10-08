@@ -388,7 +388,7 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "mcp_list_tools",
     "mcp.list_tools",
-    "List the tools an enabled MCP server makes available to you, with their argument schemas. The workspace-state block already names each server's tools, so reach for this only when a server's tools are not listed there or a call fails with an unknown-tool error.",
+    "List the tools an enabled MCP server makes available to you, with their argument schemas. A discovered server's tools are already available as typed mcp__<server>__<tool> tools, so reach for this only for a server the workspace-state block says has not been discovered, or after an unknown-tool error.",
     {
       serverId: str("Configured MCP server ID from workspace context"),
     },
@@ -397,13 +397,32 @@ export const WORKSPACE_TOOLS: ToolDefinition[] = [
   tool(
     "mcp_call_tool",
     "mcp.call_tool",
-    "Call a tool on a configured MCP server. The listing is authoritative: a name it does not contain does not exist on that server, so do not retry it or ask for it to be enabled.",
+    "Call a tool on a configured MCP server by name. Prefer the typed mcp__<server>__<tool> tool when it exists; use this for a server whose tools are not typed yet. The listing is authoritative: a name it does not contain does not exist on that server, so do not retry it or ask for it to be enabled.",
     {
       serverId: str("Configured MCP server ID from workspace context"),
       toolName: str("Tool name exactly as it appears in the workspace context or mcp_list_tools"),
       args: obj("Tool arguments matching the target tool schema"),
     },
     ["serverId", "toolName"],
+  ),
+  tool(
+    "mcp_list_resources",
+    "mcp.list_resources",
+    "List the resources (documents, files, records) an enabled MCP server publishes, with their URIs and any URI templates. Only servers whose workspace-state entry says they offer resources have any.",
+    {
+      serverId: str("Configured MCP server ID from workspace context"),
+    },
+    ["serverId"],
+  ),
+  tool(
+    "mcp_read_resource",
+    "mcp.read_resource",
+    "Read one resource from an MCP server by URI, from mcp_list_resources or a filled-in URI template. Text comes back as text; images are shown to you.",
+    {
+      serverId: str("Configured MCP server ID from workspace context"),
+      uri: str("The resource URI"),
+    },
+    ["serverId", "uri"],
   ),
 ];
 

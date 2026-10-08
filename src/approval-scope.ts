@@ -13,7 +13,7 @@
 
 import { inlineCodeSnippet, normalizeCommandName } from "@blacksite/local-runtime";
 
-export type ApprovalCategory = "edit" | "command" | "service" | "sequence";
+export type ApprovalCategory = "edit" | "command" | "service" | "sequence" | "mcp";
 
 /** Runtime-backed file operations. They reach the gate through the same confirmation protocol as
  *  shell commands, but approving them is approving an edit, so they share the edit grants. */
@@ -23,6 +23,7 @@ export function approvalCategory(toolName: string, runtimeType: string): Approva
   if (runtimeType.startsWith("editor.") || runtimeType.startsWith("lsp.")) return "edit";
   if (runtimeType.startsWith("service.")) return "service";
   if (runtimeType.startsWith("sequence.")) return "sequence";
+  if (runtimeType.startsWith("mcp.")) return "mcp";
   if (RUNTIME_FILE_TOOLS.has(toolName)) return "edit";
   return "command";
 }
@@ -35,10 +36,16 @@ export interface ApprovalScope {
   /** Set for inline code (`python -c "…"`): the interpreter the grant is pinned to. A grant for
    *  ordinary commands never covers a snippet, whose code is only visible in its own prompt. */
   inlineCodeBinary?: string;
+  /** Set for an MCP call: `<server id>/<tool or operation>`. MCP calls used to share the
+   *  `command:network` grant with git push, npm install and curl, so "Allow all this turn" on one
+   *  read-only MCP tool also approved every network command and every tool on every server.
+   *  A grant now covers repeat calls of the same tool on the same server only. */
+  mcpTarget?: string;
 }
 
 export function approvalGrantKey(scope: ApprovalScope): string {
   const base = `${scope.category}:${scope.tier || "unknown"}`;
+  if (scope.mcpTarget) return `${base}:${scope.mcpTarget}`;
   if (scope.inlineCodeBinary) return `${base}:inline:${scope.inlineCodeBinary}`;
   return scope.unrecognizedBinary ? `${base}:unrecognized:${scope.unrecognizedBinary}` : base;
 }
@@ -52,6 +59,12 @@ export function commandApprovalScope(
   unrecognizedCommand: boolean | undefined,
 ): ApprovalScope {
   const category = approvalCategory(toolName, runtimeType);
+  if (category === "mcp") {
+    const server = payload["server"] && typeof payload["server"] === "object" ? payload["server"] as { id?: unknown; url?: unknown } : {};
+    const serverKey = String(server.id ?? server.url ?? payload["serverId"] ?? "unknown");
+    const operation = runtimeType === "mcp.call_tool" ? String(payload["toolName"] ?? "") : runtimeType;
+    return { category, tier, mcpTarget: `${serverKey}/${operation}` };
+  }
   const command = String(payload["command"] ?? "");
   const args = Array.isArray(payload["args"]) ? payload["args"].map((arg) => String(arg)) : [];
   if (inlineCodeSnippet(command, args) !== undefined) return { category, tier, inlineCodeBinary: normalizeCommandName(command) };

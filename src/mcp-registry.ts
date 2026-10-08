@@ -1,23 +1,30 @@
 /* The single source of truth for MCP configuration: which servers exist, which of their tools
  * the agent is allowed to know about, and where the credentials for each one live.
  *
- * Three stores, chosen for different reasons:
+ * Four stores, chosen for different reasons:
  *
- *   server entries   workspaceState + *application-scoped* settings. A repository-controlled
- *                    .vscode/settings.json must never be able to register a process for us to
- *                    launch, so only globalValue is read from configuration.
+ *   all-projects     *application-scoped* user settings (`blacksite.mcpServers`, globalValue
+ *   servers          only). A server added once is there in every project. A repository-
+ *                    controlled .vscode/settings.json must never be able to register a process
+ *                    for us to launch, so workspace values of that setting are ignored.
+ *   project servers  workspaceState. For a server that only makes sense in one project.
  *   policy + cache   globalState. A tool the user withheld from a server should stay withheld
  *                    everywhere that server is used, and the tool inventory describes the
  *                    server rather than the workspace.
  *   credentials      SecretStorage, always. Nothing here ever writes a token into settings,
  *                    workspace state, or a log line.
  *
+ * Servers used to be added to workspaceState only, so a server set up in one project was missing
+ * from every other one, while the docs said they lived in settings. New servers now default to
+ * all projects, and either kind can be moved to the other (setScope).
+ *
  * resolveForAgent() is the narrow gate between all of that and the runtime: it is the only
  * function that assembles a credential-bearing McpServer, and it stamps the tool policy onto
  * every one it produces. */
 
+import * as os from "os";
 import * as vscode from "vscode";
-import type { McpServer, McpToolDescriptor, McpToolPolicy } from "@blacksite/local-runtime";
+import { discoverMcpTools, type McpServer, type McpToolDescriptor, type McpToolPolicy } from "@blacksite/local-runtime";
 import {
   McpOAuthClient,
   type McpOAuthConfig,
@@ -25,6 +32,12 @@ import {
   type OAuthStorage,
   type OAuthTokenSet,
 } from "./mcp-auth.js";
+import {
+  entryTarget, expandVariables, normalizeEntry, serializeEntry,
+  type McpServerEntry,
+} from "./mcp-config.js";
+
+export type { McpAuthConfig, McpAuthMode, McpEnvVar, McpServerEntry, McpServerScope } from "./mcp-config.js";
 
 const SERVERS_KEY = "blacksite.mcpServers";
 const REMOVED_SERVERS_KEY = "blacksite.mcpRemovedServers";
@@ -33,50 +46,6 @@ const CACHE_KEY = "blacksite.mcpToolCache";
 const SECRET_PREFIX = "blacksite.mcp";
 
 // ── Configuration shapes ──────────────────────────────────────────────────────
-
-export type McpAuthMode = "none" | "bearer" | "header" | "oauth";
-
-export interface McpEnvVar {
-  name: string;
-  /** Present for plain values. Secret values live in SecretStorage and leave this undefined. */
-  value?: string;
-  secret?: boolean;
-}
-
-export interface McpAuthConfig {
-  mode: McpAuthMode;
-  /** For "header": which header carries the secret (e.g. `X-API-Key`). */
-  headerName?: string;
-  /** For "oauth": scopes to request; empty means "whatever the server advertises". */
-  scopes?: string[];
-  /** For "oauth": a pre-registered client, when the server has no dynamic registration. */
-  clientId?: string;
-  /** For "oauth": the redirect URI that pre-registered client was created with. */
-  redirectUri?: string;
-}
-
-export interface McpServerEntry {
-  id: string;
-  name: string;
-  transport: "stdio" | "http";
-  command?: string;
-  url?: string;
-  enabled: boolean;
-  auth?: McpAuthConfig;
-  /** stdio only. The usual way a local MCP server receives its credentials. */
-  env?: McpEnvVar[];
-  /** Static, non-secret headers for HTTP servers. */
-  headers?: Record<string, string>;
-  /** Explicit transport override for a server that mis-advertises which revision it speaks. */
-  transportHint?: "auto" | "http" | "sse";
-  /** stdio only: an explicit argument vector (`command` is then the bare executable). */
-  args?: string[];
-  /** stdio only: the working directory. Defaults to the workspace root. */
-  cwd?: string;
-  /** Set on a server an Agent Plugin provides. Such entries are read-only here: enabling,
-   *  editing and removing them is the plugin registry's decision (see setPluginSource). */
-  pluginKey?: string;
-}
 
 /** What a plugin-provided entry's owner is asked to do when the panel acts on it. */
 export type PluginEntryAction = { kind: "update"; patch: Partial<McpServerEntry> } | { kind: "remove" };
@@ -87,6 +56,8 @@ export interface McpServerToolPolicy {
   /** Verdict for a tool with no explicit entry — i.e. one that appeared after the user last
    *  reviewed this server. */
   fallback: "allow" | "deny";
+  /** Tools the user chose to run without an approval prompt ("Always allow"). */
+  autoApprove?: string[];
 }
 
 export interface McpToolCacheEntry {
@@ -96,6 +67,8 @@ export interface McpToolCacheEntry {
   protocolVersion?: string;
   protocolSupported?: boolean;
   capabilities?: string[];
+  /** What the server says about how to use it. Shown to the agent, capped, as the server's words. */
+  instructions?: string;
   tools: McpToolDescriptor[];
 }
 
@@ -105,6 +78,16 @@ export interface McpToolView extends McpToolDescriptor {
   enabled: boolean;
   /** True when the verdict comes from the fallback rather than an explicit choice. */
   implicit: boolean;
+  /** Runs without an approval prompt: chosen with "Always allow", or read-only on a server set
+   *  to run its read-only tools without asking. */
+  autoApproved: boolean;
+}
+
+/** One tool the agent may call, with the server it belongs to. */
+export interface McpAgentTool {
+  serverId: string;
+  serverName: string;
+  tool: McpToolDescriptor;
 }
 
 /** Who the failure message is written for. The agent needs to be told what a person must do;
@@ -119,6 +102,12 @@ interface ResolveOptions {
 export type McpResolution =
   | { ok: true; server: McpServer }
   | { ok: false; reason: "unknown" | "disabled" | "invalid" | "auth_required"; message: string };
+
+export interface McpDiscoveryOutcome {
+  ok: boolean;
+  message: string;
+  authRequired?: boolean;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -152,29 +141,16 @@ export function validateHttpTarget(target: string): { ok: true; url: string } | 
   return { ok: true, url: url.href };
 }
 
-function normalizeEntry(raw: unknown): McpServerEntry | null {
-  if (!raw || typeof raw !== "object") return null;
-  const e = raw as Record<string, unknown>;
-  const id = typeof e["id"] === "string" ? e["id"] : "";
-  if (!id) return null;
-  const transport = e["transport"] === "stdio" ? "stdio" : "http";
-  const auth = e["auth"] && typeof e["auth"] === "object" ? e["auth"] as McpAuthConfig : undefined;
-  return {
-    id,
-    name: typeof e["name"] === "string" && e["name"] ? e["name"] : id,
-    transport,
-    command: typeof e["command"] === "string" ? e["command"] : undefined,
-    url: typeof e["url"] === "string" ? e["url"] : undefined,
-    enabled: e["enabled"] !== false,
-    auth: auth ? { ...auth, mode: auth.mode ?? "none" } : undefined,
-    env: Array.isArray(e["env"])
-      ? (e["env"] as unknown[])
-          .map((v) => (v && typeof v === "object" ? v as McpEnvVar : null))
-          .filter((v): v is McpEnvVar => !!v && typeof v.name === "string" && !!v.name)
-      : undefined,
-    headers: e["headers"] && typeof e["headers"] === "object" ? e["headers"] as Record<string, string> : undefined,
-    transportHint: e["transportHint"] === "http" || e["transportHint"] === "sse" ? e["transportHint"] : undefined,
-  };
+/** The read-only hint as the spec spells it. Untrusted metadata: only ever used to skip a
+ *  prompt on a server the user explicitly set to run its read-only tools unasked. */
+export function toolIsReadOnly(tool: McpToolDescriptor | undefined): boolean {
+  return tool?.annotations?.["readOnlyHint"] === true;
+}
+
+export function toolIsDestructive(tool: McpToolDescriptor | undefined): boolean {
+  // The spec's default for destructiveHint is true, but only when readOnlyHint is false; a tool
+  // that says nothing is treated as an ordinary network call rather than flagged destructive.
+  return tool?.annotations?.["destructiveHint"] === true && !toolIsReadOnly(tool);
 }
 
 // ── Registry ──────────────────────────────────────────────────────────────────
@@ -186,12 +162,27 @@ export class McpRegistry implements OAuthStorage {
 
   private _pluginEntries: () => McpServerEntry[] = () => [];
   private _pluginAction: (entry: McpServerEntry, action: PluginEntryAction) => Promise<void> = async () => undefined;
+  private readonly _subscriptions: vscode.Disposable[] = [];
+  /** Servers background discovery has tried this window, so a failing one is not retried on
+   *  every change event. Cleared for a server when its configuration changes. */
+  private readonly _discoveryAttempted = new Set<string>();
+  private readonly _discoveryErrors = new Map<string, string>();
+  private readonly _discovering = new Set<string>();
+  private readonly _refreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private _autoDiscovery = false;
+  private _discoveryQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
     private readonly _roots: () => string[] = () => [],
   ) {
     this.oauth = new McpOAuthClient(this);
+    // A server edited by hand in settings.json shows up in the panel and the agent's context
+    // without a reload.
+    const configEvent = vscode.workspace.onDidChangeConfiguration?.((event) => {
+      if (event.affectsConfiguration("blacksite.mcpServers")) this._onDidChange.fire();
+    });
+    if (configEvent) this._subscriptions.push(configEvent);
   }
 
   /**
@@ -212,34 +203,43 @@ export class McpRegistry implements OAuthStorage {
   }
 
   dispose(): void {
+    for (const timer of this._refreshTimers.values()) clearTimeout(timer);
+    this._refreshTimers.clear();
+    for (const subscription of this._subscriptions) subscription.dispose();
+    this._subscriptions.length = 0;
     this._onDidChange.dispose();
   }
 
   // ── Entries ─────────────────────────────────────────────────────────────────
 
+  private _configRaw(): unknown[] {
+    const value = vscode.workspace.getConfiguration("blacksite").inspect<unknown[]>("mcpServers")?.globalValue;
+    return Array.isArray(value) ? value : [];
+  }
+
+  private _removedHere(): Set<string> {
+    return new Set(this._context.workspaceState.get<string[]>(REMOVED_SERVERS_KEY, []) ?? []);
+  }
+
   /**
-   * Every configured server, from workspace state and application-level settings, deduped by
-   * id with workspace state winning. Only `globalValue` is read from configuration — see the
-   * file header for why a repository must not be able to contribute one.
+   * Every server this project can use: all-projects servers from user settings, this project's
+   * own servers, and plugin servers, deduped by id. A project server wins over an all-projects
+   * one with the same id (older versions copied a settings server into workspace state to edit
+   * it, and that copy is what the user last saw). Only `globalValue` is read from configuration —
+   * see the file header for why a repository must not be able to contribute one.
    */
   listEntries(): McpServerEntry[] {
-    const fromState = this._context.workspaceState.get<unknown[]>(SERVERS_KEY, []) ?? [];
-    const inspected = vscode.workspace.getConfiguration("blacksite").inspect<unknown[]>("mcpServers");
-    const fromConfig = inspected?.globalValue ?? [];
-    const removed = new Set(this._context.workspaceState.get<string[]>(REMOVED_SERVERS_KEY, []) ?? []);
+    const removed = this._removedHere();
     const byId = new Map<string, McpServerEntry>();
-    for (const raw of fromConfig) {
+    for (const raw of this._configRaw()) {
       const entry = normalizeEntry(raw);
-      if (entry && !removed.has(entry.id)) byId.set(entry.id, entry);
+      if (entry && !removed.has(entry.id)) byId.set(entry.id, { ...entry, scope: "user" });
     }
-    for (const raw of fromState) {
-      const entry = normalizeEntry(raw);
-      if (entry) byId.set(entry.id, entry);
-    }
+    for (const entry of this._storedEntries()) byId.set(entry.id, { ...entry, scope: "workspace" });
     // Plugin ids are namespaced ("plugin.<scope>.<name>.<server>"), so they cannot collide with a
     // configured server; a configured one still wins if somebody copied the id by hand.
     for (const entry of this._pluginEntries()) {
-      if (!byId.has(entry.id)) byId.set(entry.id, entry);
+      if (!byId.has(entry.id)) byId.set(entry.id, { ...entry, scope: "plugin" });
     }
     return [...byId.values()];
   }
@@ -252,17 +252,25 @@ export class McpRegistry implements OAuthStorage {
     return this.listEntries().filter((entry) => entry.enabled && targetOf(entry));
   }
 
-  async addEntry(input: Omit<McpServerEntry, "id"> & { id?: string }): Promise<McpServerEntry> {
+  /** Add a server. "user" makes it available in every project; "workspace" only in this one. */
+  async addEntry(input: Omit<McpServerEntry, "id"> & { id?: string }, scope: "user" | "workspace" = "workspace"): Promise<McpServerEntry> {
+    const { scope: _ignored, pluginKey: _plugin, ...rest } = input;
     const entry: McpServerEntry = {
-      ...input,
+      ...rest,
       id: input.id || `mcp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
       enabled: input.enabled !== false,
     };
-    const stored = this._storedEntries();
-    stored.push(entry);
     await this._unremoveEntry(entry.id);
-    await this._writeEntries(stored);
-    return entry;
+    if (scope === "user") await this._writeUserEntry(entry);
+    else await this._writeEntries([...this._storedEntries().filter((stored) => stored.id !== entry.id), entry]);
+    this._discoveryAttempted.delete(entry.id);
+    return { ...entry, scope };
+  }
+
+  /** The same server, configured the same way, already present — what import skips. */
+  findDuplicate(candidate: Pick<McpServerEntry, "transport" | "url" | "command" | "args">): McpServerEntry | undefined {
+    const target = entryTarget(candidate);
+    return this.listEntries().find((entry) => entry.transport === candidate.transport && entryTarget(entry) === target);
   }
 
   async updateEntry(serverId: string, patch: Partial<McpServerEntry>): Promise<void> {
@@ -272,14 +280,15 @@ export class McpRegistry implements OAuthStorage {
       await this._pluginAction(source, { kind: "update", patch });
       return;
     }
-    const stored = this._storedEntries();
-    const index = stored.findIndex((entry) => entry.id === serverId);
-    const next = { ...source, ...patch, id: serverId };
-    const destinationChanged = source.transport !== next.transport || targetOf(source) !== targetOf(next);
+    const { scope: _scope, pluginKey: _plugin, ...cleanPatch } = patch;
+    const next: McpServerEntry = { ...source, ...cleanPatch, id: serverId };
+    delete next.scope;
+    const destinationChanged = source.transport !== next.transport || entryTarget(source) !== entryTarget(next);
     const connectionChanged = destinationChanged
       || JSON.stringify(source.auth ?? null) !== JSON.stringify(next.auth ?? null)
       || JSON.stringify(source.env ?? null) !== JSON.stringify(next.env ?? null)
       || JSON.stringify(source.headers ?? null) !== JSON.stringify(next.headers ?? null)
+      || (source.cwd ?? "") !== (next.cwd ?? "")
       || source.transportHint !== next.transportHint;
     if (destinationChanged) {
       // A server id is not a credential audience. Retargeting an entry must not send the old
@@ -287,52 +296,88 @@ export class McpRegistry implements OAuthStorage {
       await this.clearCredentials(serverId);
       await this._writePolicies(this._policies(), serverId);
     }
-    if (connectionChanged) await this.clearCache(serverId);
-    if (index === -1) {
-      // Settings-declared servers are read-only, but the user still edits them through the
-      // same panel: copy the entry into workspace state and apply the change to the copy.
-      stored.push(next);
-    } else {
-      stored[index] = next;
+    if (connectionChanged) {
+      await this.clearCache(serverId);
+      this._discoveryAttempted.delete(serverId);
+      this._discoveryErrors.delete(serverId);
     }
-    await this._unremoveEntry(serverId);
-    await this._writeEntries(stored);
+    // Edited where it lives: an all-projects server changes for every project.
+    if (source.scope === "user") await this._writeUserEntry(next);
+    else await this._writeEntries(this._storedEntries().map((entry) => (entry.id === serverId ? next : entry)));
   }
 
-  async removeEntry(serverId: string): Promise<void> {
-    const plugin = this.getEntry(serverId);
-    if (plugin?.pluginKey) {
-      await this._pluginAction(plugin, { kind: "remove" });
+  /**
+   * Remove a server. An all-projects server is removed from every project unless `hereOnly`, which
+   * hides it in this project and leaves it everywhere else (credentials kept, since the other
+   * projects still use them).
+   */
+  async removeEntry(serverId: string, options: { hereOnly?: boolean } = {}): Promise<void> {
+    const entry = this.getEntry(serverId);
+    if (entry?.pluginKey) {
+      await this._pluginAction(entry, { kind: "remove" });
       return;
     }
-    const configured = (vscode.workspace.getConfiguration("blacksite").inspect<unknown[]>("mcpServers")?.globalValue ?? [])
-      .map(normalizeEntry)
-      .some((entry) => entry?.id === serverId);
-    // Do this while the entry (and therefore its secret env-var names) is still resolvable.
-    await this.clearCredentials(serverId);
-    if (configured) {
-      const removed = new Set(this._context.workspaceState.get<string[]>(REMOVED_SERVERS_KEY, []) ?? []);
+    const inUserSettings = this._configRaw().some((raw) => normalizeEntry(raw)?.id === serverId);
+    if (options.hereOnly && inUserSettings) {
+      const removed = this._removedHere();
       removed.add(serverId);
       await this._context.workspaceState.update(REMOVED_SERVERS_KEY, [...removed]);
+      await this._writeEntries(this._storedEntries().filter((stored) => stored.id !== serverId));
+      return;
     }
-    await this._writeEntries(this._storedEntries().filter((entry) => entry.id !== serverId));
+    // Do this while the entry (and therefore its secret env-var names) is still resolvable.
+    await this.clearCredentials(serverId);
+    if (inUserSettings) await this._writeUserEntries(this._configRaw().filter((raw) => normalizeEntry(raw)?.id !== serverId));
+    await this._writeEntries(this._storedEntries().filter((stored) => stored.id !== serverId));
     await this._writePolicies(this._policies(), serverId);
     await this.clearCache(serverId);
   }
 
+  /** Move a server between "every project" (user settings) and "this project" (workspace state).
+   *  Credentials, tool choices and the inventory are keyed by id, so they move with it. */
+  async setScope(serverId: string, scope: "user" | "workspace"): Promise<void> {
+    const entry = this.getEntry(serverId);
+    if (!entry || entry.pluginKey || entry.scope === scope) return;
+    const plain: McpServerEntry = { ...entry };
+    delete plain.scope;
+    if (scope === "user") {
+      await this._writeUserEntry(plain);
+      await this._writeEntries(this._storedEntries().filter((stored) => stored.id !== serverId));
+      await this._unremoveEntry(serverId);
+    } else {
+      await this._writeEntries([...this._storedEntries().filter((stored) => stored.id !== serverId), plain]);
+      await this._writeUserEntries(this._configRaw().filter((raw) => normalizeEntry(raw)?.id !== serverId));
+    }
+  }
+
   private async _unremoveEntry(serverId: string): Promise<void> {
-    const removed = new Set(this._context.workspaceState.get<string[]>(REMOVED_SERVERS_KEY, []) ?? []);
+    const removed = this._removedHere();
     if (!removed.delete(serverId)) return;
     await this._context.workspaceState.update(REMOVED_SERVERS_KEY, [...removed]);
   }
 
   private _storedEntries(): McpServerEntry[] {
     const raw = this._context.workspaceState.get<unknown[]>(SERVERS_KEY, []) ?? [];
-    return raw.map(normalizeEntry).filter((entry): entry is McpServerEntry => !!entry);
+    return raw.map((entry) => normalizeEntry(entry)).filter((entry): entry is McpServerEntry => !!entry);
   }
 
   private async _writeEntries(entries: McpServerEntry[]): Promise<void> {
-    await this._context.workspaceState.update(SERVERS_KEY, entries);
+    await this._context.workspaceState.update(SERVERS_KEY, entries.map(serializeEntry));
+    this._onDidChange.fire();
+  }
+
+  /** Replace (or append) one server in user settings, keeping every other raw entry exactly as
+   *  the user wrote it — including ones this version cannot parse. */
+  private async _writeUserEntry(entry: McpServerEntry): Promise<void> {
+    const raw = this._configRaw();
+    const index = raw.findIndex((item) => normalizeEntry(item)?.id === entry.id);
+    const serialized = serializeEntry(entry);
+    const next = index === -1 ? [...raw, serialized] : raw.map((item, i) => (i === index ? serialized : item));
+    await this._writeUserEntries(next);
+  }
+
+  private async _writeUserEntries(entries: unknown[]): Promise<void> {
+    await vscode.workspace.getConfiguration("blacksite").update("mcpServers", entries, vscode.ConfigurationTarget.Global);
     this._onDidChange.fire();
   }
 
@@ -344,7 +389,11 @@ export class McpRegistry implements OAuthStorage {
 
   policyRecord(serverId: string): McpServerToolPolicy {
     const stored = this._policies()[serverId];
-    return { tools: stored?.tools ?? {}, fallback: stored?.fallback === "deny" ? "deny" : "allow" };
+    return {
+      tools: stored?.tools ?? {},
+      fallback: stored?.fallback === "deny" ? "deny" : "allow",
+      autoApprove: Array.isArray(stored?.autoApprove) ? stored.autoApprove.filter((name) => typeof name === "string") : [],
+    };
   }
 
   /** The runtime-facing policy. `allow` is left empty when the fallback already admits
@@ -373,7 +422,7 @@ export class McpRegistry implements OAuthStorage {
     const policies = this._policies();
     const tools: Record<string, boolean> = {};
     for (const tool of this.cachedTools(serverId)) tools[tool.name] = enabled;
-    policies[serverId] = { tools, fallback: enabled ? "allow" : "deny" };
+    policies[serverId] = { ...this.policyRecord(serverId), tools, fallback: enabled ? "allow" : "deny" };
     await this._writePolicies(policies);
   }
 
@@ -381,6 +430,31 @@ export class McpRegistry implements OAuthStorage {
     const policies = this._policies();
     policies[serverId] = { ...this.policyRecord(serverId), fallback };
     await this._writePolicies(policies);
+  }
+
+  /** "Always allow" for one tool, from the approval card or the panel. */
+  async setToolAutoApprove(serverId: string, toolName: string, autoApprove: boolean): Promise<void> {
+    const policies = this._policies();
+    const record = this.policyRecord(serverId);
+    const names = new Set(record.autoApprove);
+    if (autoApprove) names.add(toolName); else names.delete(toolName);
+    policies[serverId] = { ...record, autoApprove: [...names] };
+    await this._writePolicies(policies);
+  }
+
+  /**
+   * Whether a call may skip its approval prompt, and why. Undefined means ask.
+   *
+   * Two ways in: the user pressed "Always allow" for this tool, or the server is set to run its
+   * read-only tools unasked and this tool says it is read-only. A withheld tool is never
+   * auto-approved — it never reaches a gate at all.
+   */
+  autoApproval(serverId: string, toolName: string): "always" | "read_only" | undefined {
+    const record = this.policyRecord(serverId);
+    if (record.autoApprove?.includes(toolName)) return "always";
+    const entry = this.getEntry(serverId);
+    if (entry?.autoApproveReadOnly && toolIsReadOnly(this.cachedTools(serverId).find((tool) => tool.name === toolName))) return "read_only";
+    return undefined;
   }
 
   private async _writePolicies(policies: Record<string, McpServerToolPolicy>, removeId?: string): Promise<void> {
@@ -412,6 +486,7 @@ export class McpRegistry implements OAuthStorage {
 
   async clearCache(serverId: string): Promise<void> {
     const cache = this._cache();
+    if (!(serverId in cache)) return;
     delete cache[serverId];
     await this._context.globalState.update(CACHE_KEY, cache);
     this._onDidChange.fire();
@@ -420,12 +495,14 @@ export class McpRegistry implements OAuthStorage {
   /** The panel's view: every discovered tool with this workspace's verdict attached. */
   toolViews(serverId: string): McpToolView[] {
     const record = this.policyRecord(serverId);
+    const entry = this.getEntry(serverId);
     return this.cachedTools(serverId).map((tool) => {
       const explicit = Object.prototype.hasOwnProperty.call(record.tools, tool.name);
       return {
         ...tool,
         enabled: explicit ? record.tools[tool.name] === true : record.fallback === "allow",
         implicit: !explicit,
+        autoApproved: !!record.autoApprove?.includes(tool.name) || (!!entry?.autoApproveReadOnly && toolIsReadOnly(tool)),
       };
     });
   }
@@ -436,11 +513,115 @@ export class McpRegistry implements OAuthStorage {
     return this.toolViews(serverId).filter((tool) => tool.enabled).map((tool) => tool.name);
   }
 
+  /** Every tool the agent may call across enabled servers, for its typed tool catalog. */
+  agentTools(): McpAgentTool[] {
+    const out: McpAgentTool[] = [];
+    for (const entry of this.enabledEntries()) {
+      const policy = this.policyRecord(entry.id);
+      for (const tool of this.cachedTools(entry.id)) {
+        const explicit = Object.prototype.hasOwnProperty.call(policy.tools, tool.name);
+        const enabled = explicit ? policy.tools[tool.name] === true : policy.fallback === "allow";
+        if (enabled) out.push({ serverId: entry.id, serverName: entry.name, tool });
+      }
+    }
+    return out;
+  }
+
+  // ── Discovery ───────────────────────────────────────────────────────────────
+
+  /**
+   * Connect, list the server's tools, and store the inventory.
+   *
+   * Used by the panel's Discover button and by background discovery. Before background discovery,
+   * only the panel ever wrote the inventory, so a server added in settings or by a plugin showed no
+   * tools to the agent (and no argument schemas to check calls against) until someone opened the
+   * panel and pressed Discover.
+   */
+  async refreshInventory(serverId: string): Promise<McpDiscoveryOutcome> {
+    const resolved = await this.resolveForPanel(serverId);
+    if (!resolved.ok) {
+      this._discoveryErrors.set(serverId, resolved.message);
+      return { ok: false, message: resolved.message, authRequired: resolved.reason === "auth_required" };
+    }
+    this._discovering.add(serverId);
+    try {
+      const result = await discoverMcpTools(resolved.server);
+      if (!result.ok) {
+        const message = result.authRequired ? `${result.error} Sign in to continue.` : result.error;
+        this._discoveryErrors.set(serverId, message);
+        return { ok: false, message, authRequired: result.authRequired };
+      }
+      this._discoveryErrors.delete(serverId);
+      await this.setCache(serverId, {
+        fetchedAt: new Date().toISOString(),
+        serverName: result.server.name,
+        serverVersion: result.server.version,
+        protocolVersion: result.server.protocolVersion,
+        protocolSupported: result.server.protocolSupported,
+        capabilities: result.server.capabilities,
+        instructions: result.server.instructions?.slice(0, 4000),
+        tools: result.tools,
+      });
+      return { ok: true, message: `${result.tools.length} tool${result.tools.length === 1 ? "" : "s"} discovered.` };
+    } finally {
+      this._discovering.delete(serverId);
+      this._onDidChange.fire();
+    }
+  }
+
+  /** The last background or manual discovery failure for a server, if it has not since succeeded. */
+  discoveryError(serverId: string): string | undefined {
+    return this._discoveryErrors.get(serverId);
+  }
+
+  isDiscovering(serverId: string): boolean {
+    return this._discovering.has(serverId);
+  }
+
+  /**
+   * Discover every enabled server that has no inventory yet, one at a time, in the background.
+   * Each server is tried once per window (again only after its configuration changes), so a
+   * server that is down or needs a sign-in does not relaunch on every change event.
+   */
+  ensureDiscovered(): void {
+    if (!vscode.workspace.isTrusted) return;
+    for (const entry of this.enabledEntries()) {
+      if (this.cacheEntry(entry.id) || this._discoveryAttempted.has(entry.id)) continue;
+      this._discoveryAttempted.add(entry.id);
+      this._discoveryQueue = this._discoveryQueue
+        .then(() => this.refreshInventory(entry.id))
+        .then(() => undefined, () => undefined);
+    }
+  }
+
+  /** Keep inventories current without anyone pressing Discover: new and edited servers are
+   *  discovered in the background, and a server's tools/list_changed refreshes its inventory. */
+  startAutoDiscovery(): void {
+    if (this._autoDiscovery) return;
+    this._autoDiscovery = true;
+    this._subscriptions.push(this.onDidChange(() => this.ensureDiscovered()));
+    this.ensureDiscovered();
+  }
+
+  /** A server said its tool list changed. Coalesced, because servers often announce several
+   *  changes in a burst while starting up. */
+  private _scheduleRefresh(serverId: string): void {
+    const existing = this._refreshTimers.get(serverId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this._refreshTimers.delete(serverId);
+      void this.refreshInventory(serverId).catch(() => undefined);
+    }, 1500);
+    (timer as unknown as { unref?: () => void }).unref?.();
+    this._refreshTimers.set(serverId, timer);
+  }
+
   // ── Credentials ─────────────────────────────────────────────────────────────
 
   async setStaticSecret(serverId: string, value: string): Promise<void> {
     await this._context.secrets.store(secretKey("token", serverId), value);
     await this.clearCache(serverId);
+    this._discoveryAttempted.delete(serverId);
     this._onDidChange.fire();
   }
 
@@ -451,6 +632,7 @@ export class McpRegistry implements OAuthStorage {
   async setEnvSecret(serverId: string, name: string, value: string): Promise<void> {
     await this._context.secrets.store(secretKey("env", serverId, name), value);
     await this.clearCache(serverId);
+    this._discoveryAttempted.delete(serverId);
     this._onDidChange.fire();
   }
 
@@ -497,6 +679,7 @@ export class McpRegistry implements OAuthStorage {
   async writeTokens(serverId: string, tokens: OAuthTokenSet): Promise<void> {
     await this._context.secrets.store(secretKey("oauth", serverId), JSON.stringify(tokens));
     await this.clearCache(serverId);
+    this._discoveryAttempted.delete(serverId);
     this._onDidChange.fire();
   }
 
@@ -542,6 +725,10 @@ export class McpRegistry implements OAuthStorage {
     return this._resolve(serverId, { requireEnabled: false, audience: "panel" });
   }
 
+  private _expansion(): { env: Record<string, string | undefined>; workspaceFolder?: string; userHome: string } {
+    return { env: process.env, workspaceFolder: this._roots()[0], userHome: os.homedir() };
+  }
+
   private async _resolve(serverId: string, options: ResolveOptions): Promise<McpResolution> {
     const entry = this.getEntry(serverId);
     if (!entry) {
@@ -550,13 +737,18 @@ export class McpRegistry implements OAuthStorage {
     if (options.requireEnabled && !entry.enabled) {
       return { ok: false, reason: "disabled", message: `MCP server '${entry.name}' is disabled.` };
     }
-    const target = targetOf(entry);
+    const vars = this._expansion();
+    const target = expandVariables(targetOf(entry), vars).trim();
     if (!target) {
       return { ok: false, reason: "invalid", message: `MCP server '${entry.name}' has no ${entry.transport === "http" ? "URL" : "command"} configured.` };
     }
 
+    const headers = entry.headers && Object.keys(entry.headers).length
+      ? Object.fromEntries(Object.entries(entry.headers).map(([name, value]) => [name, expandVariables(value, vars)]))
+      : undefined;
     const server: McpServer = {
       id: entry.id,
+      label: entry.name,
       url: target,
       roots: this._roots(),
       client: {
@@ -564,8 +756,8 @@ export class McpRegistry implements OAuthStorage {
         version: String(this._context.extension?.packageJSON?.version ?? "unknown"),
         title: "Blacksite",
       },
-      onToolsChanged: () => { void this.clearCache(entry.id); },
-      headers: entry.headers && Object.keys(entry.headers).length ? { ...entry.headers } : undefined,
+      onToolsChanged: () => { this._scheduleRefresh(entry.id); },
+      headers,
     };
 
     if (entry.transport === "http") {
@@ -578,9 +770,9 @@ export class McpRegistry implements OAuthStorage {
       // Relative arguments in local MCP commands (for example a filesystem server launched
       // with `.`) are expected to refer to the active workspace, not VS Code's install dir.
       // A plugin server names its own working directory (its plugin root by default).
-      server.cwd = entry.cwd ?? server.roots?.[0];
-      if (entry.args) server.args = [...entry.args];
-      server.env = await this._resolveEnv(entry);
+      server.cwd = entry.cwd ? expandVariables(entry.cwd, vars) : server.roots?.[0];
+      if (entry.args) server.args = entry.args.map((arg) => expandVariables(arg, vars));
+      server.env = await this._resolveEnv(entry, vars);
     }
 
     const applied = entry.transport === "http"
@@ -590,11 +782,13 @@ export class McpRegistry implements OAuthStorage {
     return { ok: true, server };
   }
 
-  private async _resolveEnv(entry: McpServerEntry): Promise<Record<string, string> | undefined> {
+  private async _resolveEnv(entry: McpServerEntry, vars: ReturnType<McpRegistry["_expansion"]>): Promise<Record<string, string> | undefined> {
     if (!entry.env?.length) return undefined;
     const env: Record<string, string> = {};
     for (const variable of entry.env) {
-      const value = variable.secret ? await this.getEnvSecret(entry.id, variable.name) : variable.value;
+      const value = variable.secret
+        ? await this.getEnvSecret(entry.id, variable.name)
+        : variable.value !== undefined ? expandVariables(variable.value, vars) : undefined;
       // A secret the user has not filled in yet is left unset rather than passed as "", which
       // servers routinely treat as a *present* but invalid credential and fail confusingly on.
       if (value !== undefined && value !== "") env[variable.name] = value;

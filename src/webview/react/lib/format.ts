@@ -179,6 +179,9 @@ export function humanizeWord(word: unknown): string {
 export function toolDisplayName(name: unknown): string {
   const toolName = readStr(name);
   if (TOOL_LABELS[toolName]) return TOOL_LABELS[toolName];
+  // mcp__github__create_issue → "Create Issue · github"
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(toolName);
+  if (mcp) return `${mcp[2]!.split(/[_-]/).filter(Boolean).map(humanizeWord).join(" ") || mcp[2]} · ${mcp[1]}`;
   return toolName.split("_").filter(Boolean).map(humanizeWord).join(" ") || "Tool";
 }
 
@@ -558,7 +561,7 @@ export const TOOL_GROUPS: ToolGroupDef[] = [
   { label: "Jira", tools: ["jira_list_issues", "jira_get_issue", "jira_create_issue", "jira_update_issue", "jira_add_comment", "jira_list_projects"] },
   { label: "Confluence", tools: ["confluence_search", "confluence_get_page", "confluence_create_page", "confluence_update_page", "confluence_list_spaces"] },
   { label: "Salesforce", tools: ["salesforce_query", "salesforce_get_object", "salesforce_create_object", "salesforce_update_object", "salesforce_list_objects"] },
-  { label: "MCP", tools: ["mcp_list_tools", "mcp_call_tool"] },
+  { label: "MCP", tools: ["mcp_list_tools", "mcp_call_tool", "mcp_list_resources", "mcp_read_resource"] },
 ];
 
 export const ALL_TOOL_NAMES: string[] = TOOL_GROUPS.flatMap((g) => g.tools);
@@ -648,6 +651,8 @@ export const TOOL_LABELS: Record<string, string> = {
   salesforce_op: "Salesforce",
   mcp_list_tools: "MCP Tools",
   mcp_call_tool: "MCP Call",
+  mcp_list_resources: "MCP Resources",
+  mcp_read_resource: "MCP Read",
   question_card: "Question",
   browser_navigate: "Browser Navigate",
   browser_click: "Browser Click",

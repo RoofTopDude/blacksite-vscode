@@ -44,6 +44,31 @@ const IDLE_CONNECTION_MS = 5 * 60_000;
 const MAX_TOOL_PAGES = 50;
 /** Inline base64 payloads are replaced past this size — see redactLargeBlobs. */
 const MAX_INLINE_BLOB_CHARS = 8 * 1024;
+/** Images a tool result may hand to the host for the model's eyes, and the largest one taken.
+ *  The host downscales what it keeps; this only bounds what crosses the process boundary. */
+const MAX_RESULT_IMAGES = 4;
+const MAX_RESULT_IMAGE_CHARS = 8 * 1024 * 1024;
+/** stderr lines forwarded to the MCP log per connection. Servers log freely while healthy;
+ *  past this the log notes the cut once instead of flooding the channel. */
+const MAX_LOGGED_STDERR_LINES = 400;
+
+// ── Log ───────────────────────────────────────────────────────────────────────
+
+export type McpLogLevel = "info" | "warn" | "error";
+export interface McpLogEntry { server: string; level: McpLogLevel; message: string }
+
+let mcpLog: ((entry: McpLogEntry) => void) | undefined;
+
+/** Where connection events, server stderr and call outcomes are reported. Without it an MCP
+ *  server that fails to start leaves nothing to read but a truncated error. Never receives a
+ *  credential: messages carry server labels, method names and timings only. */
+export function setMcpLogger(logger: ((entry: McpLogEntry) => void) | undefined): void {
+  mcpLog = logger;
+}
+
+function logMcp(server: { label: string }, level: McpLogLevel, message: string): void {
+  try { mcpLog?.({ server: server.label, level, message }); } catch { /* the log must never fail a call */ }
+}
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -117,11 +142,13 @@ interface NormalizedServer {
   timeoutMs?: number;
   client: McpClientIdentity;
   onToolsChanged?: () => void;
+  label: string;
 }
 
 function normalizeServer(server: McpServer): NormalizedServer {
   const target = typeof server.url === "string" ? server.url.trim() : "";
   return {
+    label: (typeof server.label === "string" && server.label.trim()) || server.id || target.split(/\s+/)[0] || "MCP server",
     target,
     args: Array.isArray(server.args) ? server.args.map(String) : undefined,
     isHttp: /^https?:\/\//i.test(target),
@@ -251,6 +278,36 @@ function answerServerRequest(request: JsonRpcRequest, roots: string[]): JsonRpcR
     id: request.id,
     error: { code: -32601, message: `Method not supported by this client: ${request.method}` },
   };
+}
+
+/** A server→client notification: a frame with a method and no id. */
+function isNotification(message: unknown): message is JsonRpcNotification {
+  if (!message || typeof message !== "object") return false;
+  const m = message as Record<string, unknown>;
+  return typeof m["method"] === "string" && (m["id"] === undefined || m["id"] === null);
+}
+
+/**
+ * React to what a server announces on its own.
+ *
+ * `tools/list_changed` used to be dropped, so a server that grew or lost a tool kept its old
+ * inventory until someone pressed Discover again: the agent was offered a tool that no longer
+ * existed, or never saw a new one. Now the connection's catalog is invalidated and the host is
+ * told, so it can refresh what it persisted. Log notifications go to the MCP log.
+ */
+function handleServerNotification(connection: McpConnection, server: NormalizedServer, message: JsonRpcNotification): void {
+  if (message.method === "notifications/tools/list_changed") {
+    connectionToolCatalogs.delete(connection);
+    logMcp(server, "info", "Server reported a changed tool list.");
+    try { server.onToolsChanged?.(); } catch { /* host callback errors are not the server's problem */ }
+    return;
+  }
+  if (message.method === "notifications/message") {
+    const params = (message.params && typeof message.params === "object" ? message.params : {}) as Record<string, unknown>;
+    const level = String(params["level"] ?? "info");
+    const data = typeof params["data"] === "string" ? params["data"] : JSON.stringify(params["data"] ?? "");
+    logMcp(server, /error|critical|alert|emergency/.test(level) ? "error" : level === "warning" ? "warn" : "info", `[server ${level}] ${data.slice(0, 500)}`);
+  }
 }
 
 /** Tracks in-flight requests for the transports whose replies arrive out of band. */
@@ -385,18 +442,39 @@ class StdioConnection implements McpConnection {
     this._alive = true;
     this._stdout = "";
     this._stderr = "";
+    this._stderrLine = "";
+    this._stderrLogged = 0;
+    logMcp(this._server, "info", `Starting ${[plan.command, ...plan.args].join(" ").slice(0, 300)}${this._server.cwd ? ` in ${this._server.cwd}` : ""}`);
 
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => this._onStdout(chunk));
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
-      // Kept only as failure context — MCP stdio servers log freely to stderr while healthy.
+      // The first 4 KB is kept as failure context for the error message; every line goes to
+      // the MCP log, since servers log freely to stderr and that is where a failure is explained.
       if (this._stderr.length < 4096) this._stderr += chunk.slice(0, 4096 - this._stderr.length);
+      this._logStderr(chunk);
     });
     child.on("error", (error) => this._die(error instanceof Error ? error : new Error(String(error)), child));
     child.on("exit", (code) => this._die(new Error(
       `MCP server process exited (${code}).${this._stderr.trim() ? ` Stderr: ${this._stderr.trim().slice(0, 400)}` : ""}`,
     ), child));
+  }
+
+  private _stderrLine = "";
+  private _stderrLogged = 0;
+
+  private _logStderr(chunk: string): void {
+    this._stderrLine += chunk;
+    const lines = this._stderrLine.split(/\r?\n/);
+    this._stderrLine = (lines.pop() ?? "").slice(-2000);
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      this._stderrLogged += 1;
+      if (this._stderrLogged === MAX_LOGGED_STDERR_LINES + 1) logMcp(this._server, "info", "[stderr] further output is not logged for this process.");
+      if (this._stderrLogged > MAX_LOGGED_STDERR_LINES) continue;
+      logMcp(this._server, "info", `[stderr] ${line.slice(0, 500)}`);
+    }
   }
 
   request(method: string, params: unknown, timeoutMs: number, signal?: AbortSignal): Promise<unknown> {
@@ -484,6 +562,10 @@ class StdioConnection implements McpConnection {
       this._write(answerServerRequest(message, this._server.roots));
       return;
     }
+    if (isNotification(message)) {
+      handleServerNotification(this, this._server, message);
+      return;
+    }
     if (message && typeof message === "object" && ("result" in message || "error" in message)) {
       this._pending.settle(message as JsonRpcResponseMessage);
     }
@@ -492,6 +574,7 @@ class StdioConnection implements McpConnection {
   private _die(error: Error, child?: ChildProcessWithoutNullStreams): void {
     if (child && this._child !== child) return;
     if (!this._alive && !this._child) return;
+    logMcp(this._server, "warn", error.message.slice(0, 600));
     this._alive = false;
     this._child = undefined;
     this._pending.rejectAll(error);
@@ -771,6 +854,7 @@ class StreamableHttpConnection implements McpConnection {
           for (const frame of flattenFrames(parsed)) {
             if (isResponseFor(frame, id)) return resultOrThrow(frame, method);
             if (isServerRequest(frame)) void this._answer(frame);
+            else if (isNotification(frame)) handleServerNotification(this, this._server, frame);
           }
         }
         if (done) break;
@@ -972,6 +1056,8 @@ class LegacySseConnection implements McpConnection {
             for (const frame of flattenFrames(parsed)) {
               if (isServerRequest(frame)) {
                 void this._send(answerServerRequest(frame, this._server.roots)).catch(() => undefined);
+              } else if (isNotification(frame)) {
+                handleServerNotification(this, this._server, frame);
               } else if (frame && typeof frame === "object" && ("result" in frame || "error" in frame)) {
                 this._pending.settle(frame as JsonRpcResponseMessage);
               }
@@ -1106,7 +1192,17 @@ async function acquire(server: McpServer): Promise<{ connection: McpConnection; 
   const pending = { fingerprint, promise: attempt, generation };
   connecting.set(key, pending);
   try {
-    const connection = await attempt;
+    let connection: McpConnection;
+    try {
+      connection = await attempt;
+    } catch (error) {
+      logMcp(normalized, "error", `Could not connect: ${error instanceof Error ? error.message : String(error)}`.slice(0, 800));
+      throw error;
+    }
+    const transport = connection instanceof StdioConnection ? "stdio"
+      : connection instanceof LegacySseConnection ? "HTTP+SSE (2024-11-05)" : "Streamable HTTP";
+    const identity = connection.info.serverInfo.name ? `, server ${connection.info.serverInfo.name}${connection.info.serverInfo.version ? ` ${connection.info.serverInfo.version}` : ""}` : "";
+    logMcp(normalized, "info", `Connected over ${transport}, protocol ${connection.info.protocolVersion}${identity}.`);
     if (generation !== poolGeneration) {
       connection.close();
       throw new Error("MCP connection was closed while it was opening.");
@@ -1191,6 +1287,36 @@ function redactLargeBlobs(value: unknown, depth = 0): unknown {
     out[key] = redactLargeBlobs(entry, depth + 1);
   }
   return out;
+}
+
+export interface McpImage { mimeType: string; data: string }
+
+/**
+ * Image payloads in a result, taken out before redaction so the host can show them to the model.
+ *
+ * Redaction alone left a screenshot or design server effectively blind: the model saw only
+ * "[image/png payload omitted]". Images are carried beside the redacted content instead, and the
+ * host turns them into real vision blocks (or a fallback description) the way it does for
+ * browser screenshots. Covers plain image blocks and embedded image resources.
+ */
+function collectImages(content: unknown): McpImage[] {
+  if (!Array.isArray(content)) return [];
+  const images: McpImage[] = [];
+  for (const block of content) {
+    if (images.length >= MAX_RESULT_IMAGES) break;
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    const source = b["type"] === "image" ? b
+      : (b["type"] === "resource" && b["resource"] && typeof b["resource"] === "object") ? b["resource"] as Record<string, unknown>
+        : typeof b["blob"] === "string" ? b
+          : undefined;
+    if (!source) continue;
+    const mimeType = typeof source["mimeType"] === "string" ? source["mimeType"] : "";
+    const data = typeof source["data"] === "string" ? source["data"] : typeof source["blob"] === "string" ? source["blob"] : "";
+    if (!/^image\//i.test(mimeType) || !data || data.length > MAX_RESULT_IMAGE_CHARS) continue;
+    images.push({ mimeType, data });
+  }
+  return images;
 }
 
 /** Flatten `content` blocks into the text an agent can actually reason over. */
@@ -1302,6 +1428,8 @@ export interface McpToolCallResult {
   content?: unknown;
   structuredContent?: unknown;
   isError?: boolean;
+  /** Images from the result, for the host to attach as vision input. Never sent back as text. */
+  images?: McpImage[];
 }
 
 export async function callMcpTool(
@@ -1314,6 +1442,8 @@ export async function callMcpTool(
   // timing difference that distinguishes it from a name the server never had.
   if (!isToolAllowed(toolName, server.toolPolicy)) return unknownToolError(toolName);
 
+  const started = Date.now();
+  const logTarget = { label: normalizeServer(server).label };
   try {
     const { connection, normalized } = await acquire(server);
     let tool: McpToolDescriptor | undefined;
@@ -1334,9 +1464,11 @@ export async function callMcpTool(
       tool && connection.toolCallHeaders ? connection.toolCallHeaders(tool, args) : undefined,
     );
     const result = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    const images = collectImages(result["content"]);
     const content = redactLargeBlobs(result["content"]);
     const isError = result["isError"] === true;
     const text = summarizeContent(content);
+    logMcp(normalized, isError ? "warn" : "info", `tools/call ${toolName} → ${isError ? "tool error" : "ok"} in ${Date.now() - started} ms${images.length ? `, ${images.length} image${images.length === 1 ? "" : "s"}` : ""}`);
     if (isError) {
       return { ok: false, isError: true, error: text || "The MCP tool reported an error.", content };
     }
@@ -1344,11 +1476,233 @@ export async function callMcpTool(
       ok: true,
       content,
       structuredContent: result["structuredContent"] !== undefined ? redactLargeBlobs(result["structuredContent"]) : undefined,
+      ...(images.length ? { images } : {}),
     };
   } catch (error) {
+    logMcp(logTarget, signal?.aborted ? "info" : "error", `tools/call ${toolName} → ${signal?.aborted ? "cancelled" : `failed after ${Date.now() - started} ms: ${error instanceof Error ? error.message : String(error)}`}`.slice(0, 800));
     // Cooperative cancellation rejects only this request. The stdio/legacy transports send
     // notifications/cancelled and remain healthy; evicting here needlessly respawned them.
     if (!signal?.aborted) evict(server);
+    return failure(error);
+  }
+}
+
+// ── Resources and prompts ─────────────────────────────────────────────────────
+
+export interface McpResourceDescriptor {
+  uri: string;
+  name?: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+  size?: number;
+}
+
+export interface McpResourceTemplate {
+  uriTemplate: string;
+  name?: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+}
+
+export interface McpPromptDescriptor {
+  name: string;
+  title?: string;
+  description?: string;
+  arguments?: Array<{ name: string; description?: string; required?: boolean }>;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function supportsCapability(connection: McpConnection, capability: string): boolean {
+  return Object.prototype.hasOwnProperty.call(connection.info.capabilities ?? {}, capability);
+}
+
+/** Every page of a cursor-paginated list, bounded like tools/list. */
+async function fetchAllPages<T>(
+  connection: McpConnection,
+  method: string,
+  key: string,
+  normalize: (raw: unknown) => T | null,
+  timeoutMs: number,
+): Promise<T[]> {
+  const items: T[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_TOOL_PAGES; page++) {
+    const raw = await connection.request(method, cursor ? { cursor } : {}, timeoutMs);
+    const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    for (const entry of Array.isArray(r[key]) ? r[key] as unknown[] : []) {
+      const item = normalize(entry);
+      if (item) items.push(item);
+    }
+    const next = typeof r["nextCursor"] === "string" && r["nextCursor"] ? r["nextCursor"] : undefined;
+    if (!next || next === cursor) break;
+    cursor = next;
+  }
+  return items;
+}
+
+function normalizeResource(raw: unknown): McpResourceDescriptor | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const uri = optionalString(r["uri"]);
+  if (!uri) return null;
+  return {
+    uri,
+    name: optionalString(r["name"]),
+    title: optionalString(r["title"]),
+    description: optionalString(r["description"]),
+    mimeType: optionalString(r["mimeType"]),
+    size: typeof r["size"] === "number" ? r["size"] : undefined,
+  };
+}
+
+function normalizeTemplate(raw: unknown): McpResourceTemplate | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const uriTemplate = optionalString(r["uriTemplate"]);
+  if (!uriTemplate) return null;
+  return {
+    uriTemplate,
+    name: optionalString(r["name"]),
+    title: optionalString(r["title"]),
+    description: optionalString(r["description"]),
+    mimeType: optionalString(r["mimeType"]),
+  };
+}
+
+function normalizePrompt(raw: unknown): McpPromptDescriptor | null {
+  if (!raw || typeof raw !== "object") return null;
+  const p = raw as Record<string, unknown>;
+  const name = optionalString(p["name"]);
+  if (!name) return null;
+  const args = Array.isArray(p["arguments"])
+    ? (p["arguments"] as unknown[]).flatMap((entry) => {
+      if (!entry || typeof entry !== "object") return [];
+      const a = entry as Record<string, unknown>;
+      const argName = optionalString(a["name"]);
+      return argName ? [{ name: argName, description: optionalString(a["description"]), required: a["required"] === true }] : [];
+    })
+    : undefined;
+  return { name, title: optionalString(p["title"]), description: optionalString(p["description"]), arguments: args };
+}
+
+export interface McpResourceListResult {
+  ok: true;
+  /** False when the server does not offer resources at all. */
+  supported: boolean;
+  resources: McpResourceDescriptor[];
+  templates: McpResourceTemplate[];
+}
+
+/** Resources a server publishes, with its URI templates. Templates are optional in the spec,
+ *  so a server that answers them with an error still lists its resources. */
+export async function listMcpResources(server: McpServer): Promise<McpResourceListResult | McpFailure> {
+  try {
+    const { connection, normalized } = await acquire(server);
+    if (!supportsCapability(connection, "resources")) return { ok: true, supported: false, resources: [], templates: [] };
+    const timeout = normalized.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const resources = await fetchAllPages(connection, "resources/list", "resources", normalizeResource, timeout);
+    const templates = await fetchAllPages(connection, "resources/templates/list", "resourceTemplates", normalizeTemplate, timeout)
+      .catch(() => [] as McpResourceTemplate[]);
+    return { ok: true, supported: true, resources, templates };
+  } catch (error) {
+    evict(server);
+    return failure(error);
+  }
+}
+
+export interface McpResourceContent {
+  uri: string;
+  mimeType?: string;
+  text?: string;
+  /** Set instead of `text` for binary content, which is never returned inline. */
+  binary?: string;
+}
+
+export interface McpResourceReadResult {
+  ok: true;
+  contents: McpResourceContent[];
+  images?: McpImage[];
+}
+
+/** Read one resource. Text is returned as-is (the host caps it); binary content is described,
+ *  except images, which travel beside it like a tool result's. */
+export async function readMcpResource(server: McpServer, uri: string, signal?: AbortSignal): Promise<McpResourceReadResult | McpFailure> {
+  const started = Date.now();
+  try {
+    const { connection, normalized } = await acquire(server);
+    const raw = await connection.request("resources/read", { uri }, normalized.timeoutMs ?? TOOL_CALL_TIMEOUT_MS, signal);
+    const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    const list = Array.isArray(r["contents"]) ? r["contents"] as unknown[] : [];
+    const images = collectImages(list);
+    const contents: McpResourceContent[] = [];
+    for (const entry of list) {
+      if (!entry || typeof entry !== "object") continue;
+      const c = entry as Record<string, unknown>;
+      const item: McpResourceContent = { uri: optionalString(c["uri"]) ?? uri, mimeType: optionalString(c["mimeType"]) };
+      if (typeof c["text"] === "string") item.text = c["text"];
+      else if (typeof c["blob"] === "string") item.binary = `[${item.mimeType ?? "binary"} content — ${Math.round(c["blob"].length * 0.75 / 1024)} KB]`;
+      contents.push(item);
+    }
+    logMcp(normalized, "info", `resources/read ${uri.slice(0, 200)} → ok in ${Date.now() - started} ms`);
+    return { ok: true, contents, ...(images.length ? { images } : {}) };
+  } catch (error) {
+    logMcp(normalizeServer(server), "error", `resources/read ${uri.slice(0, 200)} failed: ${error instanceof Error ? error.message : String(error)}`.slice(0, 800));
+    if (!signal?.aborted) evict(server);
+    return failure(error);
+  }
+}
+
+export interface McpPromptListResult { ok: true; supported: boolean; prompts: McpPromptDescriptor[] }
+
+export async function listMcpPrompts(server: McpServer): Promise<McpPromptListResult | McpFailure> {
+  try {
+    const { connection, normalized } = await acquire(server);
+    if (!supportsCapability(connection, "prompts")) return { ok: true, supported: false, prompts: [] };
+    const prompts = await fetchAllPages(connection, "prompts/list", "prompts", normalizePrompt, normalized.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    return { ok: true, supported: true, prompts };
+  } catch (error) {
+    evict(server);
+    return failure(error);
+  }
+}
+
+export interface McpPromptMessage { role: "user" | "assistant"; text: string }
+export interface McpPromptResult { ok: true; description?: string; messages: McpPromptMessage[] }
+
+/** Expand a prompt into its messages, flattened to text. An embedded text resource becomes its
+ *  text; anything else is named in brackets so the reader knows something was there. */
+export async function getMcpPrompt(server: McpServer, name: string, args: Record<string, string>): Promise<McpPromptResult | McpFailure> {
+  try {
+    const { connection, normalized } = await acquire(server);
+    const raw = await connection.request("prompts/get", { name, arguments: args }, normalized.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+    const messages: McpPromptMessage[] = [];
+    for (const entry of Array.isArray(r["messages"]) ? r["messages"] as unknown[] : []) {
+      if (!entry || typeof entry !== "object") continue;
+      const m = entry as Record<string, unknown>;
+      const role = m["role"] === "assistant" ? "assistant" : "user";
+      const blocks = Array.isArray(m["content"]) ? m["content"] as unknown[] : [m["content"]];
+      const parts: string[] = [];
+      for (const block of blocks) {
+        if (!block || typeof block !== "object") continue;
+        const b = block as Record<string, unknown>;
+        if (b["type"] === "text" && typeof b["text"] === "string") parts.push(b["text"]);
+        else if (b["type"] === "resource" && b["resource"] && typeof b["resource"] === "object") {
+          const resource = b["resource"] as Record<string, unknown>;
+          parts.push(typeof resource["text"] === "string" ? resource["text"] : `[resource ${String(resource["uri"] ?? "")}]`);
+        } else if (typeof b["type"] === "string") parts.push(`[${b["type"]}]`);
+      }
+      const text = parts.join("\n").trim();
+      if (text) messages.push({ role, text });
+    }
+    return { ok: true, description: optionalString(r["description"]), messages };
+  } catch (error) {
+    evict(server);
     return failure(error);
   }
 }

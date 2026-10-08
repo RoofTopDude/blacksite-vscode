@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import { LocalRuntime, closeMcpConnections } from "@blacksite/local-runtime";
+import { LocalRuntime, closeMcpConnections, setMcpLogger } from "@blacksite/local-runtime";
 import { readCommandPolicy } from "./command-policy.js";
 import { ChatProvider } from "./chat-provider.js";
 import { ChromiumRunner } from "./chromium-runner.js";
@@ -14,6 +14,8 @@ import { BlacksiteCodeActionProvider } from "./code-actions.js";
 import { DiagnosticsPublisher } from "./diagnostics-publisher.js";
 import { startDiagnosticPublishTracker } from "./post-edit-diagnostics.js";
 import { McpPanel } from "./mcp-panel.js";
+import { attachMcpResource, importMcpServers, useMcpPrompt } from "./mcp-commands.js";
+import { HooksPanel } from "./hooks-panel.js";
 import { McpRegistry } from "./mcp-registry.js";
 import { BaseContextStore } from "./base-context-store.js";
 import { PlanningStore } from "./planning-store.js";
@@ -286,6 +288,14 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   const mcpRegistry = new McpRegistry(context, () => getGraphRoots().map((root) => root.path));
   context.subscriptions.push(mcpRegistry, { dispose: () => closeMcpConnections() });
   mcpRegistry.setPluginSource(() => plugins.mcpEntries(), pluginEntryActionHandler(plugins));
+  /* Connections, server stderr and every call's outcome. Before this, a server that failed to
+     start left nothing to read but a truncated error message. */
+  const mcpLog = vscode.window.createOutputChannel("Blacksite MCP", { log: true });
+  setMcpLogger((entry) => mcpLog[entry.level](`[${entry.server}] ${entry.message}`));
+  context.subscriptions.push(mcpLog, { dispose: () => setMcpLogger(undefined) });
+  // Servers added in settings, by a plugin or by import get their tools listed without anyone
+  // pressing Discover, and a server that announces a changed tool list is re-listed.
+  mcpRegistry.startAutoDiscovery();
 
   chatProvider = new ChatProvider(
     context,
@@ -413,6 +423,9 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     void (healthy ? vscode.window.showInformationMessage("Lifecycle hooks look ready. Details are in the Blacksite Hooks output.")
       : vscode.window.showWarningMessage("Some lifecycle hooks cannot run. Details are in the Blacksite Hooks output."));
   }));
+  // The Hooks page. "Manage Hooks" was declared from 1.26.0 on with no handler behind it.
+  const hooksPanel = new HooksPanel(context, () => workspaceRoot, () => hooksChannel.show(true));
+  context.subscriptions.push(hooksPanel, vscode.commands.registerCommand("blacksite.manageHooks", () => hooksPanel.open()));
   context.subscriptions.push(vscode.commands.registerCommand("blacksite.runs.authorizeExternalApplication", async () => {
     if (!desktopCapture.available()) {
       void vscode.window.showInformationMessage("External application capture is currently available on Windows only.");
@@ -1029,6 +1042,10 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     vscode.commands.registerCommand("blacksite.manageMcp", () => {
       McpPanel.show(mcpRegistry);
     }),
+    vscode.commands.registerCommand("blacksite.mcp.showLogs", () => mcpLog.show(true)),
+    vscode.commands.registerCommand("blacksite.mcp.import", () => importMcpServers(mcpRegistry, context, getGraphRoots().map((root) => root.path))),
+    vscode.commands.registerCommand("blacksite.mcp.usePrompt", () => useMcpPrompt(mcpRegistry, (text, label) => chatProvider?.injectContext(text, label))),
+    vscode.commands.registerCommand("blacksite.mcp.attachResource", () => attachMcpResource(mcpRegistry, (text, label) => chatProvider?.injectContext(text, label))),
   );
 
   // Clear any problems Blacksite has surfaced into the Problems panel

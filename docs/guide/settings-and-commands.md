@@ -18,10 +18,11 @@ The defaults are intended to be usable. If you are looking for a button or comma
 [Commands](#commands); the settings tables are technical reference for the cases where you
 deliberately want different behavior.
 
-Lifecycle scripts are configured through the user-only `blacksite.hooks.commands` setting
-(default: no hooks). See [Lifecycle hooks](approvals-and-safety.html#lifecycle-hooks) for
-the events, JSON protocol, blocking behavior, and examples. If a hook seems to do nothing,
-run **Blacksite: Check Lifecycle Hooks** first.
+Lifecycle scripts are configured on the Hooks page (**Blacksite: Manage Hooks**), which
+writes the user-only `blacksite.hooks.commands` setting (default: no hooks). See
+[Lifecycle hooks](approvals-and-safety.html#lifecycle-hooks) for the events, JSON protocol,
+blocking behavior, and examples. If a hook seems to do nothing, press its test button on the
+Hooks page, or run **Blacksite: Check Lifecycle Hooks**.
 
 ## Finding your way around
 
@@ -192,12 +193,18 @@ check that fails is retried after 30 minutes rather than at the next three-hour 
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `blacksite.mcpServers` | `[]` | Configured MCP servers. Managed via **Blacksite: Manage MCP Servers** |
+| `blacksite.mcpServers` | `[]` | MCP servers available in every project. Managed via **Blacksite: Manage MCP Servers** |
 
 Each entry has `id`, `name`, `transport` (`stdio` or `http`), `command` or `url`, and `enabled`.
-Optionally: `auth` (`mode` of `none`/`oauth`/`bearer`/`header`, plus `headerName`, `scopes`,
-`clientId`, `redirectUri`), `env` for stdio servers, `headers` for HTTP ones, and `transportHint`
-to pin a protocol revision instead of probing for it.
+Optionally: `args` and `cwd` for stdio servers, `env` (as `{ "NAME": "value" }`, or
+`[{ name, value, secret }]` to keep a value in `SecretStorage`), `headers` for HTTP ones, `auth`
+(`mode` of `none`/`oauth`/`bearer`/`header`, plus `headerName`, `scopes`, `clientId`,
+`redirectUri`), `transportHint` to pin a protocol revision instead of probing for it, and
+`autoApproveReadOnly` to run the server's read-only tools without asking. `${env:NAME}`,
+`${NAME}`, `${workspaceFolder}` and `${userHome}` are expanded in commands, arguments and values,
+so a server definition copied from another client's config usually works as it is.
+
+Servers added for one project only are kept with that workspace rather than in this setting.
 
 The setting is application-scoped on purpose: a repository's `.vscode/settings.json` cannot
 register a server, because that would let a cloned repo nominate a process for the extension to
@@ -332,7 +339,12 @@ in the command palette.
 
 | Command | What it does |
 | --- | --- |
-| **Manage MCP Servers** | Add, edit, enable, or disable MCP servers |
+| **Manage MCP Servers** | Add, edit, enable, or disable MCP servers, choose their tools, and share them across projects |
+| **Import MCP Servers…** | Add servers already set up in VS Code, Claude Code, Claude Desktop, Cursor or Windsurf |
+| **Use MCP Prompt…** | Expand a prompt an MCP server offers and attach it to your next message |
+| **Attach MCP Resource…** | Attach a document or record an MCP server publishes to your next message |
+| **Show MCP Log** | Connections, server output and every MCP call |
+| **Manage Hooks** | Add, edit, test and reorder lifecycle hooks, and see recent runs |
 | **Close Browser Window** | Close the agent's browser |
 | **Check For Extension Updates** | Check GitHub for a newer release |
 

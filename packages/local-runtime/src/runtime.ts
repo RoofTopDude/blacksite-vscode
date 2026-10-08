@@ -7,7 +7,7 @@ import {
   type ReadAccess, type SearchOutputMode,
 } from "./file-ops.js";
 import { handleGitOp } from "./git.js";
-import { listMcpTools, callMcpTool } from "./mcp-client.js";
+import { listMcpTools, callMcpTool, listMcpResources, readMcpResource } from "./mcp-client.js";
 import { isToolAllowed, unknownToolError } from "./mcp-protocol.js";
 import {
   externalPathArgs, resolveCommandForSpawn, resolveShellConfirmation, validateArgs,
@@ -336,6 +336,38 @@ export class LocalRuntime {
             ? payload["args"]
             : {}) as Record<string, unknown>;
           result = await callMcpTool(server, toolName, toolArgs, signal);
+          break;
+        }
+        case "mcp.list_resources": {
+          const server = payload["server"] as McpServer;
+          if (!server?.url) { result = { ok: false, error: "Missing server.url." }; break; }
+          if (payload["confirmed"] !== true) {
+            result = {
+              ok: true,
+              requiresConfirmation: true,
+              tier: "network",
+              description: describeMcpTarget(server, "list its resources"),
+            };
+            break;
+          }
+          result = await listMcpResources(server);
+          break;
+        }
+        case "mcp.read_resource": {
+          const server = payload["server"] as McpServer;
+          if (!server?.url) { result = { ok: false, error: "Missing server.url." }; break; }
+          const uri = String(payload["uri"] ?? "").trim();
+          if (!uri) { result = { ok: false, error: "Missing uri." }; break; }
+          if (payload["confirmed"] !== true) {
+            result = {
+              ok: true,
+              requiresConfirmation: true,
+              tier: "network",
+              description: describeMcpTarget(server, `read the resource \`${uri.slice(0, 200)}\``),
+            };
+            break;
+          }
+          result = await readMcpResource(server, uri, signal);
           break;
         }
 

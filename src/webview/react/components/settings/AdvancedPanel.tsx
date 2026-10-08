@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
+import { post } from "@/lib/bridge";
 import { actions, useStore } from "@/lib/store";
 import { Field, Note, Section } from "./common";
 import { KEY_PROVIDERS } from "./helpers";
@@ -44,10 +45,23 @@ export function AdvancedPanel() {
 
       <Separator />
 
+      <Field label="MCP servers and hooks">
+        <Note>
+          MCP servers add tools from other programs and services; servers you add for all projects appear in every folder
+          you open. Hooks run your own scripts before and after the agent's steps.
+        </Note>
+        <div className="flex flex-wrap gap-1.5">
+          <Button size="xs" variant="outline" title="Add, import, sign in to and choose tools from MCP servers" onClick={() => post({ type: "workspace_navigate", source: "chat", destination: "mcp" })}>MCP servers</Button>
+          <Button size="xs" variant="outline" title="Lifecycle scripts: add, test and see recent runs" onClick={() => post({ type: "workspace_navigate", source: "chat", destination: "hooks" })}>Hooks</Button>
+        </div>
+      </Field>
+
+      <Separator />
+
       <Field label="VS Code Settings">
         <Note>
           Some extension-level options still live in VS Code Settings rather than the chat panel:
-          browser headless mode, workspace root override, Data workbench limits, and MCP server configuration.
+          browser headless mode, workspace root override, and Data workbench limits.
         </Note>
         <div className="flex flex-wrap gap-1.5">
           <Button size="xs" variant="outline" onClick={() => actions.openSettings("@ext:blacksite blacksite.")}>Open Extension Settings</Button>

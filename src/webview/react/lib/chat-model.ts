@@ -1202,8 +1202,15 @@ export function toolGroupsOf(turn: Turn): ToolGroup[] {
   });
 }
 
-/** Binary name for a shell/process approval, used for the "always allow {binary}" action. Empty for non-shell tools. */
+/** What an "always allow" answer covers: a shell binary, or an MCP tool (`mcp:<server>/<tool>`
+ *  for mcp_call_tool, the typed name for an mcp__ tool). Empty when nothing can be always-allowed. */
 export function approvalBinaryOf(call: ToolCall): string {
+  if (call.toolName.startsWith("mcp__")) return call.toolName;
+  if (call.toolName === "mcp_call_tool") {
+    const input = (call.input ?? {}) as { serverId?: unknown; toolName?: unknown };
+    return typeof input.serverId === "string" && typeof input.toolName === "string" && input.serverId && input.toolName
+      ? `mcp:${input.serverId}/${input.toolName}` : "";
+  }
   if (call.toolName !== "shell_run" && call.toolName !== "process_start") return "";
   const command = (call.input as { command?: unknown } | null)?.command;
   if (typeof command !== "string" || !command.trim()) return "";

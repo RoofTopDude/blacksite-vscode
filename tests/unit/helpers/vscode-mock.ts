@@ -134,9 +134,11 @@ export const workspace = {
     inspect: <T>(key: string) => { globalValue?: T; workspaceValue?: T } | undefined;
     update: (key: string, value: unknown, target?: number) => Promise<void>;
   } => ({
-    update: async (key: string, value: unknown): Promise<void> => {
+    update: async (key: string, value: unknown, target?: number): Promise<void> => {
       const full = section ? `${section}.${key}` : key;
       configOverrides.set(full, value);
+      // A user-settings write is also what inspect().globalValue reports afterwards.
+      if (target === ConfigurationTarget.Global) globalConfigOverrides.set(full, value);
       configurationEmitter.fire({ affectsConfiguration: (candidate) => candidate === full });
     },
     get: <T>(key: string, defaultValue?: T): T | undefined => {

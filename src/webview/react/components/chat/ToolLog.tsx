@@ -278,7 +278,26 @@ export function ApprovalButtons({ turnId, toolCallId, binary }: { turnId: string
       {/* The "always allow" decision is one scope choice, not two independent
           options — grouping them under a single "Always allow <binary>" label
           reads as a coherent unit instead of repeating the binary name twice. */}
-      {binary && (
+      {/* An MCP tool's "always" is one choice, kept with that server's tool settings in every
+          project; it is undone from Blacksite: Manage MCP Servers. */}
+      {binary && isMcpApproval(binary) && (
+        <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-white/[0.02] px-1.5 py-1">
+          <span className="min-w-0 truncate text-xs text-muted-foreground">
+            Always allow <span className="font-mono text-foreground">{mcpApprovalLabel(binary)}</span>
+          </span>
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            className="ml-auto"
+            title="Run this tool on this server without asking from now on. Undo it in Blacksite: Manage MCP Servers."
+            onClick={() => answer("allow_always", binary, "global")}
+          >
+            Always
+          </Button>
+        </div>
+      )}
+      {binary && !isMcpApproval(binary) && (
         <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-white/[0.02] px-1.5 py-1">
           <span className="shrink-0 text-xs text-muted-foreground">
             Always allow <span className="font-mono text-foreground">{binary}</span>
@@ -291,6 +310,17 @@ export function ApprovalButtons({ turnId, toolCallId, binary }: { turnId: string
       )}
     </div>
   );
+}
+
+function isMcpApproval(binary: string): boolean {
+  return binary.startsWith("mcp:") || binary.startsWith("mcp__");
+}
+
+/** The tool an MCP "always allow" names, without its server prefix. */
+function mcpApprovalLabel(binary: string): string {
+  const proxy = /^mcp:[^/]+\/(.+)$/.exec(binary);
+  if (proxy) return proxy[1]!;
+  return /^mcp__.+?__(.+)$/.exec(binary)?.[1] ?? binary;
 }
 
 /** file_edit / file_edit_batch / json_edit — the tools "Explain this diff" makes sense for.

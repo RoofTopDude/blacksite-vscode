@@ -108,7 +108,9 @@ export function withAnthropicStrictTools(
   tools: ReadonlyArray<{ name: string; description: string; input_schema: Record<string, unknown> }>,
 ): Array<Record<string, unknown>> {
   return tools.map(({ name, description, input_schema }) => {
-    const strictSchema = toStrictToolSchema(input_schema);
+    // An MCP server's schema is the server's contract, not ours: strict mode would make every
+    // optional parameter required and forbid keys the server accepts.
+    const strictSchema = name.startsWith("mcp__") ? null : toStrictToolSchema(input_schema);
     return strictSchema
       ? { name, description, input_schema: strictSchema, strict: true }
       : { name, description, input_schema };

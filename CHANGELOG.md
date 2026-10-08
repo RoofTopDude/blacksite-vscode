@@ -3,6 +3,69 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.32.0
+
+A Hooks page that opens, MCP servers that follow you between projects, and MCP tools the agent can
+use as precisely as its own.
+
+### Added
+
+- **The Hooks page.** **Blacksite: Manage Hooks** (or **Hooks** in the view switcher) opens a page that
+  lists your lifecycle hooks by event, shows whether each program can be found, and lets you add,
+  edit, reorder and remove them. A test button runs a hook once with a sample payload and tells you
+  what the agent would have done: passed, blocked, or sent it feedback. Recent runs are listed too,
+  and an entry the agent would reject is shown with the reason, so you can fix it there instead of in
+  JSON. Hooks are still read from your user settings only.
+- **MCP servers in every project.** A server you add is now available in every folder you open, with
+  the same credentials and tool choices. A server can still be kept to one project, and **Share with
+  all projects** / **Make project-only** move it between the two. Servers you added before stay in
+  their project until you share them.
+- **Import MCP servers.** **Blacksite: Import MCP Servers…** (or **Import…** in the MCP panel) finds
+  servers already set up in VS Code, Claude Code, Claude Desktop, Cursor and Windsurf, and adds the ones
+  you pick. Each one is shown with its full command line or URL first. Tokens and keys found in those
+  files go into secure storage, not into your settings.
+- **MCP tools as the agent's own tools.** Each tool you allow from a server is now a tool of its own
+  (`mcp__github__create_issue`), with the server's description and argument types, instead of
+  something the agent reached by name through a generic call. It picks the right tool and arguments
+  far more often. MCP tools load on demand like other tool families, so a large server costs almost
+  nothing until it is used.
+- **Always allow, per MCP tool.** The approval card for an MCP tool offers **Always**, and the MCP panel
+  has an **Ask / Always** control beside each tool. A per-server switch can also run the tools a server
+  marks read-only without asking. A tool the server marks destructive is gated as a destructive
+  operation.
+- **MCP prompts and resources.** **Blacksite: Use MCP Prompt…** and **Attach MCP Resource…** bring a
+  server's prompts and documents into your next message, and the agent can list and read a server's
+  resources itself.
+- **An MCP log.** **Blacksite: Show MCP Log** shows each server starting up, the protocol it settled on,
+  the server's own error output, and every call with its timing. Credentials never appear in it.
+
+### Changed
+
+- **MCP servers are discovered without pressing Discover.** A server added in settings, by a plugin or
+  by import has its tools listed in the background, and a server that says its tools changed is listed
+  again. Before, the agent saw no tools from such a server until you opened the panel.
+- **Images from MCP tools reach the model.** A screenshot or design server's images used to be replaced
+  by "[payload omitted]". They are now shown to the model, or described by your vision fallback model.
+- **The agent sees a server's own usage notes**, labelled as the server's words and kept short.
+- Settings › Advanced links to the MCP servers and Hooks pages, and no longer says MCP is configured in
+  VS Code Settings.
+
+### Fixed
+
+- **"Blacksite: Manage Hooks" said "command not found".** The command has been in the Command Palette
+  since 1.26.0 with nothing behind it. It now opens the Hooks page, and a test checks that every command
+  in the palette has a handler.
+- **A server written the way its README shows did not start.** `args`, `cwd` and an `env` object in
+  `blacksite.mcpServers` were silently dropped, so `"command": "npx", "args": ["-y", "…"]` launched a
+  bare `npx` with no arguments and no credentials. They are read now, as are the `type` field and the
+  `${env:NAME}` / `${workspaceFolder}` variables other clients' configs use.
+- **"Allow all this turn" on an MCP call no longer approves unrelated work.** MCP calls shared one
+  approval with network commands such as `git push`, `npm install` and `curl`, so allowing one MCP tool
+  for the turn also allowed those, and every tool on every server (and the reverse). It now covers
+  repeat calls of that one tool on that one server.
+- Servers added in the MCP panel were kept with the workspace, while the docs said they were in
+  `blacksite.mcpServers`. The docs now describe both places.
+
 ## 1.31.0
 
 Stable release. It includes every change from 1.31.0-pre.1 through 1.31.0-pre.4, listed below, plus

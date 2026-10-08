@@ -65,7 +65,7 @@ describe("credential destination policy", () => {
 describe("MCP control plane", () => {
   it("exposes only configured server IDs to the model", () => {
     const mcpTools = WORKSPACE_TOOLS.filter((tool) => tool.name.startsWith("mcp_"));
-    expect(mcpTools).toHaveLength(2);
+    expect(mcpTools).toHaveLength(4);
     for (const tool of mcpTools) {
       expect(tool.input_schema.properties).toHaveProperty("serverId");
       expect(tool.input_schema.properties).not.toHaveProperty("server");

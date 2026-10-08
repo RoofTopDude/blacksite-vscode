@@ -248,7 +248,9 @@ conversation — what is in context, what was cached, and what the last turn con
 Beyond the built-in tool surface, Blacksite can connect to [Model Context Protocol](https://modelcontextprotocol.io)
 servers, which expose additional tools to the agent.
 
-Run **Blacksite: Manage MCP Servers** to add one. Both transports are supported:
+Run **Blacksite: Manage MCP Servers** to add one, or **Blacksite: Import MCP Servers…** to add
+servers you already set up in VS Code, Claude Code, Claude Desktop, Cursor or Windsurf. Both
+transports are supported:
 
 - **stdio** — a local command Blacksite launches and talks to over pipes. The process is started
   once and kept warm, so an `npx`-launched server pays its boot cost on the first call, not every
@@ -298,11 +300,38 @@ Leaving it *allowed* means a server upgrade does not silently break a working se
 *withheld* holds the server to exactly the tools you have reviewed. **Disable all** sets it to
 *withheld* for you.
 
-Configured servers live in `blacksite.mcpServers`. Each entry can be enabled or disabled without
-being deleted, and the agent sees only the tools from enabled servers.
+Each entry can be enabled or disabled without being deleted, and the agent sees only the tools from
+enabled servers. Blacksite lists a newly added or edited server's tools in the background, and
+re-lists a server that announces its tools changed, so **Discover tools** is only needed to check
+a server right away.
 
-MCP tools are subject to the same approval gates as built-in ones. A remote MCP server is a third
-party in your loop — extend it the same trust you would extend to any dependency you install.
+### Every project, or this one
+
+A server is available either in **all projects** or in **this project only**. New servers default
+to all projects: they are saved in your user settings (`blacksite.mcpServers`) and appear in every
+folder you open, with the same credentials and tool choices. A project-only server is kept with the
+workspace. **Share with all projects** and **Make project-only** move a server between the two.
+Removing an all-projects server asks whether to remove it everywhere or only hide it in this
+project.
+
+In `blacksite.mcpServers` you can write a server the way most MCP READMEs do — `command`, `args`,
+and an `env` object — and `${env:NAME}`, `${workspaceFolder}` and `${userHome}` are expanded. See
+[Settings & Commands](settings-and-commands.html#mcp).
+
+### Prompts, resources and the log
+
+**Blacksite: Use MCP Prompt…** lists the prompts your servers offer, asks for their arguments, and
+attaches the result to your next message. **Blacksite: Attach MCP Resource…** does the same for a
+document or record a server publishes. The agent can also list and read resources itself.
+
+**Blacksite: Show MCP Log** (or **Log** in the panel) shows each server's start-up, the transport
+and protocol it settled on, its own error output, and every call with its timing. Credentials never
+appear in it.
+
+MCP tools are subject to the same approval gates as built-in ones, with **Always allow** per tool —
+see [MCP servers are third parties](approvals-and-safety.html#mcp-servers-are-third-parties). A
+remote MCP server is a third party in your loop — extend it the same trust you would extend to any
+dependency you install.
 
 ---
 

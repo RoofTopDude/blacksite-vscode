@@ -106,6 +106,8 @@ export function untrackedEffect(toolName: string, input: Record<string, unknown>
     case "mcp_call_tool":
       return `called MCP tool ${text(args["toolName"]) || "(unknown)"}`;
     default:
+      // A typed MCP tool (mcp__<server>__<tool>) is as opaque as mcp_call_tool.
+      if (toolName.startsWith("mcp__")) return `called MCP tool ${toolName.split("__").slice(2).join("__") || toolName}`;
       return isMutatingServiceTool(toolName) ? toolName.replace(/_/g, " ") : null;
   }
 }

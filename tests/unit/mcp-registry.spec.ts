@@ -229,7 +229,7 @@ describe("resolution", () => {
 
     expect(await registry.getStaticSecret(entry.id)).toBeUndefined();
     expect(registry.cacheEntry(entry.id)).toBeUndefined();
-    expect(registry.policyRecord(entry.id)).toEqual({ tools: {}, fallback: "allow" });
+    expect(registry.policyRecord(entry.id)).toEqual({ tools: {}, fallback: "allow", autoApprove: [] });
     expect(await registry.resolveForAgent(entry.id)).toMatchObject({ ok: false, reason: "auth_required" });
   });
 

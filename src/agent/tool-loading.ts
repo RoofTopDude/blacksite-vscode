@@ -82,6 +82,15 @@ export function buildToolRoster(deferred: readonly ToolDefinition[]): string {
     const names = family.tools.map((tool) => tool.name).filter((name) => remaining.delete(name));
     if (names.length) lines.push(`- ${family.label}: ${names.join(", ")}`);
   }
+  // Tools from the user's MCP servers, one line per server (mcp__<server>__<tool>).
+  const byServer = new Map<string, string[]>();
+  for (const name of [...remaining.keys()]) {
+    const match = /^mcp__(.+?)__/.exec(name);
+    if (!match) continue;
+    remaining.delete(name);
+    byServer.set(match[1]!, [...(byServer.get(match[1]!) ?? []), name]);
+  }
+  for (const [server, names] of byServer) lines.push(`- MCP server "${server}": ${names.join(", ")}`);
   if (remaining.size) lines.push(`- Other: ${[...remaining.keys()].join(", ")}`);
   return lines.join("\n");
 }

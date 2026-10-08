@@ -220,6 +220,28 @@ server itself is code you did not write, running in your loop, seeing whatever y
 Extend an MCP server the trust you would extend to a dependency you install. Prefer stdio servers
 you can read over remote HTTP ones you cannot.
 
+How MCP approvals work:
+
+- **Each call asks**, naming the server and the tool. **Allow all this turn** covers further calls
+  of that one tool on that one server until the turn ends. It does not cover other tools, other
+  servers, or network shell commands such as `git push`.
+- **Always allow** on the approval card (or the **Ask / Always** control beside a tool in **Manage
+  MCP Servers**) runs that tool without asking from then on, in every project. Switch it back in the
+  same place.
+- **Run tools the server marks read-only without asking** is a per-server switch. The read-only
+  label comes from the server itself, so turn it on only for a server you trust to label its tools
+  honestly.
+- A tool the server marks **destructive** is gated as a destructive operation, and auto mode never
+  approves it on its own.
+- Listing a server's tools or resources is not gated: it sends only the request, and Blacksite
+  lists enabled servers in the background anyway so the agent knows what each one offers.
+
+**Importing servers** (**Blacksite: Import MCP Servers…**) reads other clients' config files,
+including a repository's `.vscode/mcp.json` and `.mcp.json`. Nothing found there is added on its
+own: every server is shown with its full command line or URL, and only the ones you pick are added.
+Credentials found in those files (environment variables and headers that look like tokens or keys)
+are moved into `SecretStorage` rather than copied into settings.
+
 ---
 
 ## What leaves your machine
@@ -261,9 +283,15 @@ where those controls exist.
 
 ## Lifecycle hooks
 
-Set `blacksite.hooks.commands` in your **user** Settings JSON to run scripts at fixed
-points in the agent lifecycle. Workspace settings cannot register scripts, and hooks run
-only in trusted workspaces. They apply to normal chat, continued runs, and delegated lanes.
+Hooks run your own scripts at fixed points in the agent lifecycle. Manage them on the Hooks
+page (**Blacksite: Manage Hooks**, or **Hooks** in the view switcher): it lists every hook by
+event with whether its program can be found, adds and edits them, sets their order, runs one
+once with a sample payload so you can see what the agent would do, and shows recent runs. It
+also lists any entry the agent would reject, with the reason, so you can fix or remove it.
+
+The page writes the `blacksite.hooks.commands` setting in your **user** Settings JSON, which
+you can also edit by hand. Workspace settings cannot register scripts, and hooks run only in
+trusted workspaces. They apply to normal chat, continued runs, and delegated lanes.
 
 ```json
 "blacksite.hooks.commands": [

@@ -14,10 +14,11 @@
  * credential exists. */
 
 import * as vscode from "vscode";
-import { discoverMcpTools, pingMcpServer, closeMcpConnections } from "@blacksite/local-runtime";
+import { pingMcpServer, closeMcpConnections } from "@blacksite/local-runtime";
+import { entryTarget } from "./mcp-config.js";
 import { createWebviewNonce } from "./webview-html.js";
 import { McpOAuthError } from "./mcp-auth.js";
-import { validateHttpTarget, type McpAuthMode, type McpEnvVar, type McpRegistry, type McpServerEntry } from "./mcp-registry.js";
+import { toolIsDestructive, toolIsReadOnly, validateHttpTarget, type McpAuthMode, type McpEnvVar, type McpRegistry, type McpServerEntry } from "./mcp-registry.js";
 
 export type { McpServerEntry } from "./mcp-registry.js";
 
@@ -34,6 +35,10 @@ interface ServerView {
   transport: "stdio" | "http";
   target: string;
   enabled: boolean;
+  /** "user": every project. "workspace": this project only. "plugin": from an Agent Plugin. */
+  scope: "user" | "workspace" | "plugin";
+  autoApproveReadOnly: boolean;
+  instructions?: string;
   transportHint: "auto" | "http" | "sse";
   authMode: McpAuthMode;
   headerName?: string;
@@ -44,7 +49,7 @@ interface ServerView {
   env: Array<{ name: string; secret: boolean; value?: string; hasValue: boolean }>;
   headers: Array<{ name: string; value: string }>;
   fallback: "allow" | "deny";
-  tools: Array<{ name: string; title?: string; description?: string; enabled: boolean; implicit: boolean }>;
+  tools: Array<{ name: string; title?: string; description?: string; enabled: boolean; implicit: boolean; autoApproved: boolean; alwaysAllowed: boolean; readOnly: boolean; destructive: boolean }>;
   enabledCount: number;
   inventory?: {
     fetchedAt: string;
@@ -116,12 +121,16 @@ export class McpPanel {
     for (const entry of this._registry.listEntries()) {
       const tools = this._registry.toolViews(entry.id);
       const cache = this._registry.cacheEntry(entry.id);
+      const alwaysAllowed = new Set(this._registry.policyRecord(entry.id).autoApprove ?? []);
       views.push({
         id: entry.id,
         name: entry.name,
         transport: entry.transport,
-        target: (entry.transport === "http" ? entry.url : entry.command) ?? "",
+        target: entryTarget(entry),
         enabled: entry.enabled,
+        scope: entry.scope ?? "workspace",
+        autoApproveReadOnly: !!entry.autoApproveReadOnly,
+        instructions: cache?.instructions,
         transportHint: entry.transportHint ?? "auto",
         authMode: entry.auth?.mode ?? "none",
         headerName: entry.auth?.headerName,
@@ -139,6 +148,10 @@ export class McpPanel {
           description: tool.description,
           enabled: tool.enabled,
           implicit: tool.implicit,
+          autoApproved: tool.autoApproved,
+          alwaysAllowed: alwaysAllowed.has(tool.name),
+          readOnly: toolIsReadOnly(tool),
+          destructive: toolIsDestructive(tool),
         })),
         enabledCount: tools.filter((tool) => tool.enabled).length,
         inventory: cache
@@ -151,7 +164,7 @@ export class McpPanel {
               capabilities: cache.capabilities,
             }
           : undefined,
-        status: this._status.get(entry.id) ?? { state: "idle" },
+        status: this._status.get(entry.id) ?? this._backgroundStatus(entry.id),
       });
     }
     return views;
@@ -171,6 +184,13 @@ export class McpPanel {
       });
     }
     return out;
+  }
+
+  /** What background discovery is doing for a server the panel has not acted on itself. */
+  private _backgroundStatus(serverId: string): ConnectionStatus {
+    if (this._registry.isDiscovering(serverId)) return { state: "working", message: "Discovering tools…" };
+    const error = this._registry.discoveryError(serverId);
+    return error ? { state: "error", message: error } : { state: "idle" };
   }
 
   /** retainContextWhenHidden keeps the webview alive, so a push while the panel is hidden is
@@ -221,13 +241,20 @@ export class McpPanel {
 
       case "remove_server": {
         const entry = this._registry.getEntry(id);
+        const everywhere = entry?.scope === "user";
         const confirmed = await vscode.window.showWarningMessage(
-          `Remove the MCP server "${entry?.name ?? id}"?`,
-          { modal: true, detail: "Its stored credentials and tool settings are deleted too." },
-          "Remove",
+          `Remove the MCP server "${entry?.name ?? id}"${everywhere ? " from all projects" : ""}?`,
+          {
+            modal: true,
+            detail: everywhere
+              ? "It is available in every project. Removing it deletes its stored credentials and tool settings everywhere. Hide it to keep it in your other projects."
+              : "Its stored credentials and tool settings are deleted too.",
+          },
+          everywhere ? "Remove everywhere" : "Remove",
+          ...(everywhere ? ["Hide in this project"] : []),
         );
-        if (confirmed !== "Remove") return;
-        await this._registry.removeEntry(id);
+        if (!confirmed) return;
+        await this._registry.removeEntry(id, { hereOnly: confirmed === "Hide in this project" });
         this._status.delete(id);
         // The pool may still hold a live process or session for the entry just deleted.
         closeMcpConnections();
@@ -239,6 +266,26 @@ export class McpPanel {
         if (entry) await this._registry.updateEntry(id, { enabled: !entry.enabled });
         break;
       }
+
+      case "set_scope":
+        await this._registry.setScope(id, p["scope"] === "workspace" ? "workspace" : "user");
+        break;
+
+      case "set_read_only_auto":
+        await this._registry.updateEntry(id, { autoApproveReadOnly: p["enabled"] === true });
+        break;
+
+      case "set_tool_auto":
+        await this._registry.setToolAutoApprove(id, String(p["tool"] ?? ""), p["enabled"] === true);
+        break;
+
+      case "import":
+        await vscode.commands.executeCommand("blacksite.mcp.import");
+        break;
+
+      case "show_logs":
+        await vscode.commands.executeCommand("blacksite.mcp.showLogs");
+        break;
 
       case "test_connection":
         await this._testConnection(id);
@@ -326,7 +373,9 @@ export class McpPanel {
     if (typeof p["name"] === "string" && p["name"].trim()) patch.name = p["name"].trim();
     if (typeof p["target"] === "string") {
       const target = p["target"].trim();
-      if (p["transport"] === "stdio") patch.command = target;
+      // The field shows the command with its arguments, so an edit is stored as one command
+      // line again; keeping the old argument vector as well would pass the arguments twice.
+      if (p["transport"] === "stdio") { patch.command = target; patch.args = undefined; }
       else patch.url = target;
     }
     if (p["transportHint"] === "auto" || p["transportHint"] === "http" || p["transportHint"] === "sse") {
@@ -363,7 +412,7 @@ export class McpPanel {
       url: transport === "http" ? target : undefined,
       enabled: true,
       auth: { mode: transport === "http" ? ((p["authMode"] as McpAuthMode) ?? "none") : "none" },
-    });
+    }, p["scope"] === "workspace" ? "workspace" : "user");
     // A new server with no inventory tells the user nothing, so discover immediately — this
     // is also the fastest way to learn the connection details are wrong.
     await this._refreshTools(entry.id);
@@ -469,33 +518,9 @@ export class McpPanel {
   /** Discover the *unfiltered* inventory and cache it. This is the only path that sees tools
    *  the user has withheld — the agent's listing goes through listMcpTools instead. */
   private async _refreshTools(serverId: string): Promise<void> {
-    const resolved = await this._registry.resolveForPanel(serverId);
-    if (!resolved.ok) {
-      this._setStatus(serverId, { state: "error", message: resolved.message });
-      return;
-    }
     this._setStatus(serverId, { state: "working", message: "Discovering tools…" });
-    const result = await discoverMcpTools(resolved.server);
-    if (!result.ok) {
-      this._setStatus(serverId, {
-        state: "error",
-        message: result.authRequired ? `${result.error} Sign in to continue.` : result.error,
-      });
-      return;
-    }
-    await this._registry.setCache(serverId, {
-      fetchedAt: new Date().toISOString(),
-      serverName: result.server.name,
-      serverVersion: result.server.version,
-      protocolVersion: result.server.protocolVersion,
-      protocolSupported: result.server.protocolSupported,
-      capabilities: result.server.capabilities,
-      tools: result.tools,
-    });
-    this._setStatus(serverId, {
-      state: "ok",
-      message: `${result.tools.length} tool${result.tools.length === 1 ? "" : "s"} discovered.`,
-    });
+    const outcome = await this._registry.refreshInventory(serverId);
+    this._setStatus(serverId, { state: outcome.ok ? "ok" : "error", message: outcome.message });
   }
 
   // ── View ────────────────────────────────────────────────────────────────────
@@ -627,12 +652,23 @@ input::placeholder { color: var(--muted); }
 .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
 .field label { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; }
 .tf { display: none; } .tf.on { display: block; }
+.header-actions { display: flex; gap: 6px; margin-top: 10px; }
+.tool-flags { display: inline-flex; gap: 4px; margin-left: 6px; vertical-align: 1px; }
+.tool-flags .badge { font-size: 9.5px; padding: 1px 6px; }
+.tool-auto { flex-shrink: 0; font-size: 10.5px; padding: 3px 8px; }
+.tool-auto.on { background: var(--ok-bg); color: var(--ok); border-color: var(--ok-bd); }
+.inline-switch { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); margin-bottom: 8px; }
+.notes { font-size: 11px; color: var(--muted); line-height: 1.5; margin-top: 6px; white-space: pre-wrap; max-height: 6.5em; overflow: hidden; }
 </style>
 </head>
 <body>
 <div class="page-header">
   <div class="page-title">MCP Servers</div>
-  <div class="page-sub">Connect Model Context Protocol servers, then choose exactly which of their tools the agent may use. A tool switched off is removed from the catalog the agent sees — it is not told the tool exists.</div>
+  <div class="page-sub">Connect Model Context Protocol servers, then choose exactly which of their tools the agent may use. A tool switched off is removed from the catalog the agent sees — it is not told the tool exists. Servers added for all projects appear in every folder you open.</div>
+  <div class="header-actions">
+    <button class="btn ghost" id="import" type="button" title="Find servers already set up in VS Code, Claude Code, Claude Desktop, Cursor or Windsurf, and add the ones you pick">Import…</button>
+    <button class="btn ghost" id="show-logs" type="button" title="Connections, server output and every tool call, in the Blacksite MCP output">Log</button>
+  </div>
 </div>
 
 <div class="list" id="list"></div>
@@ -645,6 +681,12 @@ input::placeholder { color: var(--muted); }
   </div>
   <div class="tf on" id="tf-http"><div class="field"><label>URL</label><input class="mono" id="f-url" placeholder="https://example.com/mcp"></div></div>
   <div class="tf" id="tf-stdio"><div class="field"><label>Command</label><input class="mono" id="f-cmd" placeholder="npx -y @modelcontextprotocol/server-filesystem ."></div></div>
+  <div class="field"><label>Available in</label>
+    <select id="f-scope">
+      <option value="user">All projects</option>
+      <option value="workspace">This project only</option>
+    </select>
+  </div>
   <div class="field"><label>Authentication</label>
     <select id="f-auth">
       <option value="none">None</option>
@@ -680,6 +722,37 @@ function toolBadge(s) {
   return '<span class="badge ' + cls + '">' + s.enabledCount + '/' + total + ' tools</span>';
 }
 
+function scopeBadge(s) {
+  if (s.scope === 'user') return '<span class="badge dim" title="Saved in your user settings: available in every folder you open">all projects</span>';
+  if (s.scope === 'plugin') return '<span class="badge dim" title="Provided by an Agent Plugin. Manage it with Blacksite: Manage Plugins.">plugin</span>';
+  return '<span class="badge dim" title="Saved with this workspace only. Share it to use it in your other projects.">this project</span>';
+}
+
+function scopeButton(s) {
+  if (s.scope === 'plugin') return '';
+  return s.scope === 'user'
+    ? '<button class="btn ghost" type="button" data-action="scope" data-scope="workspace" data-id="' + esc(s.id) + '" title="Keep this server in this project only. Your other projects stop seeing it.">Make project-only</button>'
+    : '<button class="btn ghost" type="button" data-action="scope" data-scope="user" data-id="' + esc(s.id) + '" title="Make this server available in every folder you open, with the same credentials and tool choices.">Share with all projects</button>';
+}
+
+function toolFlags(t) {
+  const flags = [];
+  if (t.readOnly) flags.push('<span class="badge dim" title="The server says this tool only reads">read-only</span>');
+  if (t.destructive) flags.push('<span class="badge warn" title="The server says this tool can destroy data. It is always gated as a destructive operation.">destructive</span>');
+  return flags.length ? '<span class="tool-flags">' + flags.join('') + '</span>' : '';
+}
+
+function toolAuto(s, t) {
+  if (!t.enabled) return '';
+  if (t.alwaysAllowed) {
+    return '<button class="btn ghost tool-auto on" type="button" data-action="tool_auto" data-id="' + esc(s.id) + '" data-tool="' + esc(t.name) + '" data-enabled="1" title="Runs without asking. Press to ask before each call again.">Always</button>';
+  }
+  if (t.autoApproved) {
+    return '<span class="badge ok tool-auto" title="Runs without asking, because this server runs its read-only tools unasked">unasked</span>';
+  }
+  return '<button class="btn ghost tool-auto" type="button" data-action="tool_auto" data-id="' + esc(s.id) + '" data-tool="' + esc(t.name) + '" data-enabled="0" title="Asks before each call. Press to always allow this tool, on this server, without asking.">Ask</button>';
+}
+
 function renderTools(s) {
   const filter = (filters.get(s.id) || '').toLowerCase();
   if (!s.inventory) {
@@ -693,9 +766,10 @@ function renderTools(s) {
     '<div class="tool ' + (t.enabled ? '' : 'off') + '">' +
       '<button class="sw ' + (t.enabled ? 'on' : '') + '" type="button" data-action="tool" data-id="' + esc(s.id) + '" data-tool="' + esc(t.name) + '" data-enabled="' + (t.enabled ? '1' : '0') + '" title="' + (t.enabled ? 'Withhold this tool from the agent' : 'Allow the agent to use this tool') + '"></button>' +
       '<div class="tool-body">' +
-        '<div class="tool-name">' + esc(t.name) + (t.title ? ' <span style="color:var(--muted);font-weight:400">· ' + esc(t.title) + '</span>' : '') + '</div>' +
+        '<div class="tool-name">' + esc(t.name) + (t.title ? ' <span style="color:var(--muted);font-weight:400">· ' + esc(t.title) + '</span>' : '') + toolFlags(t) + '</div>' +
         (t.description ? '<div class="tool-desc">' + esc(t.description) + '</div>' : '') +
       '</div>' +
+      toolAuto(s, t) +
     '</div>').join('') + '</div>';
 }
 
@@ -760,7 +834,10 @@ function renderInventoryLine(s) {
   if (i.protocolVersion) bits.push('MCP ' + esc(i.protocolVersion) + (i.protocolSupported === false ? ' (unrecognized revision)' : ''));
   if (i.capabilities && i.capabilities.length) bits.push(i.capabilities.map(esc).join(', '));
   bits.push('checked ' + new Date(i.fetchedAt).toLocaleString());
-  return '<div class="hint">' + bits.join(' · ') + '</div>';
+  const notes = s.instructions
+    ? '<div class="notes" title="What the server tells the agent about using it. The agent sees this, labelled as the server\\'s own words.">' + esc(s.instructions.slice(0, 600)) + '</div>'
+    : '';
+  return '<div class="hint">' + bits.join(' · ') + '</div>' + notes;
 }
 
 function render() {
@@ -781,7 +858,7 @@ function render() {
       '<div class="card-head" data-action="expand" data-id="' + esc(s.id) + '">' +
         '<span class="card-dot"></span>' +
         '<div class="card-info">' +
-          '<div class="card-name">' + esc(s.name) + toolBadge(s) + authBadge(s) + (s.enabled ? '' : '<span class="badge dim">disabled</span>') + '</div>' +
+          '<div class="card-name">' + esc(s.name) + toolBadge(s) + authBadge(s) + scopeBadge(s) + (s.enabled ? '' : '<span class="badge dim">disabled</span>') + '</div>' +
           '<div class="card-meta">' + esc(s.transport) + ' · ' + esc(s.target) + '</div>' +
         '</div>' +
         '<div class="card-actions">' +
@@ -794,6 +871,7 @@ function render() {
           '<span class="status ' + statusCls + '">' + esc(s.status.message || 'Not checked yet.') + '</span>' +
           '<button class="btn ghost" type="button" data-action="test" data-id="' + esc(s.id) + '">Test connection</button>' +
           '<button class="btn ghost" type="button" data-action="refresh" data-id="' + esc(s.id) + '">Discover tools</button>' +
+          scopeButton(s) +
           '<button class="btn ghost danger" type="button" data-action="remove" data-id="' + esc(s.id) + '">Remove</button>' +
         '</div>' +
         renderInventoryLine(s) +
@@ -825,6 +903,10 @@ function render() {
                 '<option value="allow"' + (s.fallback === 'allow' ? ' selected' : '') + '>allowed</option>' +
                 '<option value="deny"' + (s.fallback === 'deny' ? ' selected' : '') + '>withheld</option>' +
               '</select></label>' +
+          '</div>' +
+          '<div class="inline-switch">' +
+            '<button class="sw ' + (s.autoApproveReadOnly ? 'on' : '') + '" type="button" data-action="auto_ro" data-id="' + esc(s.id) + '" data-enabled="' + (s.autoApproveReadOnly ? '1' : '0') + '" title="The read-only label comes from the server itself. Turn this on only for a server you trust to label its tools honestly."></button>' +
+            '<span>Run tools the server marks read-only without asking</span>' +
           '</div>' +
           renderTools(s) +
         '</div>' +
@@ -868,6 +950,9 @@ document.getElementById('list').addEventListener('click', (e) => {
     case 'test':    post('test_connection', { id }); break;
     case 'refresh': post('refresh_tools', { id }); break;
     case 'tool':    post('set_tool', { id, tool: el.dataset.tool, enabled: el.dataset.enabled !== '1' }); break;
+    case 'tool_auto': post('set_tool_auto', { id, tool: el.dataset.tool, enabled: el.dataset.enabled !== '1' }); break;
+    case 'auto_ro': post('set_read_only_auto', { id, enabled: el.dataset.enabled !== '1' }); break;
+    case 'scope':   post('set_scope', { id, scope: el.dataset.scope }); break;
     case 'all_on':  post('set_all_tools', { id, enabled: true }); break;
     case 'all_off': post('set_all_tools', { id, enabled: false }); break;
     case 'sign_in': post('sign_in', { id }); break;
@@ -926,11 +1011,14 @@ document.getElementById('add-server').addEventListener('click', () => {
   const transport = document.getElementById('f-transport').value;
   const target = (transport === 'http' ? document.getElementById('f-url').value : document.getElementById('f-cmd').value).trim();
   if (!name || !target) return;
-  post('add_server', { name, transport, target, authMode: document.getElementById('f-auth').value });
+  post('add_server', { name, transport, target, authMode: document.getElementById('f-auth').value, scope: document.getElementById('f-scope').value });
   document.getElementById('f-name').value = '';
   document.getElementById('f-url').value = '';
   document.getElementById('f-cmd').value = '';
 });
+
+document.getElementById('import').addEventListener('click', () => post('import', {}));
+document.getElementById('show-logs').addEventListener('click', () => post('show_logs', {}));
 
 window.addEventListener('message', (e) => {
   if (e.data.type !== 'state') return;

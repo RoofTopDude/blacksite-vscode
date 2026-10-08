@@ -356,11 +356,15 @@ itself, the render blocks `eval` and `new Function`.
 
 | Tool | Purpose |
 | --- | --- |
-| `mcp_list_tools`, `mcp_call_tool` | Discover and call tools from connected MCP servers |
+| `mcp__<server>__<tool>` | Each tool you admit from an enabled MCP server, under its own name, with the server's description and argument schema |
+| `mcp_list_tools`, `mcp_call_tool` | List and call a server's tools by name, for a server whose tools have not been discovered yet |
+| `mcp_list_resources`, `mcp_read_resource` | List and read the documents and records a server publishes |
 
-Each server's admitted tools are named in the workspace-state block every turn, so the agent
-usually calls `mcp_call_tool` directly and only reaches for `mcp_list_tools` when a server has not
-been discovered yet.
+The agent calls an MCP tool the way it calls a built-in one, by name and with typed arguments,
+and it loads MCP tools on demand like other tool families, so a server with many tools costs one
+line in the tool roster until one of them is needed. Images a tool returns are shown to the model.
+Blacksite discovers enabled servers' tools in the background and re-lists a server when it says
+its tools changed.
 
 Which tools an MCP server contributes is yours to decide per tool, in **Blacksite: Manage MCP
 Servers**. A tool you switch off is removed from the catalog the agent receives — same as a

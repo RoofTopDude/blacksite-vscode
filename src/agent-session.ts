@@ -73,6 +73,7 @@ import {
   type ApprovalScope,
 } from "./approval-scope.js";
 import { planModeRefusal, planModeWithholds } from "./plan-mode-policy.js";
+import { isMcpTypedToolName, type McpTypedTool } from "./mcp-tool-catalog.js";
 import {
   buildToolRoster,
   expandToolReferences,
@@ -1374,8 +1375,17 @@ export type McpServerResolution =
     /** The cached input schema of one of the server's tools, when it has been discovered. Lets a
      *  call with the wrong arguments fail before the user is asked to approve it. */
     toolSchema?: (toolName: string) => Record<string, unknown> | undefined;
+    /** Set when the user chose to run this tool without asking: "always" (Always allow) or
+     *  "read_only" (the server runs its read-only tools unasked). */
+    autoApproval?: (toolName: string) => "always" | "read_only" | undefined;
+    /** True for a tool the server marks destructive: it is gated as a destructive operation,
+     *  which auto mode never approves on its own. */
+    destructive?: (toolName: string) => boolean;
   }
   | { ok: false; message: string };
+
+/** The pseudo tool name an "Always allow" for reading a server's resources is stored under. */
+export const MCP_RESOURCES_APPROVAL = "@resources";
 
 /**
  * Arguments that do not fit an MCP tool's discovered schema, as a tool error naming what is
@@ -1501,6 +1511,9 @@ export interface AgentSessionOptions {
    *  "rejected because the URL is not HTTPS" call for very different responses from the
    *  agent, and collapsing them into one string costs it a turn guessing which happened. */
   mcpServerProvider?: (serverId: string) => Promise<McpServerResolution> | McpServerResolution;
+  /** The admitted tools of enabled MCP servers as typed definitions (mcp__<server>__<tool>).
+   *  Each dispatches through mcp.call_tool, so it is resolved and gated like mcp_call_tool. */
+  mcpToolCatalog?: () => readonly McpTypedTool[];
   /** Chromium runner — enables browser_* tools via local Playwright instance. */
   browserRunner?: BrowserRunner;
   /** Backs the web_* research tools. `anchor` identifies the tool call on whose behalf the work
@@ -3453,6 +3466,14 @@ export class AgentSession {
     }
     // Integrations last, and only the configured ones.
     all.push(...this._advertisedServiceTools());
+    // Then the user's MCP servers, each admitted tool under its own typed name. Plan mode keeps
+    // the ones that do not declare themselves destructive; its approval gates still apply.
+    if (this.opts.mcpServerProvider) {
+      for (const typed of this._mcpTypedTools().values()) {
+        if (this._activeRequestMode === "plan" && typed.destructive) continue;
+        all.push(typed.definition);
+      }
+    }
     // editor-backed edit tools only work with an editProvider — drop them otherwise.
     const EDITOR_BACKED_TOOLS = new Set(["file_edit", "file_edit_batch", "json_edit"]);
     const usable = this.opts.editProvider ? all : all.filter((t) => !EDITOR_BACKED_TOOLS.has(t.name));
@@ -3465,6 +3486,31 @@ export class AgentSession {
     // UI_TOOLS are always included and not user-toggleable
     const available = [...modeFiltered, ...UI_TOOLS];
     return this._onDemandTools() ? [...available, ...TOOL_LOADING_TOOLS] : available;
+  }
+
+  /** Typed MCP tools by the name the model calls. Read fresh each time: the host's catalog is
+   *  memoized and changes only when a server or its tool choices do. */
+  private _mcpTypedTools(): Map<string, McpTypedTool> {
+    // Switching off MCP under Tool Access (or a lane that may not use MCP) covers typed tools too.
+    const mcpOff = this._disabledTools.has("mcp_call_tool");
+    const catalog = this.opts.mcpServerProvider && !mcpOff ? this.opts.mcpToolCatalog?.() ?? [] : [];
+    return new Map(catalog.map((typed) => [typed.name, typed]));
+  }
+
+  /**
+   * Route one tool call. A typed MCP tool becomes an mcp.call_tool payload naming its server and
+   * tool, with the model's input as the tool's arguments, so it takes exactly the path an
+   * mcp_call_tool call does. Everything else goes through the static routing table.
+   */
+  private _dispatch(tc: ToolUseBlock): { runtimeType: string; payload: Record<string, unknown> } {
+    if (isMcpTypedToolName(tc.name)) {
+      const typed = this._mcpTypedTools().get(tc.name);
+      if (typed) {
+        const args = tc.input && typeof tc.input === "object" && !Array.isArray(tc.input) ? tc.input as Record<string, unknown> : {};
+        return { runtimeType: "mcp.call_tool", payload: { serverId: typed.serverId, toolName: typed.toolName, args } };
+      }
+    }
+    return resolveToolDispatch(tc.name, tc.input);
   }
 
   /** The applier's pre-apply hook for one call: snapshot the files an approved editor or
@@ -3787,6 +3833,32 @@ export class AgentSession {
     return null;
   }
 
+  /**
+   * Images an MCP tool or resource returned, as vision blocks (or fallback descriptions). They
+   * used to be replaced by a "[payload omitted]" placeholder, which left screenshot and design
+   * servers blind. Each image goes through the same preparation as a browser screenshot.
+   */
+  private async _extractMcpImages(
+    toolName: string,
+    result: Record<string, unknown>,
+    pendingImages: ImageBlock[],
+  ): Promise<Record<string, unknown>> {
+    const images = (result["images"] as Array<{ mimeType?: unknown; data?: unknown }>).filter(
+      (image) => typeof image.data === "string" && typeof image.mimeType === "string",
+    );
+    const mapped: Array<Record<string, unknown>> = [];
+    for (const image of images) {
+      mapped.push(await this._extractImageForModel(
+        toolName,
+        { mimeType: image.mimeType, dataUrl: `data:${String(image.mimeType)};base64,${String(image.data)}` },
+        "dataUrl",
+        pendingImages,
+        "Describe this image an MCP tool returned in detail — visible text, layout, UI elements, colors, and anything relevant to the task.",
+      ));
+    }
+    return { ...result, images: mapped };
+  }
+
   /** Same as _extractImageForModel, but for browser_run_script's `steps` array —
       each screenshot step's dataUrl is extracted in order so the resulting images
       stay positionally correlated with their step in the returned step list. */
@@ -3827,8 +3899,13 @@ export class AgentSession {
     }
     // Defence in depth behind the catalog filter in _getTools(): a withheld tool can still be
     // named from memory of an earlier turn, and shell/git calls are only refusable by argument.
+    // A typed MCP name that is no longer in the catalog (its server was switched off, or the tool
+    // withheld) answers exactly as a server answers a name it never had.
+    if (isMcpTypedToolName(tc.name) && !this._mcpTypedTools().has(tc.name)) {
+      return { ok: false, error: `MCP error -32602: Unknown tool: ${tc.name}` };
+    }
     if (this._activeRequestMode === "plan") {
-      const dispatch = resolveToolDispatch(tc.name, tc.input);
+      const dispatch = this._dispatch(tc);
       const refusal = planModeRefusal(tc.name, dispatch.runtimeType, dispatch.payload);
       if (refusal) return { ok: false, error: refusal };
     }
@@ -3946,7 +4023,7 @@ export class AgentSession {
     // Batch review has the proposed input, but only the runtime knows whether a command
     // reaches outside the workspace. Let the per-call reviewer see that added context.
     // Unknown executables and unexpected tiers also need their full runtime description.
-    const provisional = scope.category === "command" && ["read", "write", "network"].includes(tier)
+    const provisional = (scope.category === "command" || scope.category === "mcp") && ["read", "write", "network"].includes(tier)
       && !unrecognizedCommand && !description.includes("reaches outside the workspace")
       && (this.opts.approvalReviewerBatchEnabled?.() ?? true)
       && batchReviews && Object.hasOwn(batchReviews, tc.id)
@@ -5090,7 +5167,7 @@ export class AgentSession {
         const batchCandidates: ApprovalBatchCandidate[] = [];
         const mcpResolutions = new Map<string, Promise<McpServerResolution | undefined>>();
         for (const tc of turnResult.toolCalls) {
-          const { runtimeType, payload } = resolveToolDispatch(tc.name, tc.input);
+          const { runtimeType, payload } = this._dispatch(tc);
           if (!["system.shell", "system.process.start", "test.run", "mcp.call_tool", "mcp.list_tools"].includes(runtimeType)) continue;
           const input = JSON.stringify(payload);
           // Large inputs are left to the ordinary per-call review; truncating an approval
@@ -5259,7 +5336,7 @@ export class AgentSession {
               yield { type: "execution_diagnostic", level: "warn", message: "Cancelled before tool execution." };
               throw new Error("Cancelled.");
             }
-            const dispatch = resolveToolDispatch(tc.name, tc.input);
+            const dispatch = this._dispatch(tc);
             const runtimeType = dispatch.runtimeType;
             let payload = dispatch.payload;
             let result: unknown;
@@ -5287,6 +5364,7 @@ export class AgentSession {
 
             this._noteToolUse(tc.name);
 
+            let mcpDestructive = false;
             if (runtimeType.startsWith("mcp.")) {
               const serverId = String(payload["serverId"] ?? "").trim();
               const resolution = await this.opts.mcpServerProvider?.(serverId);
@@ -5334,6 +5412,16 @@ export class AgentSession {
               // runtime is the host's own descriptor, credentials and tool policy included.
               const { serverId: _modelServerId, ...modelPayload } = payload;
               payload = { ...modelPayload, server: resolution.server };
+              // Listing a server's tools or resources sends nothing but the request, to a server
+              // the user configured and enabled (background discovery lists it anyway), so it is
+              // not gated. A call is pre-approved only by the user's own "Always allow" for that
+              // tool, or a server set to run its read-only tools unasked.
+              const mcpTool = String(payload["toolName"] ?? "");
+              const preApproved = runtimeType === "mcp.list_tools" || runtimeType === "mcp.list_resources"
+                || (runtimeType === "mcp.call_tool" && !!resolution.autoApproval?.(mcpTool))
+                || (runtimeType === "mcp.read_resource" && resolution.autoApproval?.(MCP_RESOURCES_APPROVAL) === "always");
+              if (preApproved) payload = { ...payload, confirmed: true };
+              mcpDestructive = runtimeType === "mcp.call_tool" && !!resolution.destructive?.(mcpTool);
             }
 
             // Last moment at which the files this call is about to rewrite still hold their
@@ -5847,7 +5935,14 @@ export class AgentSession {
                 const firstResponse = await this.opts.runtime.handleMessage({ type: runtimeType, payload }, this._signal, outputHooks);
                 const firstResult = runtimeResultOrError(firstResponse, tc.name, () => this._getTools().map((t) => t.name));
                 if (isConfirmationRequired(firstResult)) {
-                  const { tier, description, unrecognizedCommand } = firstResult as { tier: string; description: string; unrecognizedCommand?: boolean };
+                  const confirmation = firstResult as { tier: string; description: string; unrecognizedCommand?: boolean };
+                  const { unrecognizedCommand } = confirmation;
+                  // A tool its server marks destructive is gated as a destructive operation: the
+                  // prompt says so, and auto mode always leaves it to the user.
+                  const tier = mcpDestructive ? "destructive" : confirmation.tier;
+                  const description = mcpDestructive
+                    ? `${confirmation.description}. The server marks this tool as destructive.`
+                    : confirmation.description;
                   const { granted, deniedByPolicy } = yield* this._approvalGate(
                     tc,
                     commandApprovalScope(tc.name, runtimeType, tier, payload, unrecognizedCommand),
@@ -5965,6 +6060,11 @@ export class AgentSession {
               );
             } else if (tc.name === "browser_run_script") {
               modelResult = await this._extractRunScriptImages(result as Record<string, unknown>, pendingImages);
+            } else if ((runtimeType === "mcp.call_tool" || runtimeType === "mcp.read_resource")
+              && Array.isArray((result as Record<string, unknown> | undefined)?.["images"])) {
+              modelResult = await this._extractMcpImages(tc.name, result as Record<string, unknown>, pendingImages);
+              // The transcript keeps a note of each image, not megabytes of base64.
+              result = { ...(result as Record<string, unknown>), images: ((result as Record<string, unknown>)["images"] as Array<{ mimeType?: string }>).map((image) => ({ mimeType: image.mimeType, omitted: true })) };
             } else if (ok && tc.name === "sequence_execute") {
               const value = result as Record<string, unknown>;
               // Clean retained evidence adds no prompt overhead. Only a result that the host's

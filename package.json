@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.31.0",
+  "version": "1.32.0",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -219,6 +219,26 @@
       {
         "command": "blacksite.manageMcp",
         "title": "Manage MCP Servers",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.mcp.import",
+        "title": "Import MCP Servers…",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.mcp.usePrompt",
+        "title": "Use MCP Prompt…",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.mcp.attachResource",
+        "title": "Attach MCP Resource…",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.mcp.showLogs",
+        "title": "Show MCP Log",
         "category": "Blacksite"
       },
       {
@@ -958,7 +978,7 @@
           "type": "array",
           "default": [],
           "scope": "application",
-          "description": "MCP server list (managed via Blacksite: Manage MCP Servers). Application-scoped on purpose: a repository must not be able to register a process for the extension to launch. Credentials are never stored here — they live in VS Code SecretStorage.",
+          "description": "MCP servers available in every project (managed via Blacksite: Manage MCP Servers, or Import MCP Servers). Application-scoped on purpose: a repository must not be able to register a process for the extension to launch. Servers added for one project only are kept with that workspace instead. Credentials are never stored here — they live in VS Code SecretStorage.",
           "items": {
             "type": "object",
             "properties": {
@@ -977,7 +997,18 @@
               },
               "command": {
                 "type": "string",
-                "description": "stdio only: the command line to launch."
+                "description": "stdio only: the executable, or a whole command line when args is omitted. , ,  and  are expanded."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "stdio only: arguments, passed exactly as written (no shell)."
+              },
+              "cwd": {
+                "type": "string",
+                "description": "stdio only: working directory. Defaults to the workspace folder."
               },
               "url": {
                 "type": "string",
@@ -1031,8 +1062,11 @@
                 }
               },
               "env": {
-                "type": "array",
-                "description": "stdio only: environment for the launched process. Mark a variable secret to keep its value in SecretStorage.",
+                "type": [
+                  "array",
+                  "object"
+                ],
+                "description": "stdio only: environment for the launched process, as { \"NAME\": \"value\" } or [{ name, value, secret }]. Mark a variable secret to keep its value in SecretStorage.",
                 "items": {
                   "type": "object",
                   "properties": {
@@ -1046,6 +1080,9 @@
                       "type": "boolean"
                     }
                   }
+                },
+                "additionalProperties": {
+                  "type": "string"
                 }
               },
               "headers": {
@@ -1054,6 +1091,11 @@
                 "additionalProperties": {
                   "type": "string"
                 }
+              },
+              "autoApproveReadOnly": {
+                "type": "boolean",
+                "default": false,
+                "description": "Run this server's tools that declare readOnlyHint without asking first."
               }
             }
           }
