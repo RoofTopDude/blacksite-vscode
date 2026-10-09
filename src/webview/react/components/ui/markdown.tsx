@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { renderChartBlock } from "@/lib/chart";
 import { mermaidBlockSource, renderMermaidBlock } from "@/lib/mermaid";
 import { useMarkdown } from "@/lib/use-markdown";
+import { splitStreaming } from "@/lib/stream-split";
 import "./markdown-diagrams.css";
 
 /* Every surface's host binds workspace-ui-host.ts, which answers this by opening the diagram
@@ -56,7 +57,8 @@ async function copyText(text: string): Promise<boolean> {
 export interface MarkdownProps {
   raw: string;
   className?: string;
-  /** Keep token streaming cheap; rich Markdown is rendered once the turn settles. */
+  /** The reply is still being written. The blocks that are finished render as Markdown; only the
+   *  block still open is plain text, so the message does not rearrange itself when it ends. */
   streaming?: boolean;
   /**
    * "inline" renders emphasis, code spans, and links with no block structure — for fields
@@ -110,20 +112,29 @@ export function Markdown({
   // scrolling and input while still converging immediately once the stream settles.
   const deferredRaw = useDeferredValue(raw);
   // The renderer is a lazily-loaded chunk; until it lands (and if it never does) this
-  // component renders plain text. Holding the import back while streaming keeps a chat
-  // mount from paying for it before there is settled output to render.
-  const md = useMarkdown(!streaming);
+  // component renders plain text. The chat starts fetching it at startup, so by the time a reply
+  // is streaming it is normally there.
+  const md = useMarkdown(true);
+
+  // While streaming, only the blocks that are finished are rendered as Markdown. That text changes
+  // when a block completes, not on every token, so the parse runs a handful of times per reply
+  // instead of once per token. Settled, the whole reply is the finished part.
+  const parts = useMemo(
+    () => (streaming && variant === "block" ? splitStreaming(deferredRaw) : { stable: deferredRaw, tail: "" }),
+    [streaming, variant, deferredRaw],
+  );
+  const finished = parts.stable;
 
   // Keep hooks unconditional: changing streaming=true → false at stream_end must not change
   // hook order (which would crash React exactly when the final response arrives). Parsing is
   // also guarded so a malformed or unusually large body falls back to readable text.
   const rendered = useMemo(() => {
-    if (streaming || !md) return { html: "", failed: false, truncated: false, totalChars: 0 };
+    if (!md || (streaming && !finished)) return { html: "", failed: false, truncated: false, totalChars: 0 };
     try {
       if (variant === "inline") {
-        return { html: md.renderMdInline(deferredRaw), failed: false, truncated: false, totalChars: deferredRaw.length };
+        return { html: md.renderMdInline(finished), failed: false, truncated: false, totalChars: finished.length };
       }
-      const bounded = md.boundMarkdown(deferredRaw, previewChars ?? 0);
+      const bounded = md.boundMarkdown(finished, previewChars ?? 0);
       const source = bounded.text.length > MAX_MARKDOWN_RENDER_CHARS
         ? bounded.text.slice(0, MAX_MARKDOWN_RENDER_CHARS) + RENDER_TRUNCATION
         : bounded.text;
@@ -131,7 +142,7 @@ export function Markdown({
     } catch {
       return { html: "", failed: true, truncated: false, totalChars: 0 };
     }
-  }, [deferredRaw, streaming, md, variant, previewChars]);
+  }, [finished, streaming, md, variant, previewChars]);
 
   /* One object per rendered string. React 19 re-assigns innerHTML whenever the
      dangerouslySetInnerHTML object is a new one, whether or not its __html changed — so an
@@ -193,7 +204,8 @@ export function Markdown({
     return () => { for (const stop of stops) stop(); };
   }, [rendered.html]);
 
-  if (streaming || !md || rendered.failed) {
+  // Nothing finished yet (the first block is still open), or no renderer: the plain text is all there is.
+  if (!md || rendered.failed || (streaming && !finished)) {
     return <div className={cn("whitespace-pre-wrap", className)}>{deferredRaw}</div>;
   }
 
@@ -268,6 +280,9 @@ export function Markdown({
         onClick={onClick}
         dangerouslySetInnerHTML={innerHtml}
       />
+      {streaming && parts.tail && (
+        <div className={cn("md-stream-tail whitespace-pre-wrap", className)}>{parts.tail}</div>
+      )}
       {rendered.truncated && (
         <div className="md-preview-notice">
           Preview of the first {new Intl.NumberFormat().format(previewChars ?? 0)} characters

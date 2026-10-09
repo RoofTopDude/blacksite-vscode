@@ -5,6 +5,7 @@ import { Header } from "@/components/Header";
 import { BrowserApprovalJumpBar, BrowserDelegationBanner } from "@/components/chat/BrowserApprovals";
 import { Lightbox } from "@/components/Lightbox";
 import { PreviewModal } from "@/components/chat/PreviewModal";
+import { RunPreflight } from "@/components/run/RunPreflight";
 import { ChatView } from "@/components/chat/ChatView";
 import { HistoryView } from "@/components/HistoryView";
 import { SettingsView } from "@/components/settings/SettingsView";
@@ -34,6 +35,7 @@ export function App() {
       </div>
       <Lightbox />
       <PreviewModal />
+      <RunPreflight />
     </>
   );
 }

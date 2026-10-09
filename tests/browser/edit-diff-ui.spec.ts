@@ -122,7 +122,7 @@ describe("built chat webview — reviewing an agent edit", () => {
     await page.getByRole("button", { name: /^Changes/ }).first().click();
     // The ledger row carries no line hint of its own — it points at the last call that still
     // holds a snapshot for the file, which is what makes its label distinct from the tool row's.
-    const row = page.getByRole("button", { name: "Open the diff for src/alpha.ts", exact: true });
+    const row = page.getByRole("button", { name: "Open the diff for the last change to src/alpha.ts", exact: true });
     await row.waitFor();
     await row.click();
     expect(await sent("open_tool_diff")).toEqual([

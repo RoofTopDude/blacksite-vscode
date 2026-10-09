@@ -316,9 +316,14 @@ function foldTotals(iterations: readonly LoopIteration[], retired?: LoopTotals):
     if (iteration.outcome === "succeeded") {
       totals.succeeded += 1;
       totals.consecutiveFailures = 0;
-    } else if (iteration.outcome === "failed" || iteration.outcome === "abandoned") {
+    } else if (iteration.outcome === "failed") {
       totals.failed += 1;
       totals.consecutiveFailures += 1;
+    } else if (iteration.outcome === "abandoned") {
+      // Cut off by a stop or a restart. The work was not tried and found wanting, so it says
+      // nothing about whether the loop is failing: it must not count toward the consecutive-failure
+      // ceiling — a crash with several lanes in flight used to trip it the moment the loop resumed.
+      totals.failed += 1;
     } else if (iteration.outcome === "parked") {
       totals.parked += 1;
       // A park says nothing about whether the work is failing, so it must not count toward
@@ -326,7 +331,7 @@ function foldTotals(iterations: readonly LoopIteration[], retired?: LoopTotals):
     }
   }
   if (!retired) return totals;
-  const settledInWindow = iterations.some((entry) => entry.outcome === "succeeded" || entry.outcome === "failed" || entry.outcome === "abandoned");
+  const settledInWindow = iterations.some((entry) => entry.outcome === "succeeded" || entry.outcome === "failed");
   const carried = settledInWindow ? totals.consecutiveFailures : retired.consecutiveFailures + totals.consecutiveFailures;
   const merged = addTotals(totals, retired);
   merged.consecutiveFailures = carried;

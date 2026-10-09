@@ -153,7 +153,10 @@ arbitrary code. That routes around command-level gating entirely: the shell cann
 `node build.js` from `node -e "<anything at all>"`, so allowing `node` while allowing eval flags is
 effectively allowing arbitrary execution.
 
-Blacksite blocks those flags by default for that reason. Enabling the setting is a considered choice
+So inline code always asks: the approval prompt shows you the code itself, even for a program you
+have chosen to always allow, and the approval covers that snippet only. Enabling the setting runs
+inline code without asking, and also permits the arguments that make a program launch another one
+(`find -exec`, `git --upload-pack`, `node -r`), which are otherwise refused. It is a considered choice
 to accept arbitrary code execution from the agent, and it is labelled that way in the settings UI.
 
 ---

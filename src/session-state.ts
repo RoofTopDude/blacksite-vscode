@@ -10,6 +10,8 @@ export type AgentStopReason =
   | "approval_pending"
   | "question_pending"
   | "cancelled"
+  /** A plan run was paused: the turn ended cleanly at a tool-round boundary, by request. */
+  | "paused"
   | "error"
   /**
    * The provider declined to produce (or finished) the response on content grounds:

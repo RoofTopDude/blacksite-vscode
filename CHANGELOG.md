@@ -3,6 +3,123 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.33.0-pre.1
+
+Prerelease. The stable update channel remains on 1.32.0.
+
+Plan runs: start a plan, leave it for hours, and come back to an account of what happened. A run
+shows where it is at a glance, tells you when it needs you, survives a provider outage or a reload,
+and can be put back to any finished step.
+
+### Added
+
+- **Plan runs.** **Run plan…** on a plan in the Plans panel opens a preflight card. It reads the plan
+  for the gaps that most often stall an unattended run: steps with no definition of done, open
+  questions, blocked steps, phases that name no files. It also lists the projects the plan touches and
+  anything missing from their toolchains. You then set the run's limits: a spend ceiling and a time
+  limit the model cannot raise, what to do if it needs you while you are away (keep waiting, or pause
+  after a number of minutes), and how loudly to tell you. Findings never stop a run from starting.
+- **A run bar above the chat.** While a run exists, a bar shows:
+  - its state in one word (Working, Needs you, Waiting, Quiet, Paused, Interrupted, Done)
+  - the run's own clock and spend
+  - a progress bar with a segment per phase
+  - "Step 7/23 · Phase 2/4", what the agent is doing now, and the next step
+  - when two or more subagent lanes are running, each lane with how much of its round and time
+    allowance it has used
+
+  **Steps** opens every phase and step with when it ran, how long it took, how often it was tried,
+  and what checked it ("✓ npm test", "2 unverified"). A step nothing checked is labelled, never
+  blocked. **Map** opens the Codebase Map where the run is working.
+- **You hear when it needs you, wherever you are.**
+  - The chat view's icon shows how many things are waiting on you.
+  - The status bar shows the run's step and clock, then "Needs you" or "Plan done".
+  - A notification with **Show** appears when you are not looking at the chat.
+  - The Header shows a "Needs you" pill on the History and Settings pages.
+  - Your Notification hooks receive run and loop events too, so they can reach your phone.
+  - `blacksite.notifications.runEvents` chooses how much of this you get.
+- **Pause at a boundary.** **Pause** stops the run at the end of the tool call it is in, so nothing is
+  cut off mid-command. **Resume** carries on, telling the agent where it stopped. **Stop** ends the run
+  after a confirmation.
+- **Restore points per step.** After each step the run records the files of the projects it works in.
+  It uses a private git store in the extension's storage: your repository, index, branches and stash
+  are never touched, and your `.gitignore` applies. **Restore to here** on a finished step lists
+  exactly which files will be put back or removed. It then restores them, including files a shell
+  command created, sets the later steps back to pending, and offers **Undo restore**. Services,
+  databases and repositories nested inside a project are not covered, and the run says so.
+- **A report when the run ends.** A run report is added to the plan's documents. It lists each step's
+  outcome, time and evidence, what was never checked, what needs a decision, the files changed, what
+  the conductor decided, and where the run stopped.
+- **Review every change at once.** **Changes** on the run bar, and **Review all** in the chat's Changes
+  list, open every changed file as one multi-file review. Each file is compared with how it was before
+  the run, or before its first change in the conversation, not just with its last edit.
+- **Edit approvals show the diff.** The approval card now shows the lines each file would gain and
+  lose, with a little context, so a routine edit can be approved without leaving the chat. The
+  editor diffs still open for a full review.
+- New commands: **Open Plan Run**, **Pause Plan Run**, **Resume Plan Run**, **Stop Plan Run**.
+
+### Changed
+
+- **A turn that stops short leaves a note.** At the round limit, on an error, or when paused, the turn
+  ends with a card saying where it got to, what it changed, what it never checked, and what comes
+  next. The next turn is given the same note, so "continue" picks up from the right place. Before,
+  the turn ended with only a "Limit" label.
+- **Automatic turns say why they happened.** A turn the agent started on its own (the plan conductor
+  continuing, a resume) is marked with a line explaining why, where your message would have been.
+  Restored conversations no longer show those messages as if you had typed them.
+- **"Allow all" lasts for the request, including its automatic turns.** Approvals you give with "Allow
+  all" now also cover the turns the harness starts to carry the same request on: the conductor, a
+  Stop hook, a resume. They still end when you send a new message, and a plan run drops them when it
+  ends. Before, unattended work in Ask mode stopped at the first approval of every automatic turn.
+- **The conductor sees what happened, not only what the agent said.** It now drives the run's own plan,
+  not whichever plan changed last. It is told what the harness observed in the last turn, what each
+  finished step was checked by, and what it has already decided. It is also told when a step failed,
+  or when the run is resuming after a restart. During a run, `maxConsecutive` counts only automatic
+  turns that finished no step, so a run making progress keeps going until its limits.
+- **Steps record when they started and finished.** The Plans panel shows how long each finished step
+  took and what checked it.
+- **The status bar item opens the chat.** It used to cancel the run, even when it read "approval
+  needed". Stopping is now deliberate: **Stop Plan Run**, or Stop in the run bar.
+- **Replies render as Markdown while they stream.** Finished paragraphs, lists and code blocks take
+  their final form as soon as they are complete. Only the block still being written is plain text, so
+  a reply no longer rearranges itself when it ends.
+- **Tool calls in order.** An expanded turn lists its tool calls in the order they happened, with runs
+  of the same tool folded together. **By tool** brings back the grouped view.
+- **A long conversation stays responsive.** Finished turns no longer re-render while a new one
+  streams, and every live clock in the chat shares one timer.
+- Status colours mean the same thing in the chat and in every panel. "Paused" now reads as waiting on
+  you.
+
+### Fixed
+
+- **A provider outage no longer ends a plan run.** Once the quick retries are used up, the run waits
+  and tries again on a slowing schedule (30 seconds, then up to 5 minutes) for up to 30 minutes, with
+  a countdown and **Retry now** in the run bar. Outside a run, failures are reported as before.
+- **The conductor no longer refuses to continue after an approval you already answered.** Any turn
+  that had asked for an approval counted as "waiting on you", even once you had answered.
+- **The session spend ceiling applies to every turn.** It was only checked before a typed message, so
+  conductor turns, resumes and messages sent while the agent finished could start past it. Raising the
+  ceiling and then crossing the new one now stops the run again.
+- **Subagent lanes on another provider are priced correctly.** A lane's cost used the chat provider's
+  prices instead of its own.
+- **A run interrupted by a reload can be resumed from where it was.** The conversation comes back from
+  the last checkpoint, the run is marked interrupted, and **Resume** carries on with a note of where
+  it stopped. A run that was still working when VS Code closed is no longer left looking as if it
+  were running.
+- **A run you stopped is not offered as a crash.** Stopping the agent left a checkpoint that was
+  offered as an "Unfinished run" after the next reload.
+- **Ticket Loops:**
+  - Pausing a loop now lets its running lanes finish, as the Loops view always said. Before, pausing
+    cancelled them and charged each a failed attempt.
+  - A lane cut off by a stop or a restart is recorded as abandoned, not failed. It no longer counts
+    toward the consecutive-failure ceiling, so a loop with several lanes in flight when VS Code
+    closed no longer stops the moment it is resumed.
+  - Spend from lanes still running counts toward the spend ceiling before another lane is started.
+  - A successful lane's changed files now widen its ticket's territory.
+  - The approval reviewer judges against the ticket, not against whatever was typed in the chat.
+  - A loop that finishes, blocks, stops or parks a ticket now tells you the same way a plan run
+    does.
+- The settings guide no longer says inline code (`python -c`) is blocked; it asks, showing the code.
+
 ## 1.32.0
 
 A Hooks page that opens, MCP servers that follow you between projects, and MCP tools the agent can

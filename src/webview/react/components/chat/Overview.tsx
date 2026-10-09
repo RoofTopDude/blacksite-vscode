@@ -48,6 +48,10 @@ function computeOverview(store: Store, now: number): OverviewState {
     }
   } else if (chat.lastConversationError) {
     title = "Last turn hit an error"; sub = shortText(chat.lastConversationError, 110); pillClass = "error"; pillText = "Error";
+  } else if (latest?.stopReason === "paused") {
+    title = "Paused";
+    sub = "The run stopped at the end of a step. Resume it from the run bar, or send a message to carry on.";
+    pillClass = "idle"; pillText = "Paused";
   } else if (latest?.stopReason === "max_iterations") {
     title = "Iteration limit reached";
     sub = "Progress is saved. Continue the conversation to resume from the current workspace state.";
@@ -117,6 +121,7 @@ function ChangeDelta({ additions, deletions }: { additions: number; deletions: n
  * successfully changed. It stays folded until requested so long sessions do
  * not turn the header into another transcript. */
 function ChangeLedgerTag({ ledger }: { ledger: ConversationChangeLedger }) {
+  const store = useStore();
   const [open, setOpen] = useState(false);
   if (!ledger.fileCount) return null;
   return (
@@ -133,14 +138,25 @@ function ChangeLedgerTag({ ledger }: { ledger: ConversationChangeLedger }) {
         <ChevronDown className={cn("disclosure size-3 shrink-0 text-muted-foreground", open && "rotate-180")} />
       </button>
       {open && (
-        <div className="reveal-in flex max-h-40 flex-col gap-0.5 overflow-y-auto border-t border-border px-1 py-1.5">
+        <div className="reveal-in flex max-h-56 flex-col gap-0.5 overflow-y-auto border-t border-border px-1 py-1.5">
+          <button
+            type="button"
+            onClick={() => actions.reviewChanges(store.planRun ? "run" : "conversation")}
+            className="chat-interactive mb-0.5 flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-left text-xs font-medium text-primary hover:bg-white/[0.06]"
+            title={store.planRun
+              ? "Open every file changed since the plan run started as one review, each against how it was before the run."
+              : "Open every file changed in this conversation as one review, each against how it was before its first change."}
+          >
+            <FileDiff className="size-3 shrink-0" aria-hidden="true" />
+            Review all {ledger.fileCount} {ledger.fileCount === 1 ? "file" : "files"}
+          </button>
           {ledger.files.map((file) => {
             /* The ledger is the one place that survives scrolling past the turn that made the
                change, which makes it the most useful place to review one — so each row opens
                the diff from the last tool call that still has a snapshot for the file, and
                falls back to the file itself once that snapshot has been evicted. */
             const reviewable = !!file.diffToolCallId;
-            const title = reviewable ? `Open the diff for ${file.path}` : `Open ${file.path}`;
+            const title = reviewable ? `Open the diff for the last change to ${file.path}` : `Open ${file.path}`;
             return (
               <button
                 key={file.path}

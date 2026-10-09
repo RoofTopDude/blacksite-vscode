@@ -256,9 +256,12 @@ export class SubagentLoopDispatcher implements LoopDispatcher {
 /** Exported for testing: consumes a lane's message stream into a single loop outcome. */
 export async function foldLaneStream(
   stream: AsyncGenerator<SubagentProviderMessage>,
-  request: Pick<LoopDispatchRequest, "onProgress">,
+  request: Pick<LoopDispatchRequest, "onProgress" | "onSpend">,
   estimateUsageCostUsd?: (usage: Extract<BaseAgentEvent, { type: "usage_update" }>) => number | undefined,
 ): Promise<LoopDispatchResult> {
+  /** Files the lane changed, as the edit journal reported them. The result only knows these for a
+   *  failed lane, which left the territory lock blind to everything a lane that succeeded touched. */
+  const touched = new Set<string>();
   let laneId: string | undefined;
   let subRequestId: string | undefined;
   let result: SubagentSpawnToolResult | SubagentSpawnFailureResult | undefined;
@@ -283,6 +286,7 @@ export async function foldLaneStream(
         if (cost != null && Number.isFinite(cost) && cost >= 0) {
           usd += cost;
           spendTracked = true;
+          request.onSpend?.(cost);
         }
       } else if (event.type === "tool_call_start") {
         request.onProgress?.({
@@ -290,6 +294,7 @@ export async function foldLaneStream(
           toolCallId: event.toolCallId, toolName: event.toolName,
         });
       } else if (event.type === "tool_call_result") {
+        if (event.ok) for (const diff of event.diffs ?? []) touched.add(diff.path);
         request.onProgress?.({
           kind: "tool_finished", label: event.toolName, detail: event.summary,
           toolCallId: event.toolCallId, toolName: event.toolName, ok: event.ok,
@@ -351,7 +356,7 @@ export async function foldLaneStream(
       ...(laneId ? { laneId } : {}),
       subRequestId: result.subRequestId,
       detail: pendingGateDetail || (result.ok ? result.answer : result.error),
-      filesTouched: result.ok ? [] : result.filesTouched,
+      filesTouched: [...new Set([...touched, ...(result.ok ? [] : result.filesTouched)])],
       runIds: [],
       parkedOnGate: pendingGate,
       parkedSubRequestId: result.subRequestId,
@@ -365,7 +370,7 @@ export async function foldLaneStream(
       ...(laneId ? { laneId } : {}),
       subRequestId: result.subRequestId,
       detail: result.answer,
-      filesTouched: [],
+      filesTouched: [...touched],
       runIds: [],
       ...(spendTracked ? { usd } : {}),
     };

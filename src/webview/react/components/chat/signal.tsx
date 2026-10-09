@@ -8,17 +8,10 @@
 import { type CSSProperties, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import type { ToolState } from "@/lib/format";
+import { TONE_COLOR_VAR, type SignalTone } from "@/lib/status-tone";
 
-export type SignalTone = "idle" | "info" | "ok" | "warn" | "err";
-
-/** Theme variable backing each tone. */
-export const TONE_COLOR_VAR: Record<SignalTone, string> = {
-  idle: "var(--muted-foreground)",
-  info: "var(--s-info)",
-  ok: "var(--s-ok)",
-  warn: "var(--s-warn)",
-  err: "var(--s-err)",
-};
+/* The tone table lives in lib/status-tone.ts, shared with the status badges the panels use. */
+export { TONE_COLOR_VAR, type SignalTone };
 
 /** Tool-call lifecycle state → tone. */
 export function toolStateTone(state: ToolState): SignalTone {
@@ -38,6 +31,7 @@ export function turnStatusTone(statusClass: string): SignalTone {
     case "streaming": return "info";
     case "pending": return "warn";
     case "limit": return "warn";
+    case "paused": return "idle";
     case "error": return "err";
     case "complete": return "ok";
     default: return "idle";

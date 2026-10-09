@@ -362,6 +362,43 @@ export class EditDiffJournal implements vscode.Disposable {
     return this._show(entry, snapshot, snapshot.summary);
   }
 
+  /**
+   * Open every file changed since `sinceSeq` as one review, each against how it looked before its
+   * first change in that span. This is the cumulative picture: a file edited ten times is one
+   * diff, not ten. Returns how many files are in it.
+   */
+  async openCumulative(sinceSeq: number, title: string): Promise<number> {
+    const first = new Map<string, { entry: JournalEntry; snapshot: FileSnapshot; key: string }>();
+    const last = new Map<string, { entry: JournalEntry; snapshot: FileSnapshot; key: string }>();
+    const entries = [...this._entries.values()].filter((entry) => entry.seq > sinceSeq).sort((a, b) => a.seq - b.seq);
+    for (const entry of entries) {
+      for (const [key, snapshot] of entry.files) {
+        if (!snapshot.summary) continue;
+        const normal = normalizeKey(key);
+        if (!first.has(normal)) first.set(normal, { entry, snapshot, key });
+        last.set(normal, { entry, snapshot, key });
+      }
+    }
+    const resources: Array<[vscode.Uri, vscode.Uri, vscode.Uri]> = [];
+    for (const [normal, start] of first) {
+      const end = last.get(normal)!;
+      const resolved = this._resolve(end.key);
+      if (!resolved) continue;
+      const left = start.snapshot.before === null
+        ? this._snapshotUri(start.entry.toolCallId, "empty", start.key)
+        : this._snapshotUri(start.entry.toolCallId, "before", start.key);
+      const right = end.snapshot.after === null ? this._snapshotUri(end.entry.toolCallId, "empty", end.key) : resolved.uri;
+      resources.push([resolved.uri, left, right]);
+    }
+    if (resources.length === 0) return 0;
+    try {
+      await vscode.commands.executeCommand("vscode.changes", title, resources);
+    } catch {
+      return 0;
+    }
+    return resources.length;
+  }
+
   /** Open every recorded change for a call, so a multi-file edit is reviewed as a set.
    *  Returns how many diffs opened. */
   async openAllDiffs(toolCallId: string): Promise<number> {

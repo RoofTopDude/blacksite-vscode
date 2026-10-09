@@ -2,6 +2,7 @@ import { Bug, GitBranchPlus, History, ScanSearch, Sparkles, Info, Settings } fro
 import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
 import { LiveDot } from "./chat/signal";
+import { AttentionPill } from "./run/AttentionPill";
 import type { ActiveRequestMode } from "@/lib/protocol";
 
 const MODE_META = {
@@ -36,6 +37,7 @@ export function Header({ requestMode }: { requestMode: ActiveRequestMode }) {
           </span>
         )}
       </button>
+      {store.view !== "chat" && <AttentionPill />}
       <button type="button" className={cn(iconBtn, store.view === "history" && "text-primary")} title="Conversation history" aria-label="Conversation history" aria-pressed={store.view === "history"} onClick={() => actions.setView("history")}>
         <History className="size-4" />
       </button>

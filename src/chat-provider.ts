@@ -6,7 +6,7 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import type { LocalRuntime, InstallHint } from "@blacksite/local-runtime";
-import { AgentSession, stripImagesForPersistence, type ProviderName, type SteerMessage } from "./agent-session.js";
+import { AgentSession, stripImagesForPersistence, type ProviderName, type SteerMessage, type TurnOrigin } from "./agent-session.js";
 import { resolvePreviewProjectCss } from "./preview-assets.js";
 import type {
   AgentEvent,
@@ -40,6 +40,21 @@ import type { ImageBlock } from "./agent-loop-contract.js";
 import { ChromiumRunner } from "./chromium-runner.js";
 import type { ContinuationModel } from "./continuation/continuation-model.js";
 import type { PlanContinuationService } from "./plans/plan-continuation-service.js";
+import type { PlanRunHost, PlanRunService, SnapshotOutcome } from "./plans/plan-run-service.js";
+import type { DiffPreview } from "./diff-preview.js";
+import type { PlanRunTurnOrigin, PlanRunView } from "./plans/plan-run-model.js";
+import { buildPreflight, type PreflightProject } from "./plans/run-preflight.js";
+import { buildRunReport, runReportTitle } from "./plans/run-report.js";
+import { StepSnapshotter, type RestorePlan } from "./plans/step-snapshots.js";
+import type { PlanRun } from "./plans/plan-run-model.js";
+import type { PlanningProvider } from "./planning-store.js";
+import { buildSanitizedProcessEnv } from "@blacksite/local-runtime";
+import { outstandingFiles } from "./agent/verification-ledger.js";
+import type { StepEvidence, TaskPlan } from "./planning-store.js";
+import { projectsOwning } from "./toolchains/project-needs.js";
+import type { Platform } from "./toolchains/recipes.js";
+import type { AttentionCenter } from "./chat/attention.js";
+import { buildHandoff, handoffForNextTurn, type HandoffChange } from "./plans/run-handoff.js";
 import type { SequenceToolProvider } from "./sequences/sequence-service.js";
 import type { LoopToolProvider } from "./loops/loop-tool-provider.js";
 import { createLoopEditProvider, createLoopLspProvider, stopLaneOnApprovalDenial } from "./loops/loop-approval-routing.js";
@@ -59,7 +74,7 @@ import { EditDiffJournal } from "./edit-diff-journal.js";
 import type { ToolDiffSummary } from "./edit-diff-stats.js";
 import type { ChangeLog } from "./graph/change-log.js";
 import { ToolchainInventoryCache, environmentsInPlay, formatLocalToolchains, formatToolchainSummary, localToolchainsInPlay } from "./toolchains/inventory.js";
-import { requirementSummary } from "./toolchains/advisor.js";
+import { advise, requirementSummary } from "./toolchains/advisor.js";
 import { needsForFiles } from "./toolchains/project-needs.js";
 import { ToolchainSetupController, toolchainForCommand } from "./toolchains/setup-controller.js";
 import { SecretStore } from "./secret-store.js";
@@ -86,7 +101,7 @@ import type { McpServerInfo } from "./workspace-context.js";
 import { McpRegistry, toolIsDestructive } from "./mcp-registry.js";
 import { buildMcpToolCatalog, type McpTypedTool } from "./mcp-tool-catalog.js";
 import { confirmProjectAutoApprove, normalizeCommandBinary, readCommandPolicy } from "./command-policy.js";
-import { clearCheckpoint } from "./checkpoint.js";
+import { clearCheckpoint, loadCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
 import { fetchModels, getFallbackModels, getContextLength, getMaxOutputTokens, getModelPricing, getVisionSupport, estimateUsageCostUsd, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
 import { restorePersistedImages } from "./agent/transcript-hygiene.js";
@@ -410,9 +425,31 @@ const PROVIDER_DEFAULTS: Record<ProviderName, ProviderSettings> = {
 
 /** User-role messages the harness writes itself. None of them is something the user said. */
 const HARNESS_MESSAGE_PREFIXES = [
-  "[tool_result", "[Automatic plan continuation]", "[Internal", "[Resumed from checkpoint]",
+  "[tool_result", "[Automatic plan continuation]", "[Internal", "[Resumed from checkpoint]", "[Plan run",
   "Your last response was cut off",
 ];
+
+/** The agent's last paragraph, trimmed, for a note about where it stopped. */
+function lastNarration(text: string): string | undefined {
+  const paragraphs = text.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean);
+  const last = paragraphs.at(-1);
+  if (!last) return undefined;
+  return last.length > 240 ? `${last.slice(0, 239)}…` : last;
+}
+
+/** Which kind of write-up a stop deserves, or undefined when the turn simply finished. */
+function handoffReasonFor(stopReason: string): "max_iterations" | "cancelled" | "paused" | "error" | undefined {
+  switch (stopReason) {
+    case "max_iterations": return "max_iterations";
+    case "cancelled": return "cancelled";
+    case "paused": return "paused";
+    case "error":
+    case "protocol_violation":
+    case "context_window_exceeded":
+    case "refusal": return "error";
+    default: return undefined;
+  }
+}
 
 /** `blacksite.tools.loadOnDemand`, read on every request so a toggle applies to the running chat. */
 function readToolLoading(): "on_demand" | "all" {
@@ -445,6 +482,10 @@ interface RunSummary {
   approvalPending: boolean;
   questionPending: boolean;
   errored: boolean;
+  /** The last tool call that failed, for the handoff written if the run stops. */
+  lastFailure?: { tool: string; error: string };
+  /** Rounds the turn used, from its terminal event. */
+  iterations: number;
 }
 
 // ── ChatProvider ───────────────────────────────────────────────────────────────
@@ -546,6 +587,15 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     return prompt ? this._secrets.getOrPromptApiKey(provider) : this._secrets.getApiKey(provider);
   }
   private _planContinuation?: PlanContinuationService;
+  /** The plan run in progress, if any. Set by the extension once it exists. */
+  private _planRuns?: PlanRunService;
+  /** Everything waiting on the user, shared with the badge, status bar and toasts. */
+  private _attention?: AttentionCenter;
+  /** Files each finished tool call changed while a plan run was active, for step evidence. */
+  private readonly _runFileLog: Array<{ at: number; path: string; additions: number; deletions: number }> = [];
+  /** Checks that cleared files while a plan run was active, for step evidence. */
+  private readonly _runCheckLog: Array<{ at: number; label: string }> = [];
+  private _lastCheckStamp = 0;
   /** Wired after the loop supervisor is created; only parent sessions receive this provider. */
   private _loopTools?: LoopToolProvider;
   /**
@@ -752,6 +802,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     // window, so subscriptions are torn down here instead.
     this._disposeViewSubscriptions();
     this._view = webviewView;
+    this._viewReady = false;
     webviewView.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, "out")],
@@ -793,6 +844,61 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
   cancelCurrentRun(): void {
     this._runner.cancel();
+  }
+
+  /** Flies the Codebase Map to a file. Set by the extension once the Map exists. */
+  private _revealOnMap?: (path: string) => void;
+
+  setMapRevealer(reveal: (path: string) => void): void {
+    this._revealOnMap = reveal;
+  }
+
+  /** Show where the run is working: the last file it changed, else the first the current phase names. */
+  private _showRunOnMap(): void {
+    const run = this._planRuns?.current;
+    const touched = this._runFileLog.at(-1)?.path;
+    let target = touched;
+    if (!target && run) {
+      const plan = this._planning.read().plans.find((entry) => entry.id === run.planId);
+      const view = this._planRuns?.view();
+      const phase = plan?.phases.find((entry) => entry.id === view?.currentStep?.phaseId) ?? plan?.phases.find((entry) => entry.files?.length);
+      target = phase?.files?.[0];
+    }
+    if (!target) {
+      this._post({ type: "plan_run_notice", level: "info", message: "The run has not touched any files yet, and its current phase names none." });
+      return;
+    }
+    if (this._revealOnMap) this._revealOnMap(target);
+    else void vscode.commands.executeCommand("blacksite.map.focus");
+  }
+
+  /** Whether the chat view is on screen right now. */
+  isVisible(): boolean {
+    return this._view?.visible === true;
+  }
+
+  /** The plan whose preflight card should open as soon as the chat is on screen. */
+  private _pendingPreflightPlanId?: string;
+  /** The webview has said ready since it was last (re)resolved. */
+  private _viewReady = false;
+
+  /** Show the chat and open the preflight card for a plan, from the Plans panel or a command. */
+  async openRunPreflight(planId: string): Promise<void> {
+    this._pendingPreflightPlanId = planId;
+    await vscode.commands.executeCommand("blacksite.chat.focus");
+    await this._flushPendingPreflight();
+  }
+
+  private async _flushPendingPreflight(): Promise<void> {
+    const planId = this._pendingPreflightPlanId;
+    if (!planId || !this._viewReady) return;
+    this._pendingPreflightPlanId = undefined;
+    await this._handlePlanRunPreflight(planId);
+  }
+
+  /** The user has looked at how the last plan run ended. */
+  acknowledgeRun(): void {
+    this._runner.acknowledgeRun();
   }
 
   /** Open the VS Code Output panel to the Blacksite Agent log channel. */
@@ -1018,6 +1124,36 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._planContinuation = service;
   }
 
+  /** Set by the extension once the plan run service and attention center exist. */
+  setPlanRuns(service: PlanRunService, attention: AttentionCenter): void {
+    this._planRuns = service;
+    this._attention = attention;
+    attention.onChange((items) => {
+      this._post({ type: "attention_state", items });
+      this._applyAttentionBadge();
+    });
+  }
+
+  get planRuns(): PlanRunService | undefined {
+    return this._planRuns;
+  }
+
+  /**
+   * Why a turn must not start because the session has already spent its ceiling. Checked by every
+   * path that starts one — typed messages, the conductor, a resume, a steer sent as a turn — so
+   * an unattended turn cannot spend past a limit that only a typed message used to respect.
+   */
+  private _spendCeilingMessage(): string | undefined {
+    const session = this._session;
+    if (!session) return undefined;
+    const configured = normalizeCostGuardrails(this._readSettings().costGuardrails);
+    const currentSpend = this._sessionSpend.get(session.sessionId)?.usd ?? 0;
+    if (configured.hardStop && configured.sessionMaxUsd && currentSpend >= configured.sessionMaxUsd) {
+      return `Session spend is $${currentSpend.toFixed(2)}, at or above the $${configured.sessionMaxUsd.toFixed(2)} ceiling. Raise or disable the ceiling in Settings to continue.`;
+    }
+    return undefined;
+  }
+
   /**
    * Run one conductor-authored turn.
    *
@@ -1030,9 +1166,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    */
   async continuePlanTurn(message: string, rationale: string): Promise<void> {
     if (this._liveTurnId) return; // a turn is already running; the gate should have caught this
-    this.reportPlanContinuation("trace", rationale
-      ? `Continuing the plan — ${rationale}`
-      : "Continuing the plan.");
+    const blocked = this._spendCeilingMessage();
+    if (blocked) {
+      this.reportPlanContinuation("halt", blocked);
+      this._planRuns?.conductorContext().stopped("budget", blocked);
+      return;
+    }
     const continuationMessage = `[Automatic plan continuation]\n${message}`;
     await this._continueSend(
       continuationMessage,
@@ -1044,8 +1183,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       },
       undefined,
       // The plan was being executed under some request mode; a continuation is the same work
-      // carrying on, so it inherits rather than resetting to the default.
-      { preserveRequestMode: true },
+      // carrying on, so it inherits rather than resetting to the default. The seam tells the
+      // transcript why a turn began without the user having said anything.
+      { preserveRequestMode: true, origin: "conductor", seam: rationale ? `Continued — ${rationale}` : "Continued the plan" },
     );
   }
 
@@ -1102,6 +1242,34 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   }
 
   async offerCheckpointResume(cp: Checkpoint): Promise<void> {
+    // Stopping a run on purpose leaves a checkpoint too. Offering to resume it after a reload
+    // would second-guess the user who just told it to stop.
+    if (cp.state?.lastStopReason === "cancelled") {
+      clearCheckpoint(this._context);
+      return;
+    }
+    // An interrupted plan run has its own bar and its own Resume, which also restores the
+    // conversation. One prompt for it, here, in place of the generic one.
+    const run = this._planRuns?.active;
+    if (run && run.status === "interrupted" && run.sessionId === cp.sessionId) {
+      const view = this._planRuns?.view();
+      const where = view && view.stepsTotal ? ` at step ${view.stepPosition}/${view.stepsTotal}` : "";
+      const choice = await vscode.window.showInformationMessage(
+        `Blacksite: the plan run "${run.planTitle}" was interrupted${where}. Resume it?`,
+        "Resume",
+        "Not now",
+      );
+      if (choice === "Resume") {
+        const outcome = this._planRuns?.resume();
+        if (outcome && !outcome.ok) void vscode.window.showWarningMessage(`Blacksite: ${outcome.error ?? "The run could not be resumed."}`);
+      }
+      return;
+    }
+    const blockedBySpend = this._spendCeilingMessage();
+    if (blockedBySpend) {
+      void vscode.window.showWarningMessage(`Blacksite: ${blockedBySpend}`);
+      return;
+    }
     const action = await vscode.window.showInformationMessage(
       `Blacksite: Unfinished run detected (${cp.iteration} iteration(s)). Resume?`,
       "Resume",
@@ -1117,7 +1285,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       // A resumed run starts outside the normal webview request/await chain. Keep a final
       // catch here so an unexpected failure before _continueSend's own runner guard cannot
       // become an unhandled rejection and take down the extension host.
-      void this._continueSend("[Resumed from checkpoint]", undefined, undefined, { preserveRequestMode: true }).catch((err) => {
+      void this._continueSend("[Resumed from checkpoint]", undefined, undefined, { preserveRequestMode: true, origin: "resume", seam: "Resumed from a checkpoint" }).catch((err) => {
         const message = err instanceof Error ? err.message : String(err);
         this._post({ type: "stream_error", id: this._liveTurnId ?? `resume_${Date.now()}`, message });
         this._liveTurnId = undefined;
@@ -1379,7 +1547,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         readContext: () => this._memory.readContext(),
         recordUiPreference: (entry) => this._memory.upsertUiPreference(entry),
       },
-      planningProvider: this._planning,
+      planningProvider: this._runAwarePlanning(),
       ticketProvider: this._tickets,
       graphProvider: this._graphAnnotations,
       dataProvider: this._buildDataToolProvider(),
@@ -1388,6 +1556,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       agentMemoryIndex: this._memoryIndex ?? undefined,
       supportsVision: () => this._resolveSupportsVision(settings.provider, pSettings.model),
       visionFallbackProvider: this._buildVisionFallbackProvider(),
+      providerOutageWaitMs: () => this._planRuns?.providerOutageWaitMs() ?? 0,
     });
 
     this._logger.sessionStart(session.sessionId, pSettings.model, settings.provider);
@@ -1893,6 +2062,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       spend.partial = true;
       this._sessionSpend.set(session.sessionId, spend);
       this._planning.recordSpendForSession(session.sessionId, undefined, true);
+      this._planRuns?.noteSpend(undefined, true);
       this._postSessionRuntimeState();
       return;
     }
@@ -1900,10 +2070,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       spend.partial = true;
       this._sessionSpend.set(session.sessionId, spend);
       this._planning.recordSpendForSession(session.sessionId, undefined, true);
+      this._planRuns?.noteSpend(undefined, true);
       this._postSessionRuntimeState();
       return;
     }
     spend.usd += Math.max(0, cost.costUsd);
+    this._planRuns?.noteSpend(cost.costUsd, cost.partial);
     spend.partial ||= cost.partial;
 
     const guard = normalizeCostGuardrails(this._readSettings().costGuardrails);
@@ -1918,8 +2090,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         message: `Session spend reached $${spend.usd.toFixed(2)} (${Math.min(Math.round(spend.usd / max * 100), 999)}% of the $${max.toFixed(2)} ceiling).`,
       });
     }
-    if (max && spend.usd >= max && !spend.exceeded) {
-      spend.exceeded = true;
+    const nowExceeded = !!max && spend.usd >= max;
+    if (max && nowExceeded && !spend.exceeded) {
       this._post({
         type: "stream_diagnostic",
         id: turnId,
@@ -1928,8 +2100,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           ? `Session spend passed the $${max.toFixed(2)} advisory ceiling; hard stop is disabled.`
           : `Session spend reached the $${max.toFixed(2)} ceiling. Stopping before another tool/model round.`,
       });
-      if (guard.hardStop) this._runner.cancel();
     }
+    // Recomputed on every event, not latched: a user who raises the ceiling and then crosses the
+    // new one must be stopped again, and a turn that is already over the line is stopped every time.
+    spend.exceeded = nowExceeded;
+    if (nowExceeded && guard.hardStop) this._runner.cancel();
     const planBudget = this._planning.recordSpendForSession(
       session.sessionId,
       cost.costUsd,
@@ -2339,6 +2514,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         label,
         task: message,
         isFollowUp: true,
+        budget: budget,
       };
 
       const outcome = newLaneOutcome();
@@ -2626,6 +2802,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         subRequestId,
         label,
         task: request.input.task,
+        budget: budget,
       };
 
       const outcome = newLaneOutcome();
@@ -2765,7 +2942,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         this._restoreSessionToWebview();
         // A reconnecting webview has the persisted transcript but not the live turn's open
         // gates — replay them or an in-flight question becomes unanswerable.
+        this._viewReady = true;
         this._replayLiveGates();
+        this._replayRunState();
+        this._applyAttentionBadge();
+        this._runner.acknowledgeRun();
+        await this._flushPendingPreflight();
         if (this._pendingSetupFocus) {
           this._post({ type: "open_project_setup", focus: this._pendingSetupFocus });
           this._pendingSetupFocus = undefined;
@@ -2892,6 +3074,48 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
       case "cancel_current":
         this._runner.cancel();
+        break;
+
+      case "plan_run_preflight":
+        await this._handlePlanRunPreflight(typeof msg.planId === "string" ? msg.planId : "");
+        break;
+
+      case "plan_run_start":
+        await this._handlePlanRunStart(typeof msg.planId === "string" ? msg.planId : "", msg.charter);
+        break;
+
+      case "plan_run_pause":
+        this._planRuns?.pause();
+        break;
+
+      case "plan_run_resume": {
+        const outcome = this._planRuns?.resume();
+        if (outcome && !outcome.ok) this._post({ type: "plan_run_notice", level: "error", message: outcome.error ?? "The run could not be resumed." });
+        break;
+      }
+
+      case "plan_run_stop":
+        this._planRuns?.stop();
+        break;
+
+      case "plan_run_retry_provider":
+        this._planRuns?.retryProvider();
+        break;
+
+      case "plan_run_report":
+        await this._openRunReport();
+        break;
+
+      case "plan_run_show_map":
+        this._showRunOnMap();
+        break;
+
+      case "plan_run_restore_step":
+        await this._handleRestoreStep(typeof msg.phaseId === "string" ? msg.phaseId : "", typeof msg.stepId === "string" ? msg.stepId : "");
+        break;
+
+      case "plan_run_review_changes":
+        await this._handleReviewChanges(msg.scope === "run" ? "run" : "conversation");
         break;
 
       case "compact_conversation":
@@ -3799,15 +4023,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const session = await this._ensureSession();
     if (!session) return;
 
-    const configuredBudget = normalizeCostGuardrails(this._readSettings().costGuardrails);
-    const currentSpend = this._sessionSpend.get(session.sessionId)?.usd ?? 0;
-    if (configuredBudget.hardStop
-      && configuredBudget.sessionMaxUsd
-      && currentSpend >= configuredBudget.sessionMaxUsd) {
-      this._post({
-        type: "stream_error",
-        message: `Session spend is $${currentSpend.toFixed(2)}, at or above the $${configuredBudget.sessionMaxUsd.toFixed(2)} ceiling. Raise or disable the ceiling in Settings to continue.`,
-      });
+    const spendBlock = this._spendCeilingMessage();
+    if (spendBlock) {
+      this._post({ type: "stream_error", message: spendBlock });
       this._postSessionRuntimeState();
       return;
     }
@@ -3888,6 +4106,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   /** Send steers the run ended without reading as one new turn, so nothing the user typed is lost. */
   private async _continueSteersAsTurn(session: AgentSession, steers: SteerMessage[]): Promise<void> {
     if (steers.length === 0 || this._session !== session) return;
+    const spendBlock = this._spendCeilingMessage();
+    if (spendBlock) {
+      for (const steer of steers) this._steerLog.delete(steer.id);
+      this._post({ type: "steer_state", ids: steers.map((steer) => steer.id), state: "returned" });
+      this._post({ type: "stream_error", message: spendBlock });
+      return;
+    }
     const settings = this._readSettings();
     const model = this._providerSettings(settings.provider, settings).model;
     const text = steers.map((steer) => steer.text).join("\n\n");
@@ -4415,11 +4640,12 @@ ${this._pendingRewindNote}`;
     content: string,
     meta?: { inputChars: number; promptPreview: string; mentionCount: number; contextLabel?: string },
     images?: ImageBlock[],
-    request?: { requestMode?: RequestMode; preserveRequestMode?: boolean; userText?: string; withheldImages?: number },
+    request?: { requestMode?: RequestMode; preserveRequestMode?: boolean; userText?: string; withheldImages?: number; origin?: TurnOrigin; seam?: string },
   ): Promise<void> {
     if (!this._session) return;
 
     const session = this._session;
+    const origin: TurnOrigin = request?.origin ?? "user";
     const turnId = `turn_${Date.now()}`;
     const summary: RunSummary = {
       stopReason: "",
@@ -4428,6 +4654,7 @@ ${this._pendingRewindNote}`;
       approvalPending: false,
       questionPending: false,
       errored: false,
+      iterations: 0,
     };
 
     // Before anything in this turn runs: the journal position and the conversation as they are now.
@@ -4440,10 +4667,12 @@ ${this._pendingRewindNote}`;
       createdAt: Date.now(),
       untracked: [],
     });
-    this._post({ type: "stream_start", id: turnId });
+    // `origin` and `seam` let the transcript show why a turn began when the user did not start it.
+    this._post({ type: "stream_start", id: turnId, origin, ...(request?.seam ? { seam: request.seam } : {}) });
     this._postSessionRuntimeState();
     this._logger.turnStart(turnId, meta);
     this._liveTurnId = turnId;
+    this._planRuns?.noteTurnStart(turnId, origin);
 
     let turnError: string | undefined;
     // Files this turn changed, with line counts, for the map's change log (see change-log.ts).
@@ -4471,11 +4700,13 @@ ${this._pendingRewindNote}`;
           else if (event.type === "tool_call_start") summary.toolCalls += 1;
           else if (event.type === "approval_pending") summary.approvalPending = true;
           else if (event.type === "question_card_pending") summary.questionPending = true;
-          else if (event.type === "turn_complete") summary.stopReason = event.stopReason;
+          else if (event.type === "turn_complete") { summary.stopReason = event.stopReason; summary.iterations = event.iterations; }
           else if (event.type === "error") summary.errored = true;
+          if (event.type === "tool_call_result" && !event.ok) summary.lastFailure = { tool: event.toolName, error: event.summary };
+          this._observeRunEvent(event);
           this._handleAgentEvent(event, turnId);
         },
-        { images, requestMode: request?.requestMode, preserveRequestMode: request?.preserveRequestMode, userText: request?.userText, withheldImages: request?.withheldImages },
+        { images, requestMode: request?.requestMode, preserveRequestMode: request?.preserveRequestMode, userText: request?.userText, withheldImages: request?.withheldImages, origin },
       );
     } catch (err) {
       // Safety net: covers (a) isRunning guard throw, (b) any unhandled rejection
@@ -4485,6 +4716,10 @@ ${this._pendingRewindNote}`;
       summary.errored = true;
       this._post({ type: "stream_error", id: turnId, message });
     }
+
+    // A gate still open here belongs to a run that ended while waiting. Read before the bookkeeping
+    // below expires it, because "was something ever pending" is not "is something still pending".
+    const gatesOpenAtEnd = this._liveGates.size > 0;
 
     if (!turnError && !summary.stopReason) {
       turnError = "Agent exited without a terminal turn_complete event.";
@@ -4536,6 +4771,14 @@ ${this._pendingRewindNote}`;
       if (this._liveGates.size > 0) this._expireAllGates("The run ended before this was answered.");
     }
 
+    /* The run's own account of the turn, and the note the next turn will read about where this
+       one stopped. Kept apart from the bookkeeping above so a failure there cannot skip it. */
+    try {
+      this._settleTurnForRun(session, turnId, summary, turnError, changed);
+    } catch (err) {
+      console.warn("[Blacksite] plan run bookkeeping failed:", err instanceof Error ? err.message : String(err));
+    }
+
     /* Messages typed while the run was finishing, which it ended without reading. A stopped run
        gives them back to the composer: the user stopped the agent and should decide whether to
        send them. Otherwise they become the next turn, and the plan conductor waits — the user
@@ -4559,20 +4802,22 @@ ${this._pendingRewindNote}`;
        would trip the runner's concurrency guard. Deliberately not awaited: the caller's promise
        resolving is what tells the webview the turn is done, and a continuation can take as long
        as a model call needs. */
-    void this._maybeContinuePlan(summary, turnError);
+    void this._maybeContinuePlan(summary, turnError, gatesOpenAtEnd);
   }
 
   /** Hand a settled turn to the plan conductor, if one is configured. Never throws. */
   private async _maybeContinuePlan(
-    summary: { text: string; stopReason: string; approvalPending: boolean; questionPending: boolean; errored: boolean },
+    summary: { text: string; stopReason: string; errored: boolean },
     turnError: string | undefined,
+    awaitingUser: boolean,
   ): Promise<void> {
     if (!this._planContinuation) return;
     try {
       await this._planContinuation.afterTurn({
         stopReason: summary.stopReason,
         errored: summary.errored || !!turnError,
-        awaitingUser: summary.approvalPending || summary.questionPending,
+        // Still waiting on the user, not "was asked something at some point and has since answered".
+        awaitingUser,
         lastMessage: summary.text,
       });
     } catch (error) {
@@ -4692,7 +4937,14 @@ ${this._pendingRewindNote}`;
     if (event.type === "tool_call_result") this._flushToolOutput({ toolCallId: event.toolCallId, laneId: lane?.laneId });
     switch (event.type) {
       case "provider_activity":
-        this._post({ type: "stream_provider_activity", id: turnId, phase: event.phase, message: event.message, ...laneMeta });
+        this._post({
+          type: "stream_provider_activity",
+          id: turnId,
+          phase: event.phase,
+          message: event.message,
+          ...(event.outage ? { outage: true, retryAt: event.retryAt } : {}),
+          ...laneMeta,
+        });
         break;
       case "text_delta":
         this._post({ type: "stream_delta", id: turnId, text: event.text, ...laneMeta });
@@ -4717,13 +4969,15 @@ ${this._pendingRewindNote}`;
         // serviceTier is the tier that actually served the turn (echoed by OpenAI), not the one
         // configured — a flex request downgraded to standard on a capacity miss must be costed
         // at standard rates, and a flex request that was honoured at half of them.
-        const cost = estimateUsageCostUsd(this._cachedPricing(s.provider, modelId), {
+        // Priced under the provider that made the call: a lane may run on a different provider than
+        // the chat, and the parent's price table would bill it at the wrong rates.
+        const cost = estimateUsageCostUsd(this._cachedPricing(usageProvider, modelId), {
           input: event.inputTokens, output: event.outputTokens, cacheRead: event.cacheReadTokens, cacheWrite: event.cacheWriteTokens,
           serviceTier: event.serviceTier,
           // Request-side setting, so it comes from settings rather than the response. Sessions
           // are rebuilt whenever a provider setting changes, so this cannot drift from the TTL
           // the turn was actually sent with.
-          cacheTtl: this._billedCacheTtl(s.provider, modelId, usageSettings.cacheTtl, s),
+          cacheTtl: this._billedCacheTtl(usageProvider, modelId, usageSettings.cacheTtl, s),
         });
         this._post({
           type: "stream_usage", id: turnId, inputTokens: event.inputTokens, outputTokens: event.outputTokens,
@@ -4866,6 +5120,7 @@ ${this._pendingRewindNote}`;
           label: event.label,
           task: event.task,
           isFollowUp: event.isFollowUp,
+          ...(event.budget ? { budget: { maxToolRounds: event.budget.maxToolRounds, maxRuntimeSeconds: event.budget.maxRuntimeSeconds } } : {}),
         });
         break;
       case "subagent_lane_event":
@@ -5288,6 +5543,7 @@ ${this._pendingRewindNote}`;
    */
   private _expireGate(toolCallId: string, kind: "question" | "approval", reason: string): void {
     this._liveGates.delete(toolCallId);
+    this._attention?.resolveWhere((item) => item.id.startsWith("gate:") && item.id.endsWith(`:${toolCallId}`));
     this._post({ type: "stream_gate_expired", kind, toolCallId, reason });
   }
 
@@ -5316,6 +5572,554 @@ ${this._pendingRewindNote}`;
    */
   private _replayLiveGates(): void {
     for (const gate of this._liveGates.values()) this._post(gate.payload);
+  }
+
+  // ── Plan runs ─────────────────────────────────────────────────────────────────
+
+  /** What a plan run needs from the chat: the session, turns, and the webview. */
+  planRunHost(): PlanRunHost {
+    return {
+      sessionInfo: () => {
+        const session = this._session;
+        if (!session) return undefined;
+        const settings = this._readSettings();
+        return {
+          sessionId: session.sessionId,
+          provider: settings.provider,
+          model: this._providerSettings(settings.provider, settings).model,
+          messageCount: session.history.length,
+        };
+      },
+      isTurnLive: () => !!this._liveTurnId || this._runner.busy,
+      launchTurn: (message, options) => { void this._launchRunTurn(message, options); },
+      requestPause: () => { this._session?.requestPause(); },
+      cancelTurn: () => { this._runner.cancel(); },
+      retryProviderNow: () => { this._session?.retryProviderNow(); },
+      endGrants: () => { this._session?.clearApprovalGrants(); },
+      collectEvidence: (context) => this._collectStepEvidence(context),
+      captureSnapshot: ({ label, plan }) => this._captureRunSnapshot(label, plan),
+      saveReport: (run, plan) => this._saveRunReport(run, plan),
+      publish: (view) => this._publishPlanRun(view),
+    };
+  }
+
+  private _publishPlanRun(view: PlanRunView | null): void {
+    this._post({ type: "plan_run_state", run: view });
+    this._runner.setRunView(view);
+    // A run that ended in front of the user needs no reminder in the status bar.
+    if (view && (view.status === "completed" || view.status === "stopped" || view.status === "budget_exhausted")
+      && this._view?.visible && vscode.window.state.focused) this._runner.acknowledgeRun();
+  }
+
+  /** A webview that just connected has neither the run nor the attention list. */
+  private _replayRunState(): void {
+    this._post({ type: "plan_run_state", run: this._planRuns?.view() ?? null });
+    this._post({ type: "attention_state", items: this._attention?.list() ?? [] });
+  }
+
+  private _applyAttentionBadge(): void {
+    const view = this._view;
+    if (!view) return;
+    const pressing = (this._attention?.list() ?? []).filter((item) => item.severity === "needs_you" || item.severity === "error");
+    view.badge = pressing.length > 0
+      ? { value: pressing.length, tooltip: pressing.slice(0, 5).map((item) => item.title).join("\n") }
+      : undefined;
+  }
+
+  /**
+   * The plan tool, with one addition: when a step finishes during a plan run, the answer waits
+   * for the restore point to be taken. Otherwise the agent would be a tool call into the next
+   * step before the files were recorded, and "restore to after step 7" would include step 8.
+   */
+  private _runAwarePlanning(): PlanningProvider {
+    return {
+      dispatch: async (op, payload, ctx) => {
+        const result = await this._planning.dispatch(op, payload, ctx);
+        if (op === "update" && this._planRuns?.active) await this._planRuns.settleSnapshots();
+        return result;
+      },
+    };
+  }
+
+  /** Start a turn on behalf of a plan run: the first one, or one that picks it up after a stop. */
+  private async _launchRunTurn(
+    message: string,
+    options: { origin: PlanRunTurnOrigin; userText: string; label: string },
+  ): Promise<void> {
+    try {
+      const run = this._planRuns?.current;
+      if (options.origin === "resume" && run && !(await this._restoreRunSession(run.sessionId, run.model))) {
+        this._planRuns?.pause();
+        return;
+      }
+      const session = await this._ensureSession();
+      if (!session) {
+        this._planRuns?.pause();
+        return;
+      }
+      const blocked = this._spendCeilingMessage();
+      if (blocked) {
+        this._post({ type: "stream_error", message: blocked });
+        this._planRuns?.pause();
+        return;
+      }
+      const starting = options.origin === "run";
+      await this._continueSend(
+        message,
+        { inputChars: message.length, promptPreview: options.userText, mentionCount: 0, contextLabel: options.label },
+        undefined,
+        {
+          // Executing a plan is never the read-only planning profile, whatever the chat was set to.
+          requestMode: starting ? "auto" : undefined,
+          preserveRequestMode: !starting,
+          userText: starting ? options.userText : undefined,
+          origin: options.origin,
+          seam: starting ? `Plan run started — ${run?.planTitle ?? "plan"}` : "Plan run resumed",
+        },
+      );
+    } catch (err) {
+      const text = err instanceof Error ? err.message : String(err);
+      this._post({ type: "stream_error", id: this._liveTurnId ?? `run_${Date.now()}`, message: text });
+      this._liveTurnId = undefined;
+      this._planRuns?.pause();
+    }
+  }
+
+  /**
+   * Put the conversation back the way the interrupted run left it. Prefers the checkpoint, which
+   * is written after every tool round, over the session store, which is written after each turn.
+   * Returns false when the user declined a model change, so the caller leaves the run paused.
+   */
+  private async _restoreRunSession(sessionId: string, runModel?: string): Promise<boolean> {
+    if (this._session?.sessionId === sessionId) return true;
+    const cp = loadCheckpoint(this._context);
+    if (!cp || cp.sessionId !== sessionId) return true;
+    const settings = this._readSettings();
+    const current = this._providerSettings(settings.provider, settings).model;
+    const was = runModel || cp.model;
+    if (was && current && was !== current) {
+      const answer = await vscode.window.showWarningMessage(
+        `Blacksite: this run was using ${was}, and the chat is now set to ${current}. Continue with ${current}?`,
+        { modal: false },
+        "Continue",
+        "Cancel",
+      );
+      if (answer !== "Continue") return false;
+    }
+    const apiKey = await this._modelCredential(settings.provider);
+    if (!apiKey) return false;
+    this._session = await this._createSession(apiKey);
+    this._restoreSessionFromState(this._session, cp.messages, cp.state, cp.sessionId);
+    this._post({ type: "history_restored", messages: this._session.history });
+    this._postSessionRuntimeState();
+    return true;
+  }
+
+  /** Feeds the plan run and the attention center from the same stream the transcript reads. */
+  private _observeRunEvent(event: AgentEvent): void {
+    const inner = event.type === "subagent_lane_event" ? event.event : event;
+    const laneId = event.type === "subagent_lane_event" ? event.laneId : undefined;
+    // A lane's own runtime state describes the lane, not the run.
+    if (!(laneId && inner.type === "runtime_state")) this._planRuns?.noteAgentEvent(inner as unknown as { type: string });
+
+    if (inner.type === "tool_call_result" && inner.ok && this._planRuns?.active) {
+      for (const diff of inner.diffs ?? []) {
+        this._runFileLog.push({ at: Date.now(), path: diff.path, additions: diff.additions, deletions: diff.deletions });
+      }
+      if (this._runFileLog.length > 5000) this._runFileLog.splice(0, this._runFileLog.length - 5000);
+    } else if (inner.type === "tool_call_start") {
+      this._planRuns?.noteProgress();
+    } else if (inner.type === "runtime_state" && !laneId) {
+      const verification = inner.state.verification;
+      if (verification.status === "passed" && verification.updatedAt && verification.updatedAt > this._lastCheckStamp) {
+        this._lastCheckStamp = verification.updatedAt;
+        this._runCheckLog.push({ at: verification.updatedAt, label: verification.method ?? "a check" });
+        if (this._runCheckLog.length > 500) this._runCheckLog.splice(0, this._runCheckLog.length - 500);
+      }
+    }
+
+    const center = this._attention;
+    if (!center) return;
+    const id = (toolCallId: string): string => `gate:${laneId ?? ""}:${toolCallId}`;
+    switch (inner.type) {
+      case "approval_pending":
+        center.raise({
+          id: id(inner.toolCallId),
+          kind: "approval",
+          severity: "needs_you",
+          source: laneId ? "lane" : "chat",
+          title: laneId ? "Approval needed in a lane" : "Approval needed",
+          detail: inner.description.slice(0, 300),
+          at: Date.now(),
+          ...(laneId ? { lane: laneId } : {}),
+        });
+        break;
+      case "question_card_pending":
+        center.raise({
+          id: id(inner.toolCallId),
+          kind: "question",
+          severity: "needs_you",
+          source: laneId ? "lane" : "chat",
+          title: laneId ? "A lane has a question" : "The agent has a question",
+          detail: inner.questions[0]?.question?.slice(0, 300),
+          at: Date.now(),
+          ...(laneId ? { lane: laneId } : {}),
+        });
+        break;
+      case "approval_result":
+      case "question_card_result":
+        center.resolve(id(inner.toolCallId));
+        break;
+      default:
+        break;
+    }
+  }
+
+  /**
+   * The harness's account of a turn that has just ended: handed to the plan run, and written up as
+   * a note when the turn stopped short so the user sees where it got to and the next turn is told.
+   */
+  private _settleTurnForRun(
+    session: AgentSession,
+    turnId: string,
+    summary: RunSummary,
+    turnError: string | undefined,
+    changed: ReadonlyMap<string, { additions: number; deletions: number }>,
+  ): void {
+    const stop = summary.stopReason || (turnError ? "error" : "");
+    const verification = session.runtimeState.verification;
+    const changes: HandoffChange[] = [...changed].map(([file, counts]) => ({ path: file, ...counts }));
+    const facts = {
+      changes,
+      unverifiedFiles: outstandingFiles(verification),
+      verificationFailed: verification.status === "failed",
+      lastFailure: summary.lastFailure,
+      lastNarration: lastNarration(summary.text),
+      toolCalls: summary.toolCalls,
+      stepMoves: [] as string[],
+    };
+    const maxIterations = this._readSettings().maxIterations;
+    const detail = turnError && !turnError.startsWith("Terminal stop:") ? turnError : undefined;
+    let handoff = this._planRuns?.noteTurnEnd({
+      turnId,
+      stopReason: stop,
+      iterations: summary.iterations,
+      errored: summary.errored || !!turnError,
+      errorMessage: detail,
+      facts,
+      maxIterations,
+    });
+    const reason = handoffReasonFor(stop);
+    // Outside a plan run a bare cancel needs no write-up; one that left changes behind does.
+    if (!handoff && reason && !(reason === "cancelled" && changes.length === 0)) {
+      handoff = buildHandoff({
+        reason,
+        detail,
+        changes,
+        unverifiedFiles: facts.unverifiedFiles,
+        verificationFailed: facts.verificationFailed,
+        lastFailure: facts.lastFailure,
+        lastNarration: facts.lastNarration,
+        iterations: summary.iterations,
+        maxIterations,
+      });
+    }
+    if (handoff) {
+      this._post({ type: "run_handoff", id: turnId, reason: reason ?? stop, text: handoff });
+      session.setRunNotice(handoffForNextTurn(handoff));
+    }
+  }
+
+  /** What a step was shown to have, from what the run saw while the step was open. */
+  private _collectStepEvidence(context: { phaseId: string; stepId: string; startedAt?: number; now: number }): StepEvidence | undefined {
+    const since = context.startedAt ?? 0;
+    const normalize = (value: string): string => value.replace(/\\/g, "/").replace(/^\.\//, "");
+    const changed = new Set<string>();
+    for (const entry of this._runFileLog) if (entry.at >= since) changed.add(normalize(entry.path));
+    const verification = this._session?.runtimeState.verification;
+    const owed = new Set((verification ? outstandingFiles(verification) : []).map(normalize));
+    const checks = [...new Set(this._runCheckLog.filter((entry) => entry.at >= since).map((entry) => entry.label))].slice(0, 8);
+    return {
+      checks,
+      unverified: [...changed].filter((file) => owed.has(file)).slice(0, 50),
+      filesChanged: [...changed].slice(0, 100),
+      at: new Date(context.now).toISOString(),
+    };
+  }
+
+  private async _handlePlanRunPreflight(planId: string): Promise<void> {
+    const plan = this._planning.read().plans.find((entry) => entry.id === planId);
+    if (!plan) {
+      this._post({ type: "plan_run_notice", level: "error", message: "That plan no longer exists." });
+      return;
+    }
+    const projects = await this._preflightProjects(plan);
+    this._post({
+      type: "plan_run_preflight",
+      report: buildPreflight({ plan, projects, approvalMode: this._approvalMode(), runOpen: !!this._planRuns?.active }),
+    });
+  }
+
+  /** The projects an open plan will touch, with the toolchain problems that would stall it. */
+  private async _preflightProjects(plan: TaskPlan): Promise<PreflightProject[]> {
+    const roots = this._workspaceRoots();
+    const declared = new Set<string>();
+    for (const phase of plan.phases) {
+      if (!phase.steps.some((step) => step.status !== "completed")) continue;
+      for (const file of phase.files ?? []) declared.add(file);
+    }
+    if (declared.size === 0 || roots.length === 0) return [];
+    const absolute = [...declared].map((file) => (path.isAbsolute(file) ? file : path.join(roots[0]!, file)));
+    try {
+      const projects = needsForFiles(roots, absolute);
+      if (projects.length === 0) return [];
+      const report = advise({
+        projects,
+        inventory: this._toolchains.current(),
+        platform: process.platform as Platform,
+        installedExtensions: new Set(vscode.extensions.all.map((extension) => extension.id.toLowerCase())),
+        inPlayFiles: absolute,
+      });
+      return report.projects.map((verdict) => ({
+        name: verdict.display,
+        root: path.relative(roots[0]!, verdict.dir) || ".",
+        files: projectsOwning(projects, absolute).some((owner) => owner.dir === verdict.dir)
+          ? absolute.filter((file) => !path.relative(verdict.dir, file).startsWith("..")).length
+          : 0,
+        issues: verdict.items
+          .filter((item) => item.kind !== "ok" && item.kind !== "auto" && item.kind !== "info")
+          .map((item) => item.message),
+      }));
+    } catch {
+      // A toolchain probe failing must not stop a run from being offered.
+      return [];
+    }
+  }
+
+  private async _handlePlanRunStart(planId: string, charter: unknown): Promise<void> {
+    const runs = this._planRuns;
+    if (!runs) return;
+    const session = await this._ensureSession();
+    if (!session) return;
+    const blocked = this._spendCeilingMessage();
+    if (blocked) {
+      this._post({ type: "plan_run_notice", level: "error", message: blocked });
+      return;
+    }
+    this._runFileLog.length = 0;
+    this._runCheckLog.length = 0;
+    this._runStartSeq = this._editDiffs.sequence;
+    const result = runs.start({ planId, charter });
+    if (!result.ok) this._post({ type: "plan_run_notice", level: "error", message: result.error });
+  }
+
+  // ── Plan run: restore points, report, review ────────────────────────────────
+
+  private _snapshotter?: StepSnapshotter;
+  /** The plan run's start on the edit journal, for a review that falls back to it. */
+  private _runStartSeq = 0;
+  /** Where each project stood just before the last restore, so it can be undone. */
+  private _lastRestore?: { label: string; plans: RestorePlan[] };
+
+  private get _snapshots(): StepSnapshotter {
+    if (!this._snapshotter) {
+      const storage = this._context.storageUri?.fsPath ?? this._context.globalStorageUri.fsPath;
+      this._snapshotter = new StepSnapshotter({ storageDir: storage }, buildSanitizedProcessEnv());
+    }
+    return this._snapshotter;
+  }
+
+  /** Serves the saved state of a file to the multi-file review. */
+  snapshotContentProvider(): vscode.TextDocumentContentProvider {
+    return {
+      provideTextDocumentContent: async (uri: vscode.Uri): Promise<string> => {
+        const query = new URLSearchParams(uri.query);
+        const root = query.get("root");
+        const tree = query.get("tree");
+        if (!root || !tree) return "";
+        return (await this._snapshots.fileAt(root, tree, uri.path.replace(/^\/+/, ""))) ?? "";
+      },
+    };
+  }
+
+  /** Remove old private repositories. Called at startup. */
+  pruneSnapshots(maxAgeDays: number): void {
+    try { this._snapshots.prune(maxAgeDays); } catch { /* best effort */ }
+  }
+
+  /**
+   * The project folders a plan run works in: the projects its phases name, and any the run has
+   * edited in since. Only these are captured, so a workspace of twenty codebases costs what the
+   * two the plan touches cost.
+   */
+  private _snapshotRoots(plan: TaskPlan): string[] {
+    const roots = this._workspaceRoots();
+    if (roots.length === 0) return [];
+    const inside = (parent: string, child: string): boolean => {
+      const relative = path.relative(parent, child);
+      return !relative.startsWith("..") && !path.isAbsolute(relative);
+    };
+    const owners = new Set<string>();
+    const consider = (file: string): void => {
+      const absolute = path.isAbsolute(file) ? file : path.join(roots[0]!, file);
+      const containing = roots.filter((root) => inside(root, absolute)).sort((a, b) => b.length - a.length)[0] ?? roots[0]!;
+      let owner = containing;
+      const relative = this._graphAnnotations?.projectRootOf?.(absolute);
+      if (relative) {
+        const candidate = path.isAbsolute(relative) ? relative : path.join(containing, relative);
+        try { if (fs.statSync(candidate).isDirectory() && inside(containing, candidate)) owner = candidate; } catch { /* keep the workspace folder */ }
+      }
+      owners.add(owner);
+    };
+    for (const phase of plan.phases) for (const file of phase.files ?? []) consider(file);
+    for (const entry of this._runFileLog) consider(entry.path);
+    return owners.size ? [...owners] : roots;
+  }
+
+  private async _captureRunSnapshot(label: string, plan: TaskPlan): Promise<SnapshotOutcome | undefined> {
+    const roots = this._snapshotRoots(plan);
+    if (roots.length === 0) return { projects: {}, skipped: "no project folders to capture" };
+    const outcome = await this._snapshots.capture(roots);
+    void label;
+    return outcome;
+  }
+
+  private async _saveRunReport(run: PlanRun, plan: TaskPlan | undefined): Promise<string | undefined> {
+    const files = new Map<string, { additions: number; deletions: number }>();
+    for (const entry of this._runFileLog) {
+      if (entry.at < run.startedAt) continue;
+      const existing = files.get(entry.path) ?? { additions: 0, deletions: 0 };
+      existing.additions += entry.additions;
+      existing.deletions += entry.deletions;
+      files.set(entry.path, existing);
+    }
+    const verification = this._session?.runtimeState.verification;
+    const markdown = buildRunReport(run, plan, {
+      filesChanged: [...files].map(([file, counts]) => ({ path: file, ...counts })),
+      unverifiedNow: verification ? outstandingFiles(verification) : [],
+    });
+    const result = await this._planning.dispatch(
+      "docWrite",
+      { planId: run.planId, title: runReportTitle(run), body: markdown, kind: "notes" },
+      { sessionId: run.sessionId },
+    );
+    return result.ok === true && typeof result.docId === "string" ? result.docId : undefined;
+  }
+
+  private async _openRunReport(): Promise<void> {
+    const run = this._planRuns?.current;
+    if (!run?.reportDocId) {
+      this._post({ type: "plan_run_notice", level: "info", message: "The report is written when the run ends." });
+      return;
+    }
+    const resolved = this._planning.resolveDocPath(run.planId, run.reportDocId);
+    if (!resolved) {
+      this._post({ type: "plan_run_notice", level: "error", message: "The report document is no longer in the plan." });
+      return;
+    }
+    try {
+      await vscode.commands.executeCommand("markdown.showPreview", vscode.Uri.file(resolved.path));
+    } catch {
+      await vscode.window.showTextDocument(vscode.Uri.file(resolved.path), { preview: true });
+    }
+  }
+
+  /**
+   * Put the files back to how they were after a step. Shows exactly what will change and what
+   * will be removed first, replaces nothing without a yes, and keeps what it replaced so the
+   * restore can be undone. The steps after the restore point are set back to pending, because
+   * "completed" no longer describes the files.
+   */
+  private async _handleRestoreStep(phaseId: string, stepId: string): Promise<void> {
+    const run = this._planRuns?.current;
+    const step = run?.steps.find((entry) => entry.phaseId === phaseId && entry.stepId === stepId);
+    const notice = (message: string, level: "info" | "error" = "error"): void => { this._post({ type: "plan_run_notice", level, message }); };
+    if (!run || !step) return notice("That step is not part of this run.");
+    if (!step.snapshots || Object.keys(step.snapshots).length === 0) {
+      return notice(run.snapshotNote ? `No restore point was kept for this step: ${run.snapshotNote}.` : "No restore point was kept for this step.");
+    }
+    if (this._runner.busy) return notice("Pause or stop the run first. Restoring files while the agent is editing them would fight it.");
+
+    const plans: RestorePlan[] = [];
+    for (const [root, tree] of Object.entries(step.snapshots)) {
+      const planned = await this._snapshots.plan(root, tree);
+      if ("error" in planned) return notice(`Could not plan the restore for ${path.basename(root)}: ${planned.error}`);
+      if (planned.restore.length || planned.remove.length) plans.push(planned);
+    }
+    if (plans.length === 0) return notice("The files already match how they were after that step.", "info");
+
+    const changed = plans.flatMap((plan) => plan.restore.map((file) => path.join(path.basename(plan.root), file)));
+    const removed = plans.flatMap((plan) => plan.remove.map((file) => path.join(path.basename(plan.root), file)));
+    const list = (items: string[]): string => `${items.slice(0, 12).join("\n  ")}${items.length > 12 ? `\n  … and ${items.length - 12} more` : ""}`;
+    const detail = [
+      changed.length ? `These ${changed.length} file${changed.length === 1 ? "" : "s"} will be put back:\n  ${list(changed)}` : "",
+      removed.length ? `These ${removed.length} file${removed.length === 1 ? "" : "s"} were created since and will be removed:\n  ${list(removed)}` : "",
+      "Changes made by commands outside these folders, services and databases are not touched. Steps after this one go back to pending.",
+    ].filter(Boolean).join("\n\n");
+    const choice = await vscode.window.showWarningMessage(
+      `Restore the files to how they were after “${step.title}”? Anything changed since will be replaced.`,
+      { modal: true, detail },
+      "Restore files",
+    );
+    if (choice !== "Restore files") return;
+
+    for (const plan of plans) {
+      const result = await this._snapshots.apply(plan);
+      if (!result.ok) return notice(`Restore stopped at ${path.basename(plan.root)}: ${result.error}. Some files may already have been put back.`);
+    }
+    const label = `Files restored to after “${step.title}” (${run.planTitle}).`;
+    this._lastRestore = { label, plans };
+    this._planning.resetStepsAfter(run.planId, phaseId, stepId, `Reset: ${label}`);
+    this._planRuns?.noteRestored(label);
+    this._session?.setRunNotice(handoffForNextTurn(`${label} The steps after it were set back to pending, and the files on disk match that point. Re-read anything you rely on before continuing.`));
+    const undo = await vscode.window.showInformationMessage(`Blacksite: ${label}`, "Undo restore");
+    if (undo === "Undo restore") await this._undoRestore();
+  }
+
+  private async _undoRestore(): Promise<void> {
+    const last = this._lastRestore;
+    if (!last) return;
+    this._lastRestore = undefined;
+    for (const plan of last.plans) {
+      const back = await this._snapshots.plan(plan.root, plan.safetyTree);
+      if ("error" in back) {
+        void vscode.window.showWarningMessage(`Blacksite: could not undo the restore for ${path.basename(plan.root)}: ${back.error}`);
+        return;
+      }
+      await this._snapshots.apply(back);
+    }
+    void vscode.window.showInformationMessage("Blacksite: the restore was undone. The plan's steps are still reset; mark them done again if the work is.");
+  }
+
+  /** Open every change since the run (or conversation) began as one review. */
+  private async _handleReviewChanges(scope: "run" | "conversation"): Promise<void> {
+    const run = this._planRuns?.current;
+    if (scope === "run" && run?.baseline && Object.keys(run.baseline).length) {
+      const resources: Array<[vscode.Uri, vscode.Uri, vscode.Uri]> = [];
+      let truncated = false;
+      for (const [root, baseTree] of Object.entries(run.baseline)) {
+        const now = await this._snapshots.capture([root]);
+        const nowTree = now.projects[path.resolve(root)];
+        if (!nowTree) continue;
+        for (const change of await this._snapshots.changedFiles(root, baseTree, nowTree)) {
+          if (resources.length >= 300) { truncated = true; break; }
+          const live = vscode.Uri.file(path.join(root, change.path));
+          const side = (tree: string): vscode.Uri => vscode.Uri.from({
+            scheme: "blacksite-snapshot",
+            path: `/${change.path}`,
+            query: new URLSearchParams({ root, tree }).toString(),
+          });
+          const empty = vscode.Uri.from({ scheme: "blacksite-snapshot", path: `/${change.path}`, query: new URLSearchParams({ root, tree: "empty" }).toString() });
+          resources.push([live, change.status === "A" ? empty : side(baseTree), change.status === "D" ? empty : live]);
+        }
+      }
+      if (resources.length === 0) return void this._post({ type: "plan_run_notice", level: "info", message: "Nothing has changed since the run started." });
+      await vscode.commands.executeCommand("vscode.changes", `Plan run — changes since it started${truncated ? " (first 300)" : ""}`, resources);
+      return;
+    }
+    const since = scope === "run" ? this._runStartSeq : 0;
+    const opened = await this._editDiffs.openCumulative(since, scope === "run" ? "Plan run — changes since it started" : "Changes in this conversation");
+    if (opened === 0) this._post({ type: "plan_run_notice", level: "info", message: "No recorded changes to review." });
   }
 
   // ── Question card ─────────────────────────────────────────────────────────────
@@ -5414,12 +6218,12 @@ ${this._pendingRewindNote}`;
    * UI) instead of a native modal. The editor diff is already open. Maps the webview's
    * allow / allow_all / deny back to the applier's apply / all / reject.
    */
-  private async _requestEditApproval(req: { summary: string; fileCount: number; rationale?: string }): Promise<"apply" | "all" | "reject" | null> {
+  private async _requestEditApproval(req: { summary: string; fileCount: number; rationale?: string; previews?: DiffPreview[] }): Promise<"apply" | "all" | "reject" | null> {
     const turnId = this._liveTurnId;
     if (!turnId) return null; // no live turn — let the applier fall back to the modal
     const approvalId = `edit_approval_${++this._editApprovalSeq}`;
     const description = `Apply changes to ${req.fileCount} file(s)\n\n${req.summary}`;
-    this._post({ type: "stream_approval_pending", id: turnId, toolCallId: approvalId, description, tier: "write", rationale: req.rationale });
+    this._post({ type: "stream_approval_pending", id: turnId, toolCallId: approvalId, description, tier: "write", rationale: req.rationale, ...(req.previews?.length ? { previews: req.previews } : {}) });
 
     let decision: ApprovalDecision;
     try {

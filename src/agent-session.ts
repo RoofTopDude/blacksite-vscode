@@ -245,6 +245,7 @@ import {
 // Re-exported: the webview UI gates the new beta-feature toggles on these.
 export { recommendsRefusalFallback, supportsFastMode, supportsTaskBudget };
 import type { RetryPolicy } from "./provider-retry.js";
+import { outageDelayMs } from "./provider-retry.js";
 import {
   anthropicSearchResults,
   anthropicWebSearchTool,
@@ -1038,6 +1039,8 @@ export type SubagentProviderMessage =
      *  laneId is deliberately the original's, so without this flag the transcript cannot tell
      *  a resumed lane from a redundant start for one it is already showing. */
     isFollowUp?: boolean;
+    /** What the lane may use, so a view of many lanes can show how much of each is spent. */
+    budget?: SubagentBudgetSummary;
   }
   | {
     type: "subagent_lane_event";
@@ -1146,7 +1149,7 @@ function clampAnthropicTemperature(t: number | undefined): number | undefined {
  *  normalizer so a value the loop itself assigned can round-trip. */
 function isHarnessStopReason(reason: string): reason is AgentStopReason {
   return reason === "max_iterations" || reason === "approval_pending" || reason === "question_pending"
-    || reason === "cancelled" || reason === "error" || reason === "refusal"
+    || reason === "cancelled" || reason === "paused" || reason === "error" || reason === "refusal"
     || reason === "context_window_exceeded" || reason === "protocol_violation";
 }
 
@@ -1677,6 +1680,13 @@ export interface AgentSessionOptions {
    */
   retryPolicy?: RetryPolicy;
   /**
+   * How long to keep waiting out a provider outage once the fast retries are used up, in ms. Read
+   * on every failure so a plan run can start or end mid-session. Zero or absent fails the turn as
+   * before. Only a plan run sets this: an unattended run should survive a few minutes of outage,
+   * where a typed message is better answered quickly with an error.
+   */
+  providerOutageWaitMs?: () => number;
+  /**
    * How a confirm-tier (write/network/destructive) tool call is resolved when no
    * interactive approver is wired — i.e. autonomous/headless runs and delegated
    * subagents. "interactive" (default) prompts via the host modal and can block
@@ -1813,10 +1823,24 @@ export interface DiagramProvider {
 }
 
 /** Options for {@link AgentSession.send}. */
+/**
+ * Who started a turn. A turn the user typed starts with no standing approvals; a turn the harness
+ * starts on the user's behalf (the plan conductor, a Stop hook, a resume) is the same request
+ * carrying on, so it keeps the "Allow all" answers already given for it.
+ */
+export type TurnOrigin = "user" | "run" | "conductor" | "resume" | "stop_hook" | "steer";
+
+/** Origins that continue the request they follow instead of starting a new one. */
+export function continuesRequest(origin: TurnOrigin | undefined): boolean {
+  return origin === "conductor" || origin === "resume" || origin === "stop_hook";
+}
+
 export interface SendOptions {
   images?: ImageBlock[];
   requestMode?: RequestMode;
   preserveRequestMode?: boolean;
+  /** Who started this turn. Absent means a user message. */
+  origin?: TurnOrigin;
   userText?: string;
   /** Image attachments the caller left out because the model is not vision-capable, so the turn
    *  can say so where the user will see it rather than only in a note to the model. */
@@ -1841,9 +1865,11 @@ export class AgentSession {
    */
   private _signal?: AbortSignal;
   /**
-   * "Allow All" answers given during the current turn, keyed by what they approved (category and
-   * tier). Cleared at the start of every send(), so one answer never outlives the run it was
-   * given in, and approving all edits never approves a command. See approval-scope.ts.
+   * "Allow All" answers given during the current request, keyed by what they approved (category
+   * and tier). Cleared when a user message starts a new request (and when the owning plan run
+   * ends), so one answer never outlives the run it was given in, and approving all edits never
+   * approves a command. Turns the harness starts to continue the same request keep them.
+   * See approval-scope.ts.
    */
   private readonly _approvalGrants = new TurnApprovalGrants();
   /** Tools tool_search has loaded this session (on-demand loading). Sticky: a loaded tool is never
@@ -1851,6 +1877,12 @@ export class AgentSession {
   private _loadedTools = new Set<string>();
   /** The user's own words, one entry per user message, oldest first. See send(). */
   private _userPrompts: string[] = [];
+  /** A plan run asked for the turn to end at its next tool-round boundary. See requestPause. */
+  private _pauseRequested = false;
+  /** The harness's note about where the previous request stopped, waiting for the next turn. */
+  private _pendingRunNotice?: string;
+  /** The note being shown to the model during the current turn only. */
+  private _activeRunNotice?: string;
   /** Messages the user sent mid-run, waiting for the run's next step. See enqueueSteer. */
   private _steers: SteerMessage[] = [];
   /** tool_search results, by tool_use id, whose content a native Anthropic request replaces with
@@ -2097,6 +2129,33 @@ export class AgentSession {
     this._duplicateToolRoundCount = 0;
   }
 
+  /**
+   * End the current turn at the next tool-round boundary, as `paused`, instead of mid-tool. The
+   * turn finishes whatever call is running, checkpoints, and stops cleanly — which is what makes a
+   * pause something a user can trust, where a cancel can leave a half-run command.
+   */
+  requestPause(): void {
+    this._pauseRequested = true;
+  }
+
+  /** Drop a pause that was requested but not yet taken. */
+  clearPause(): void {
+    this._pauseRequested = false;
+  }
+
+  /** Forget every "Allow all" answer. A plan run calls this when it ends; a user message does it anyway. */
+  clearApprovalGrants(): void {
+    this._approvalGrants.clear();
+  }
+
+  /**
+   * Leave a note for the next turn about where the previous request stopped. Shown once, in the
+   * per-turn tail (never the cached prefix), and dropped when that turn ends.
+   */
+  setRunNotice(text: string | undefined): void {
+    this._pendingRunNotice = text?.trim() ? text : undefined;
+  }
+
   /** Files that changed without this session doing it (a rewind restoring them). An edit built on
    *  the session's older copy then gets the stale-file warning instead of an anchor mismatch. */
   noteExternalFileChanges(paths: readonly string[], by: string): void {
@@ -2123,7 +2182,7 @@ export class AgentSession {
 
   private _dynamicContext(): string {
     return wrapAttachedContext(
-      [this._requestModePrompt, this._skillContext(), this._workspaceContext, this._completionChecklist()]
+      [this._requestModePrompt, this._skillContext(), this._workspaceContext, this._activeRunNotice ?? "", this._completionChecklist()]
         .filter(Boolean)
         .join("\n\n"),
     );
@@ -3054,6 +3113,34 @@ export class AgentSession {
     };
   }
 
+  /** Ends the current outage wait early, so a "Retry now" takes effect at once. */
+  private _outageWake?: () => void;
+
+  /** Wait out part of a provider outage; resolves on the timer, on cancel, or on {@link retryProviderNow}. */
+  private _outageSleep(ms: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const signal = this._signal;
+      const finish = (): void => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", finish);
+        this._outageWake = undefined;
+        resolve();
+      };
+      const timer = setTimeout(finish, Math.max(0, ms));
+      if (signal?.aborted) { finish(); return; }
+      signal?.addEventListener("abort", finish, { once: true });
+      this._outageWake = finish;
+    });
+  }
+
+  /** Try the provider again now instead of at the scheduled time. No effect outside an outage wait. */
+  retryProviderNow(): boolean {
+    const wake = this._outageWake;
+    if (!wake) return false;
+    wake();
+    return true;
+  }
+
   /**
    * Run one provider turn, retrying a transient failure that struck *after* streaming began.
    *
@@ -3071,6 +3158,8 @@ export class AgentSession {
    */
   private async _runProviderTurnWithRetry(sink: ProviderTurnSink): Promise<ProviderTurnResult> {
     const policy = this.opts.retryPolicy ?? DEFAULT_RETRY_POLICY;
+    let outageStartedAt: number | undefined;
+    let outageRetries = 0;
 
     for (let attempt = 0; attempt < policy.maxAttempts; attempt++) {
       if (this._signal?.aborted) throw makeAbortError();
@@ -3194,8 +3283,18 @@ export class AgentSession {
           throw new ProviderStreamError(`${this.provider} stream ended before a completion event`, true);
         }
       } catch (err) {
+        if (this._signal?.aborted || !isRetryableError(err)) throw err;
         const isLast = attempt >= policy.maxAttempts - 1;
-        if (this._signal?.aborted || isLast || !isRetryableError(err)) throw err;
+        // Fast retries are used up. A plan run keeps trying on a slow schedule instead of ending
+        // an unattended run over a service that is briefly down.
+        let outageWaitMs: number | undefined;
+        if (isLast) {
+          const budget = this.opts.providerOutageWaitMs?.() ?? 0;
+          outageStartedAt ??= Date.now();
+          const remaining = budget - (Date.now() - outageStartedAt);
+          if (budget <= 0 || remaining <= 0) throw err;
+          outageWaitMs = outageDelayMs(outageRetries++, remaining);
+        }
 
         // Release the provider stream before re-issuing — without this the abandoned generator
         // holds its socket open for the whole backoff, and a Bedrock retry storm would leak one
@@ -3203,8 +3302,26 @@ export class AgentSession {
         await stream.return(undefined).catch(() => { /* generator may already be done */ });
 
         const reason = err instanceof Error ? err.message : String(err);
-        const delayMs = computeBackoffMs(attempt, policy, err instanceof HttpError ? err.retryAfterSeconds : null);
+        const delayMs = outageWaitMs ?? computeBackoffMs(attempt, policy, err instanceof HttpError ? err.retryAfterSeconds : null);
         sink.emit({ type: "turn_reset", reason });
+        if (outageWaitMs !== undefined) {
+          sink.emit({
+            type: "provider_activity",
+            phase: "retrying",
+            message: `${this.provider} is unavailable (${reason.replace(/\s+/g, " ").slice(0, 120)}) — trying again in ${formatDelay(delayMs)}`,
+            outage: true,
+            retryAt: Date.now() + delayMs,
+          });
+          sink.emit({
+            type: "notice",
+            level: "warn",
+            message: `${this.provider} is unavailable (${reason}). The plan run is waiting and will try again in ${formatDelay(delayMs)}.`,
+          });
+          await this._outageSleep(delayMs);
+          // Stay on the last attempt: the next failure is another slow retry, not a restart of the fast ones.
+          attempt = policy.maxAttempts - 2;
+          continue;
+        }
         activity("retrying", `${this.provider}: retrying in ${formatDelay(delayMs)} (attempt ${attempt + 2}/${policy.maxAttempts})`);
         sink.emit({
           type: "notice",
@@ -4489,6 +4606,10 @@ export class AgentSession {
       let options = sendOpts;
       for (let resumes = 0; ; resumes++) {
         let resume: string | undefined;
+        // The note about the previous stop belongs to this turn only.
+        this._activeRunNotice = this._pendingRunNotice;
+        this._pendingRunNotice = undefined;
+        this._pauseRequested = false;
         for await (const event of this._sendCore(content, options)) {
           if (event.type === "turn_complete") {
             const outcome = await this._runHook({ event: "Stop", stopReason: event.stopReason, ...(resumes ? { stopHookActive: true } : {}) });
@@ -4509,11 +4630,12 @@ export class AgentSession {
           }
           yield event;
         }
+        this._activeRunNotice = undefined;
         if (!resume) break;
         yield { type: "execution_diagnostic", level: "info", message: `A Stop hook asked the agent to keep going (${resumes + 1}/${MAX_STOP_HOOK_RESUMES}): ${resume.length > 300 ? `${resume.slice(0, 300)}…` : resume}` };
         stopReason = "cancelled";
         content = `[Internal continuation]\nA Stop hook asked you to keep working before you finish:\n${resume}`;
-        options = { preserveRequestMode: true };
+        options = { preserveRequestMode: true, origin: "stop_hook" };
       }
     } catch (error) {
       if (stopReason) stopReason = "error";
@@ -4570,9 +4692,12 @@ export class AgentSession {
     this._lastStopReason = undefined;
     this._pendingGate = undefined;
     this._autoContinueCount = 0;
-    // A new turn starts with no standing approvals. "Allow All" is an answer about the run it was
+    // A new request starts with no standing approvals. "Allow All" is an answer about the run it was
     // given in; carrying it into a later request would approve work the user has not seen yet.
-    this._approvalGrants.clear();
+    // A turn the harness starts to carry the same request on (the plan conductor, a Stop hook, a
+    // resume) is that run, not a later one — clearing there made unattended work stop at the first
+    // gated operation of every automatic turn.
+    if (!continuesRequest(sendOpts?.origin)) this._approvalGrants.clear();
     yield { type: "runtime_state", state: this.runtimeState };
     if (attachmentNotice) yield { type: "execution_diagnostic", level: "warn", message: attachmentNotice };
     if (!this.opts.contextLength && !this._contextLengthWarned) {
@@ -4598,6 +4723,16 @@ export class AgentSession {
         yield { type: "runtime_state", state: this.runtimeState };
         if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
         yield { type: "turn_complete", stopReason: "cancelled", iterations: this._iteration - turnStartIteration };
+        return;
+      }
+
+      if (this._pauseRequested && this._iteration > turnStartIteration) {
+        this._pauseRequested = false;
+        this._lastStopReason = "paused";
+        yield { type: "execution_diagnostic", level: "info", message: "Paused after the last tool round finished. Resume the run to continue from here." };
+        yield { type: "runtime_state", state: this.runtimeState };
+        if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint(true);
+        yield { type: "turn_complete", stopReason: "paused", iterations: this._iteration - turnStartIteration };
         return;
       }
 
@@ -7753,7 +7888,11 @@ function makeAbortError(): Error {
 
 /** Human-readable backoff delay for a retry notice ("800ms", "3s"). */
 function formatDelay(ms: number): string {
-  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
 /** Parses a "data:<mediaType>;base64,<data>" URL, as produced by reference_zoom_image. */

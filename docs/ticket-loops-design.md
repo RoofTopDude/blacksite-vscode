@@ -422,16 +422,19 @@ building the same state machine twice.
 vscode, the chat provider, or the ticket store. Every path — including the ones that
 only fire at 3am — is covered by unit tests against fakes.
 
-**What does not exist yet** is agentic setup (§8): `loop_propose` and `loop_control` are
-unbuilt, so a loop can only be configured by hand through the creation quick-pick. The model
-cannot yet read a backlog and recommend a queue, a concurrency, or a cost.
+**Agentic setup** (§8) shipped in 1.12.0: `loop_propose` and `loop_control` let the model read a
+backlog and propose a queue, a concurrency and a cost, which the user commits.
 
 **Outside this table** sits the continuation conductor
-([`continuation-model.ts`](../src/continuation/continuation-model.ts)), which postdates this
-build order. It is implemented and tested but has no caller: nothing invokes it when a plan
-stalls, and plan recovery is still a one-shot reconciliation at activation rather than the
-continuous decide-or-halt cycle it is built for. Wiring that trigger is the largest remaining
-piece of long-horizon execution, and it is not a loops phase.
+([`continuation-model.ts`](../src/continuation/continuation-model.ts)), wired in 1.12.0, and since
+1.33.0 the plan run ([`plan-run-service.ts`](../src/plans/plan-run-service.ts)) that drives it: a
+durable ledger per run, pause at a boundary, resume after a restart, and restore points per step.
+
+Since 1.33.0, pausing a loop lets its running lanes finish (stopping cancels them), a lane cut off by
+a stop or a restart is recorded as abandoned and counted neither as an attempt nor toward the
+consecutive-failure ceiling, spend from lanes still running counts toward the spend ceiling before
+another lane is dispatched, and a loop that ends or parks a ticket says so through the same
+notifications as a plan run.
 
 ---
 

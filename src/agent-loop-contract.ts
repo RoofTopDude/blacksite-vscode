@@ -161,6 +161,10 @@ export interface ProviderActivityEvent {
   type: "provider_activity";
   phase: "waiting" | "thinking" | "responding" | "tool_input" | "retrying" | "idle";
   message: string;
+  /** Set while a plan run is waiting out a provider outage, rather than failing the turn. */
+  outage?: boolean;
+  /** When the next attempt happens (epoch ms). Present with `outage`. */
+  retryAt?: number;
 }
 
 export interface ProviderTurnUsageEvent {

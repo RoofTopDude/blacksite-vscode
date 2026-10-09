@@ -42,6 +42,9 @@ export interface LoopDispatchRequest {
   priorAttempt?: string;
   approvals: LoopApprovalPosture;
   onProgress?: (event: LoopDispatchProgress) => void;
+  /** Called with each priced model call, so the loop can count spend while a lane is still
+   *  running instead of learning about it when the lane ends. */
+  onSpend?: (usd: number) => void;
   signal: AbortSignal;
 }
 
@@ -94,6 +97,14 @@ export interface LoopSupervisorHooks {
   notify?(loopId: string, message: string): void;
   /** Surfaced for logging; never thrown from. */
   onError?(loopId: string, error: unknown): void;
+  /** The loop ended or stopped by itself (drained, blocked, hit a ceiling, failed) — the moments a
+   *  person who walked away needs to hear about, as opposed to a pause they asked for. */
+  onSettled?(loopId: string, title: string, status: "drained" | "blocked" | "stopped" | "failed", reason: string): void;
+  /** A ticket was parked on a refused approval; cleared again by {@link LoopSupervisor.releasePark}. */
+  onParked?(loopId: string, title: string, ticketId: string, gate: string): void;
+  /** The user started or resumed the loop, so anything it raised about itself is out of date. */
+  onStarted?(loopId: string): void;
+  onReleased?(loopId: string, ticketId: string): void;
 }
 
 interface InFlight {
@@ -102,9 +113,20 @@ interface InFlight {
   promise: Promise<void>;
 }
 
+/** Pausing a loop stops it dispatching; the lanes already running finish. Stopping ends them. */
+interface LoopControllers {
+  /** Aborted by pause or stop: no further lanes are dispatched. */
+  cycle: AbortController;
+  /** Aborted only by stop: the lanes themselves. */
+  lanes: AbortController;
+}
+
 export class LoopSupervisor {
-  private readonly _running = new Map<string, AbortController>();
+  private readonly _running = new Map<string, LoopControllers>();
   private readonly _notified = new Set<string>();
+  /** Spend by lanes still running, per loop and ticket. Counted toward the spend ceiling so a
+   *  loop does not start another lane while the ones it has are already past it. */
+  private readonly _liveUsd = new Map<string, Map<string, number>>();
 
   constructor(
     private readonly _store: LoopStore,
@@ -163,32 +185,47 @@ export class LoopSupervisor {
     const record = this._store.get(loopId);
     if (!record) return;
 
-    const controller = new AbortController();
+    const controllers: LoopControllers = { cycle: new AbortController(), lanes: new AbortController() };
     const execution = this._store.beginExecution(loopId);
     if (!execution) return;
-    this._running.set(loopId, controller);
+    this._running.set(loopId, controllers);
+    this._liveUsd.delete(loopId);
+    this._hooks.onStarted?.(loopId);
 
     // Fire-and-forget: the cycle owns its own lifetime and records everything it does to the
     // store, so nothing upstream needs to await it.
-    void this._cycle(loopId, controller)
+    void this._cycle(loopId, controllers)
       .catch((error) => {
         this._hooks.onError?.(loopId, error);
-        this._store.setStatus(loopId, "failed", error instanceof Error ? error.message : String(error));
+        this._settle(loopId, "failed", error instanceof Error ? error.message : String(error));
       })
       .finally(() => {
         this._running.delete(loopId);
+        this._liveUsd.delete(loopId);
       });
   }
 
   /** In-flight lanes are left to finish; no further dispatch happens. */
   pause(loopId: string): void {
     this._store.setStatus(loopId, "paused", "Paused.");
-    this._running.get(loopId)?.abort("Loop paused.");
+    // The cycle stops dispatching. The lanes keep their own signal, so work already under way is
+    // finished and recorded rather than cut off mid-edit and charged as a failure.
+    this._running.get(loopId)?.cycle.abort("Loop paused.");
   }
 
+  /** Ends the loop and cancels its lanes. A cancelled lane is recorded as abandoned, not failed. */
   stop(loopId: string, reason = "Stopped."): void {
     this._store.setStatus(loopId, "stopped", reason);
-    this._running.get(loopId)?.abort(reason);
+    const controllers = this._running.get(loopId);
+    controllers?.cycle.abort(reason);
+    controllers?.lanes.abort(reason);
+  }
+
+  /** Record a status the loop reached on its own and tell whoever needs to know. */
+  private _settle(loopId: string, status: "drained" | "blocked" | "stopped" | "failed", reason: string): void {
+    this._store.setStatus(loopId, status, reason);
+    const title = this._store.get(loopId)?.definition.title ?? loopId;
+    try { this._hooks.onSettled?.(loopId, title, status, reason); } catch { /* a broken surface must not stop the loop */ }
   }
 
   /** Clear a park after the user answers its gate, making the ticket dispatchable again. */
@@ -199,9 +236,11 @@ export class LoopSupervisor {
       delete state.parkedSubRequestId;
     });
     this._tickets.releaseBlocked?.(ticketId, "Released from continuation-review block by the user.");
+    this._hooks.onReleased?.(loopId, ticketId);
   }
 
-  private async _cycle(loopId: string, controller: AbortController): Promise<void> {
+  private async _cycle(loopId: string, controllers: LoopControllers): Promise<void> {
+    const controller = controllers.cycle;
     const inFlight = new Map<string, InFlight>();
 
     for (;;) {
@@ -215,7 +254,7 @@ export class LoopSupervisor {
         // In-flight lanes are allowed to finish — killing work mid-edit to enforce a budget
         // leaves a half-applied change, which is worse than the overage.
         await Promise.allSettled([...inFlight.values()].map((entry) => entry.promise));
-        this._store.setStatus(loopId, "stopped", ceiling);
+        this._settle(loopId, "stopped", ceiling);
         return;
       }
 
@@ -233,7 +272,7 @@ export class LoopSupervisor {
       const action = nextSupervisorAction(scheduled, inFlight.size, freeSlots);
 
       if (action === "drained") {
-        this._store.setStatus(loopId, "drained", "Every ticket in the queue has been worked.");
+        this._settle(loopId, "drained", "Every ticket in the queue has been worked.");
         return;
       }
       if (action === "blocked") {
@@ -241,12 +280,12 @@ export class LoopSupervisor {
           ? `${scheduled.withheld.length} ticket(s) remain, none dispatchable: `
             + scheduled.withheld.slice(0, 3).map((entry) => `${entry.ticket.id} (${entry.reason})`).join(", ")
           : "No dispatchable tickets remain.";
-        this._store.setStatus(loopId, "blocked", detail);
+        this._settle(loopId, "blocked", detail);
         return;
       }
       if (action === "dispatch") {
         for (const entry of scheduled.ready.slice(0, freeSlots)) {
-          inFlight.set(entry.ticket.id, this._launch(loopId, record, entry, controller, inFlight));
+          inFlight.set(entry.ticket.id, this._launch(loopId, record, entry, controllers, inFlight));
         }
         continue;
       }
@@ -265,7 +304,7 @@ export class LoopSupervisor {
     loopId: string,
     record: LoopRecord,
     entry: ReadyEntry,
-    controller: AbortController,
+    controllers: LoopControllers,
     inFlight: Map<string, InFlight>,
   ): InFlight {
     const ticket = entry.ticket;
@@ -306,7 +345,12 @@ export class LoopSupervisor {
               });
             },
           } : {}),
-          signal: controller.signal,
+          onSpend: (usd: number) => {
+            const live = this._liveUsd.get(loopId) ?? new Map<string, number>();
+            live.set(ticket.id, (live.get(ticket.id) ?? 0) + usd);
+            this._liveUsd.set(loopId, live);
+          },
+          signal: controllers.lanes.signal,
         });
       } catch (error) {
         this._hooks.onError?.(loopId, error);
@@ -318,7 +362,9 @@ export class LoopSupervisor {
         };
       }
 
-      this._record(loopId, ticket, result, startedAt, opened?.seq);
+      // The spend is in the result now, and counted in the totals once it is recorded.
+      this._liveUsd.get(loopId)?.delete(ticket.id);
+      this._record(loopId, ticket, result, startedAt, opened?.seq, controllers.lanes.signal.aborted && !result.ok && !result.parkedOnGate);
       inFlight.delete(ticket.id);
     })();
 
@@ -340,10 +386,13 @@ export class LoopSupervisor {
     result: LoopDispatchResult,
     startedAt: string,
     openedSeq?: number,
+    cancelled = false,
   ): void {
+    // A lane the user stopped did not fail: it was cut off. Charging it an attempt would spend the
+    // ticket's retry budget on the user's decision, and counting it would trip the failure ceiling.
     const outcome: LoopIterationOutcome = result.parkedOnGate
       ? "parked"
-      : result.ok ? "succeeded" : "failed";
+      : cancelled ? "abandoned" : result.ok ? "succeeded" : "failed";
 
     const settled = {
       ...(result.laneId ? { laneId: result.laneId } : {}),
@@ -374,9 +423,14 @@ export class LoopSupervisor {
         if (result.parkedSubRequestId) state.parkedSubRequestId = result.parkedSubRequestId;
         return;
       }
-      // A park is not an attempt: the work never got to fail.
-      state.attempts += 1;
+      // A park is not an attempt: the work never got to fail. Neither is a cancellation.
+      if (!cancelled) state.attempts += 1;
     });
+
+    if (cancelled) {
+      this._tickets.noteAttempt(ticket.id, "The loop was stopped while this lane was running. It was not charged an attempt.");
+      return;
+    }
 
     if (result.parkedOnGate) {
       this._tickets.blockTicket?.(
@@ -384,6 +438,7 @@ export class LoopSupervisor {
         `Automated continuation review blocked an approval (${result.parkedOnGate}). ${result.detail}`.trim(),
       );
       const record = this._store.get(loopId);
+      try { this._hooks.onParked?.(loopId, record?.definition.title ?? loopId, ticket.id, result.parkedOnGate); } catch { /* best effort */ }
       if (record?.definition.approvals.notify && !this._notified.has(loopId)) {
         this._notified.add(loopId);
         this._hooks.notify?.(
@@ -419,8 +474,12 @@ export class LoopSupervisor {
     if (ceilings.maxTickets != null && totals.dispatched >= ceilings.maxTickets) {
       return `Reached the ${ceilings.maxTickets}-ticket ceiling.`;
     }
-    if (ceilings.maxUsd != null && totals.usd >= ceilings.maxUsd) {
-      return `Reached the $${ceilings.maxUsd} spend ceiling.`;
+    if (ceilings.maxUsd != null) {
+      // Lanes still running count too: their spend is real before it is recorded, and a loop that
+      // starts another lane while the ones it has are already past the ceiling is not honouring it.
+      let live = 0;
+      for (const usd of this._liveUsd.get(record.definition.id)?.values() ?? []) live += usd;
+      if (totals.usd + live >= ceilings.maxUsd) return `Reached the $${ceilings.maxUsd} spend ceiling.`;
     }
     if (totals.consecutiveFailures >= ceilings.maxConsecutiveFailures) {
       return `${totals.consecutiveFailures} tickets failed in a row — stopping rather than working through the rest.`;

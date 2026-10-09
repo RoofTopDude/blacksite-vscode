@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
-import type { AgentSession, AgentEvent } from "./agent-session.js";
+import type { AgentSession, AgentEvent, TurnOrigin } from "./agent-session.js";
+import type { PlanRunView } from "./plans/plan-run-model.js";
+import { presentRun } from "./plans/run-status-text.js";
 import type { ImageBlock } from "./agent-loop-contract.js";
 import type { RequestMode } from "./request-modes.js";
 
@@ -15,16 +17,36 @@ export interface RunOptions {
   userText?: string;
   /** Image attachments left out because the model is not vision-capable. See AgentSession.send. */
   withheldImages?: number;
+  /** Who started the turn. See AgentSession.send. */
+  origin?: TurnOrigin;
 }
 
+/** How often the status bar item is redrawn while a plan run is open, so its clock keeps moving. */
+const RUN_REFRESH_MS = 30_000;
+
+/**
+ * Runs agent turns and owns the status bar item.
+ *
+ * The item tells the truth about the run, not just the turn: while a plan run is open it shows
+ * where the plan is and what the run needs ("7/23 · 42m", "Needs you", "Plan done"), and it stays
+ * after the run ends until someone has looked. Clicking it opens Blacksite — it never cancels a
+ * run. Stopping is a deliberate act (the run bar, or the Stop command), because a click on an
+ * item that says "approval needed" must not be the thing that throws the work away.
+ */
 export class BackgroundRunner {
   private statusBarItem: vscode.StatusBarItem;
   private abortController: AbortController | null = null;
   private isRunning = false;
+  /** What the current turn is doing, shown when no plan run is open. */
+  private _activity: { icon: string; text: string } | undefined;
+  private _runView: PlanRunView | null = null;
+  /** The run (and its end state) whose result the user has already seen. */
+  private _acknowledged: string | undefined;
+  private _refreshTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor() {
     this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-    this.statusBarItem.command = "blacksite.cancelRun";
+    this.statusBarItem.command = "blacksite.showRun";
     this.statusBarItem.name = "Blacksite";
   }
 
@@ -41,7 +63,61 @@ export class BackgroundRunner {
   }
 
   dispose(): void {
+    if (this._refreshTimer) clearInterval(this._refreshTimer);
     this.statusBarItem.dispose();
+  }
+
+  /** The plan run changed. Called with null when there is none. */
+  setRunView(view: PlanRunView | null): void {
+    this._runView = view;
+    const open = !!view && presentRun(view).ended === false;
+    if (open && !this._refreshTimer) {
+      this._refreshTimer = setInterval(() => this._render(), RUN_REFRESH_MS);
+    } else if (!open && this._refreshTimer) {
+      clearInterval(this._refreshTimer);
+      this._refreshTimer = undefined;
+    }
+    this._render();
+  }
+
+  /** The user has seen how the run ended; the item can go. */
+  acknowledgeRun(): void {
+    const view = this._runView;
+    if (!view) return;
+    const presentation = presentRun(view);
+    if (!presentation.ended) return;
+    this._acknowledged = `${view.id}:${view.status}`;
+    this._render();
+  }
+
+  private _render(): void {
+    const view = this._runView;
+    if (view) {
+      const presentation = presentRun(view);
+      const seen = presentation.ended && this._acknowledged === `${view.id}:${view.status}`;
+      if (!seen) {
+        this.statusBarItem.text = `${presentation.icon} ${presentation.text}`;
+        this.statusBarItem.tooltip = presentation.tooltip;
+        this.statusBarItem.backgroundColor = presentation.pressing
+          ? new vscode.ThemeColor("statusBarItem.warningBackground")
+          : undefined;
+        this.statusBarItem.show();
+        return;
+      }
+    }
+    this.statusBarItem.backgroundColor = undefined;
+    if (this.isRunning && this._activity) {
+      this.statusBarItem.text = `${this._activity.icon} ${this._activity.text}`;
+      this.statusBarItem.tooltip = "Blacksite is working. Click to open it.";
+      this.statusBarItem.show();
+      return;
+    }
+    this.statusBarItem.hide();
+  }
+
+  private _setActivity(icon: string, text: string): void {
+    this._activity = { icon, text };
+    this._render();
   }
 
   async runWithProgress(
@@ -65,9 +141,7 @@ export class BackgroundRunner {
     session.attachSignal(this.abortController.signal);
 
     const title = options.title ?? "Blacksite";
-    this.statusBarItem.text = `$(loading~spin) ${title}`;
-    this.statusBarItem.tooltip = "Click to cancel";
-    this.statusBarItem.show();
+    this._setActivity("$(loading~spin)", title);
 
     try {
       await vscode.window.withProgress(
@@ -86,25 +160,26 @@ export class BackgroundRunner {
             preserveRequestMode: options.preserveRequestMode,
             userText: options.userText,
             withheldImages: options.withheldImages,
+            origin: options.origin,
           })) {
             onEvent(event);
 
             if (event.type === "iteration_start") {
               iteration = event.iteration;
               progress.report({ message: `turn ${iteration}` });
-              this.statusBarItem.text = `$(loading~spin) ${title} — turn ${iteration}`;
+              this._setActivity("$(loading~spin)", `${title} — turn ${iteration}`);
             } else if (event.type === "tool_call_start") {
               progress.report({ message: `${event.toolName}…` });
-              this.statusBarItem.text = `$(loading~spin) ${title} — ${event.toolName}`;
+              this._setActivity("$(loading~spin)", `${title} — ${event.toolName}`);
             } else if (event.type === "question_card_pending") {
               progress.report({ message: "waiting for your response" });
-              this.statusBarItem.text = `$(comment) ${title} — question`;
+              this._setActivity("$(comment)", `${title} — question`);
             } else if (event.type === "approval_pending") {
               progress.report({ message: "waiting for approval" });
-              this.statusBarItem.text = `$(warning) ${title} — approval needed`;
+              this._setActivity("$(warning)", `${title} — approval needed`);
             } else if (event.type === "subagent_lane_start") {
               progress.report({ message: `delegated lane — ${event.label}` });
-              this.statusBarItem.text = `$(loading~spin) ${title} — ${event.label}`;
+              this._setActivity("$(loading~spin)", `${title} — ${event.label}`);
             } else if (event.type === "subagent_lane_complete") {
               progress.report({ message: event.ok ? "delegated lane complete" : "delegated lane failed" });
             } else if (event.type === "turn_complete") {
@@ -116,7 +191,8 @@ export class BackgroundRunner {
     } finally {
       this.isRunning = false;
       this.abortController = null;
-      this.statusBarItem.hide();
+      this._activity = undefined;
+      this._render();
     }
   }
 }

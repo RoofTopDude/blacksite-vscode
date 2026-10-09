@@ -76,6 +76,10 @@ export type ContinuationTrigger =
 
 export interface ContinuationStepBrief {
   title: string;
+  /** pending | in_progress | completed | blocked. Shown for the steps that are not simply next. */
+  status?: string;
+  /** What the harness observed when the step finished (checks that cleared it, files left unchecked). */
+  evidence?: string;
   /** Trimmed hard — the conductor needs the shape of the work, not its full text. */
   detail?: string;
   acceptanceCriteria?: string;
@@ -99,6 +103,8 @@ export interface ContinuationBrief {
   attempts: number;
   /** Anything the user has already been asked and answered during this run. */
   priorDecisions?: string[];
+  /** What the harness itself observed during the turn that just ended. Facts, not the executor's account. */
+  turnDigest?: string;
 }
 
 /** Ask the model. Injected so the whole conductor is testable without a provider. */
@@ -120,7 +126,8 @@ function renderSteps(label: string, steps: readonly ContinuationStepBrief[]): st
   if (!steps.length) return `${label}: none.`;
   const shown = steps.slice(0, MAX_LISTED_STEPS);
   const lines = shown.map((step, index) => {
-    const parts = [`  ${index + 1}. ${clip(step.title, 200)}`];
+    const parts = [`  ${index + 1}. ${clip(step.title, 200)}${step.status === "blocked" ? " [BLOCKED]" : ""}`];
+    if (step.evidence) parts.push(`     evidence: ${clip(step.evidence, MAX_STEP_CHARS)}`);
     if (step.acceptanceCriteria) parts.push(`     done when: ${clip(step.acceptanceCriteria, MAX_STEP_CHARS)}`);
     if (step.note) parts.push(`     note: ${clip(step.note, MAX_STEP_CHARS)}`);
     return parts.join("\n");
@@ -220,6 +227,14 @@ export function buildContinuationUserPrompt(brief: ContinuationBrief): string {
     sections.push(
       "ALREADY DECIDED THIS RUN (do not ask again):",
       brief.priorDecisions.map((decision) => `  - ${clip(decision, 500)}`).join("\n"),
+      "",
+    );
+  }
+
+  if (brief.turnDigest) {
+    sections.push(
+      "WHAT THE HARNESS OBSERVED IN THAT TURN (facts it recorded, not the agent's account):",
+      clip(brief.turnDigest, 1500),
       "",
     );
   }

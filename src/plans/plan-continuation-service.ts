@@ -16,7 +16,7 @@ import {
   type ContinuationGate,
 } from "./plan-continuation.js";
 import { buildPlanBrief } from "./plan-recovery.js";
-import { decideContinuation, type ContinuationModel } from "../continuation/continuation-model.js";
+import { decideContinuation, type ContinuationModel, type ContinuationTrigger } from "../continuation/continuation-model.js";
 import type { PlanningStore } from "../planning-store.js";
 
 export interface PlanContinuationHooks {
@@ -31,6 +31,30 @@ export interface PlanContinuationHooks {
 export interface PlanContinuationSettings {
   enabled: boolean;
   maxConsecutive: number;
+}
+
+/**
+ * What a plan run tells the conductor. Absent when no run is active, in which case the conductor
+ * behaves as it always has (settings-driven, counting its own continuations).
+ */
+export interface PlanContinuationRunContext {
+  /** The run steering the conductor, only while it is running (not paused, waiting or ended). */
+  active(): { planId: string; consecutive: number } | undefined;
+  /** What the harness observed in the turn that just ended. */
+  digest(): string | undefined;
+  /** Decisions already taken this run, so the same question is not asked twice. */
+  priorDecisions(): string[];
+  /** Times each step moved to in_progress, keyed `phaseId/stepId` (step ids repeat across phases). */
+  ledgerAttempts(): ReadonlyMap<string, number>;
+  /** A fact the harness knows better than the message does (a step went blocked). */
+  triggerHint(): ContinuationTrigger | undefined;
+  /** The conductor ruled. */
+  record(decision: { trigger: ContinuationTrigger | undefined; kind: "continue" | "halt" | "ask"; text: string }): void;
+  /** A run exists but is not running (paused, waiting on the user, interrupted, failed). The
+   *  conductor must not continue it, whatever the global setting says. */
+  holds(): boolean;
+  /** The conductor will not continue the run (it halted, asked, or ran out of budget). */
+  stopped(kind: "halt" | "ask" | "budget", message: string): void;
 }
 
 export interface PlanTurnOutcome {
@@ -57,6 +81,7 @@ export class PlanContinuationService {
     private readonly _userPrompts: () => string[],
     private readonly _settings: () => PlanContinuationSettings,
     private readonly _hooks: PlanContinuationHooks,
+    private readonly _run?: PlanContinuationRunContext,
   ) {}
 
   /** The user spoke, so the runaway budget resets. This is the only evidence that a human is
@@ -81,29 +106,40 @@ export class PlanContinuationService {
       return { ask: false, reason: "turn_failed", detail: "Queued behind the continuation already in flight." };
     }
 
+    if (this._run?.holds()) {
+      return { ask: false, reason: "awaiting_user", detail: "The plan run is not running, so it will not be continued automatically." };
+    }
+
     const settings = this._settings();
+    // An active plan run turns the conductor on for itself, names its plan, and counts only the
+    // automatic turns that moved nothing — a run making steady progress is not a runaway.
+    const run = this._run?.active();
     let plan = null;
     try {
-      plan = activeExecutingPlan(this._planning.read().plans);
+      plan = activeExecutingPlan(this._planning.read().plans, run?.planId);
     } catch {
       // An unreadable planning document is not a reason to fail the turn.
     }
 
     const gate = continuationGate({
-      enabled: settings.enabled,
+      enabled: settings.enabled || !!run,
       plan,
       stopReason: outcome.stopReason,
       errored: outcome.errored,
       awaitingUser: outcome.awaitingUser,
-      consecutive: this._consecutive,
+      consecutive: run ? run.consecutive : this._consecutive,
       maxConsecutive: settings.maxConsecutive || DEFAULT_MAX_CONSECUTIVE_CONTINUATIONS,
       lastMessage: outcome.lastMessage,
+      triggerHint: run ? this._run?.triggerHint() : undefined,
     });
 
     if (!gate.ask) {
       // Worth surfacing: a user who turned continuation on and sees it stop should be told it
       // hit its budget rather than left wondering whether the feature works.
-      if (gate.reason === "budget_exhausted") this._hooks.report("ask", gate.detail);
+      if (gate.reason === "budget_exhausted") {
+        this._hooks.report("ask", gate.detail);
+        if (run) this._run?.stopped("budget", gate.detail);
+      }
       return gate;
     }
 
@@ -116,14 +152,25 @@ export class PlanContinuationService {
     try {
       this._hooks.trace?.("Asking the conductor whether this plan should continue…");
 
+      const prior = run ? this._run?.priorDecisions() : undefined;
       const verdict = await decideContinuation(model, buildPlanBrief({
         plan,
         userPrompts: this._userPrompts(),
         executorLastMessage: outcome.lastMessage,
         trigger: gate.trigger,
+        ...(prior?.length ? { priorDecisions: prior } : {}),
+        ...(run ? { turnDigest: this._run?.digest(), ledgerAttempts: this._run?.ledgerAttempts() } : {}),
       }));
 
-      await this._act(continuationAction(verdict));
+      const action = continuationAction(verdict);
+      if (run) {
+        this._run?.record({
+          trigger: gate.trigger,
+          kind: action.kind === "send" ? "continue" : action.kind,
+          text: action.kind === "send" ? action.rationale : action.kind === "halt" ? action.message : action.question,
+        });
+      }
+      await this._act(action, !!run);
     } catch (error) {
       // decideContinuation already converts a provider failure into a halt, so reaching here
       // means something else broke. Report rather than continue: an unexplained failure is not
@@ -146,7 +193,7 @@ export class PlanContinuationService {
     return gate;
   }
 
-  private async _act(action: ContinuationAction): Promise<void> {
+  private async _act(action: ContinuationAction, inRun = false): Promise<void> {
     if (action.kind === "send") {
       this._consecutive += 1;
       await this._hooks.continueWith(action.message, action.rationale);
@@ -156,7 +203,8 @@ export class PlanContinuationService {
     // user who resolves the issue and says "go on" starts from a full budget rather than an
     // exhausted one they never spent.
     this._consecutive = 0;
-    this._hooks.report(action.kind === "halt" ? "halt" : "ask",
-      action.kind === "halt" ? action.message : `${action.question}\n\n${action.why}`.trim());
+    const message = action.kind === "halt" ? action.message : `${action.question}\n\n${action.why}`.trim();
+    this._hooks.report(action.kind === "halt" ? "halt" : "ask", message);
+    if (inRun) this._run?.stopped(action.kind === "halt" ? "halt" : "ask", message);
   }
 }

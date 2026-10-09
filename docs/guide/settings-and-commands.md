@@ -71,7 +71,7 @@ them per workspace.
 | `blacksite.permissions.allowedCommands` | `[]` | Extra terminal binaries the agent may run, added to the built-in allowlist. Compared by command name, case-insensitive |
 | `blacksite.permissions.deniedCommands` | `[]` | Binaries the agent may **never** run. Overrides both the allowlist and auto-approve |
 | `blacksite.permissions.autoApprove` | `[]` | Binaries whose network/destructive operations run without a prompt. Populated by choosing "Always allow" on an approval. Workspace entries apply only once confirmed on this machine |
-| `blacksite.permissions.allowEvalFlags` | `false` | ⚠️ Permits inline-eval arguments (`node -e`, `python -c`, `ruby -e`, …) that are blocked by default. User settings only |
+| `blacksite.permissions.allowEvalFlags` | `false` | ⚠️ Runs inline code (`node -e`, `python -c`, `ruby -e`, …) without asking. By default it always shows an approval prompt with the code, even for programs you always allow. Also permits arguments that make a program launch another one (`find -exec`, `node -r`, …), which are otherwise refused. User settings only |
 | `blacksite.permissions.readToolchains` | `true` | Lets the agent read installed toolchains outside the workspace (`PATH` directories and their installs' library folders) without asking. Anything else outside the workspace always asks |
 | `blacksite.permissions.readableRoots` | `[]` | Extra folders outside the workspace the agent may read without asking. User settings only |
 
@@ -231,12 +231,14 @@ itself always lives in SecretStorage — these settings only name where it is al
 
 ---
 
-## Plan continuation
+## Plan continuation and plan runs
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `blacksite.planContinuation.enabled` | `false` | Automatically continue an approved plan when a turn ends without finishing it. A separate agent, holding your original prompts verbatim, decides whether to continue, escalate, or halt. Off by default — this spends model calls and agent turns with nobody watching |
-| `blacksite.planContinuation.maxConsecutive` | `5` | How many times in a row the plan may be continued before stopping to check in. Resets whenever you send a message |
+| `blacksite.planContinuation.enabled` | `false` | Automatically continue an approved plan when a turn ends without finishing it. A separate agent, holding your original prompts verbatim, decides whether to continue, escalate, or halt. Off by default — this spends model calls and agent turns with nobody watching. A plan run turns this on for itself, whatever the setting says |
+| `blacksite.planContinuation.maxConsecutive` | `5` | How many times in a row the plan may be continued before stopping to check in. Resets whenever you send a message. During a plan run it counts only the automatic turns that finished no step, so a run making progress is not stopped |
+| `blacksite.planRuns.retentionDays` | `30` | How long a finished plan run's record (`.blacksite/plan-runs/`) and its restore points are kept |
+| `blacksite.notifications.runEvents` | `attention` | When Blacksite interrupts you outside the chat: `attention` (it needs you, failed, or finished), `all`, or `off`. Nothing is shown while you are looking at the chat, and a run's own choice takes precedence |
 
 ---
 
@@ -267,6 +269,10 @@ All available from the command palette under the **Blacksite** category.
 | **Open Chat Panel** | Focus the chat view |
 | **Clear Chat** | Start a fresh conversation |
 | **Stop Response** | Stop the agent between tool calls |
+| **Open Plan Run** | Show the chat and the current plan run; also what clicking the status bar item does |
+| **Pause Plan Run** | Stop the run at the end of the tool call it is in |
+| **Resume Plan Run** | Carry on a paused, interrupted or failed run from where it stopped |
+| **Stop Plan Run** | End the run, after a confirmation. Work already done stays |
 | **Compact Conversation History** | Summarize older history to reclaim context |
 | **Set API Key** | Store a provider key in `SecretStorage` |
 | **Check Lifecycle Hooks** | Report whether each configured hook can be found and started, and any mistake in the setting, without running anything |
@@ -367,6 +373,7 @@ Base Context, Attach File To Chat, and File a Ticket.
 | --- | --- |
 | `.blacksite/base-context.json` | Curated topics and file references |
 | `.blacksite/planning.json` | Plans, phases, and state |
+| `.blacksite/plan-runs/` | One folder per plan run: its ledger and event log. Gitignored |
 | `.blacksite/tickets.json` | Ticket queue, links, comments, and activity history |
 | `.blacksite/reference/<sessionId>/` | Files attached to a conversation |
 | `.blacksite/` (other) | Codebase index, map notes, execution logs, embedded database |

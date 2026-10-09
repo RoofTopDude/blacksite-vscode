@@ -27,7 +27,7 @@ export interface HookInput {
   stopHookActive?: boolean;
   /** Notification only. */
   message?: string;
-  notificationType?: "approval" | "question";
+  notificationType?: "approval" | "question" | "run";
 }
 export interface HookOutcome {
   /** PreToolUse and UserPromptSubmit: the reason the prompt or tool call was stopped. */

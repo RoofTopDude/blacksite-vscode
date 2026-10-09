@@ -124,6 +124,12 @@ export class PlanningProvider implements vscode.WebviewViewProvider, vscode.Disp
         if (planId) this._store.setAgentCanArchive(planId, msg.allow === true);
         break;
       }
+      case "start_plan_run": {
+        // The run lives in the chat: open it there with the preflight card for this plan.
+        const planId = String(msg.planId ?? "");
+        if (planId) void vscode.commands.executeCommand("blacksite.openRunPreflight", planId);
+        break;
+      }
       case "set_plan_execution_approval": {
         const planId = String(msg.planId ?? "");
         if (planId) this._store.setExecutionApproved(planId, msg.approved === true);

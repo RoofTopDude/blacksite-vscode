@@ -4,6 +4,7 @@ import { actions, useStore } from "@/lib/store";
 import { pendingItemsOf, type PendingItem } from "@/lib/chat-model";
 import { useBrowserGates } from "@/lib/research-store";
 import { ApprovalButtons } from "./ToolLog";
+import { ApprovalDiffs } from "./ApprovalDiffs";
 import { BrowserProposalBody, BrowserProposalPlaceholder } from "./BrowserApprovals";
 import { hasQuestionPreviewGallery, QuestionSetBody } from "./QuestionCard";
 import { StatusPill, type SignalTone } from "./signal";
@@ -126,6 +127,7 @@ export function PendingBar() {
                 <span className="text-xs leading-snug text-foreground">{item.rationale}</span>
               </div>
             )}
+            {item.kind === "approval" && item.previews && item.previews.length > 0 && <ApprovalDiffs previews={item.previews} />}
             {item.kind === "approval" && item.reviewNote && (
               <div className="mb-2 flex items-start gap-1.5">
                 <StatusPill tone="warn" className="text-2xs">Auto mode asks</StatusPill>

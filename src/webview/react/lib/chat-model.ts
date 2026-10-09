@@ -10,7 +10,7 @@ import {
 } from "./format";
 import { toolInputPreview, toolResultPresentation, parseToolResult } from "./tool-presentation";
 import { appendTerminalOutput, createTerminalOutput, settleTerminalOutput, terminalFromResult, type TerminalOutput } from "./terminal-output";
-import type { ApprovalDecision, ChatMessage, QCardOption, QCardQuestion, SessionRuntime, SteerState, ToolDiffInfo } from "./protocol";
+import type { ApprovalDecision, ChatMessage, DiffPreview, QCardOption, QCardQuestion, SessionRuntime, SteerState, ToolDiffInfo } from "./protocol";
 import type { BrowserProposal } from "../../../browser/approval-types";
 
 /** "expired" means the host is no longer waiting on this gate — the run was cancelled, the
@@ -35,6 +35,8 @@ export interface ToolCall {
   /** One sentence from the model on why this edit — populated only for edit tools whose call
    *  included an optional rationale; empty otherwise. */
   approvalRationale: string;
+  /** What an edit approval would change, per file, so the card can show it instead of naming files. */
+  approvalPreviews: DiffPreview[];
   /** True when the tool is pending because its command binary is unrecognized (not
    *  allow- or deny-listed), rather than (or in addition to) a network/destructive tier. */
   approvalUnrecognized: boolean;
@@ -155,6 +157,10 @@ export interface Turn {
   id: string;
   role: TurnRole;
   index: number;
+  /** Bumped by the store whenever a streamed event changes this turn, so a view of a settled turn
+   *  can tell nothing has happened to it and skip rendering. Any other change to the store
+   *  invalidates every turn at once (see Store.renderRev). */
+  rev?: number;
   // user turn
   text?: string;
   ctxLabel?: string | null;
@@ -202,11 +208,19 @@ export interface Turn {
   summaryExpanded: boolean;
   historical: boolean;
   isTile: boolean;
+  /** Who began the turn when it was not the user (the plan conductor, a resume, a plan run). */
+  origin?: string;
+  /** Why an automatic turn began, shown as a slim seam where a user bubble would have been. */
+  seam?: string;
+  /** The harness's note about where this turn stopped short and what is left. */
+  handoff?: { reason: string; text: string };
   // lane meta
   label?: string;
   task?: string;
   parentToolCallId?: string;
   lanes: Turn[];
+  /** What this lane may use before it is cut off: tool rounds and wall-clock seconds. */
+  laneBudget?: { maxToolRounds: number; maxRuntimeSeconds: number };
   /** Follow-up rounds this lane has been resumed for, oldest first. A lane runs its original
    *  task once and can then be resumed any number of times by subagent_followup; each
    *  resumption is a round rendered inside the same lane rather than a new lane. */
@@ -403,6 +417,10 @@ export function ensureLaneTurn(state: ChatState, msg: any): Turn | null {
   lane.label = readStr(msg.label) || "Delegated lane";
   lane.task = readStr(msg.task);
   lane.parentToolCallId = call.id;
+  const budget = msg.budget && typeof msg.budget === "object" ? msg.budget as { maxToolRounds?: unknown; maxRuntimeSeconds?: unknown } : undefined;
+  if (budget && Number(budget.maxToolRounds) > 0 && Number(budget.maxRuntimeSeconds) > 0) {
+    lane.laneBudget = { maxToolRounds: Number(budget.maxToolRounds), maxRuntimeSeconds: Number(budget.maxRuntimeSeconds) };
+  }
   parentTurn.lanes.push(lane);
   state.byId.set(laneId, lane);
   return lane;
@@ -651,6 +669,7 @@ export function ensureToolCall(_state: ChatState, turn: Turn, payload: any): Too
     approvalDescription: "",
     approvalTier: "",
     approvalRationale: "",
+    approvalPreviews: [],
     approvalUnrecognized: false,
     approvalReview: null,
     browserProposalId: "",
@@ -748,6 +767,7 @@ export function applyToolResult(turn: Turn, call: ToolCall, rawResult: any, elap
     call.approvalDescription = "";
     call.approvalTier = "";
     call.approvalRationale = "";
+    call.approvalPreviews = [];
     call.approvalUnrecognized = false;
     call.browserProposalId = "";
   }
@@ -756,7 +776,7 @@ export function applyToolResult(turn: Turn, call: ToolCall, rawResult: any, elap
 
 export function applyApprovalPending(
   state: ChatState, turn: Turn, toolCallId: string, description: string, tier = "", unrecognizedCommand = false, rationale = "",
-  browserProposalId = "",
+  browserProposalId = "", previews: DiffPreview[] = [],
 ): void {
   const call = ensureToolCall(state, turn, { toolCallId, toolName: "approval", input: {} });
   if (!call.approvalState) {
@@ -768,6 +788,7 @@ export function applyApprovalPending(
   call.approvalDescription = description;
   call.approvalTier = tier;
   call.approvalRationale = rationale;
+  call.approvalPreviews = previews;
   call.approvalUnrecognized = unrecognizedCommand;
   call.browserProposalId = browserProposalId;
 }
@@ -1115,6 +1136,20 @@ function extractAssistantBlocks(content: any): { text: string; toolUses: any[]; 
 const STEER_PREFIX = "[Message from the user during the run]\n";
 const STEER_SUFFIX = /\n\nTake this into account from your next step\.[^\n]*$/;
 const HARNESS_CONTINUATION = "[Internal continuation]";
+/** Messages the harness sends on the user's behalf, and the seam each one earns in a restored
+ *  transcript so the user can still see why the agent went on without them saying anything. */
+const HARNESS_SEAMS: Array<[string, string]> = [
+  ["[Automatic plan continuation]", "Continued the plan"],
+  ["[Plan run resumed]", "Plan run resumed"],
+  ["[Plan run]", "Plan run started"],
+  ["[Resumed from checkpoint]", "Resumed from a checkpoint"],
+];
+
+export function harnessSeamFor(text: string): string | null {
+  const trimmed = text.trim();
+  for (const [prefix, seam] of HARNESS_SEAMS) if (trimmed.startsWith(prefix)) return seam;
+  return null;
+}
 
 /** What a stored user message shows in a restored transcript. A harness reminder is not something
  *  the user said, so it is hidden; a mid-run message shows the words without its framing. */
@@ -1129,10 +1164,14 @@ export function restoreConversation(state: ChatState, messages: ChatMessage[]): 
   resetConversation(state);
   state.hasMessages = true;
   let activeAssistant: Turn | null = null;
+  let pendingSeam: string | null = null;
 
   for (const message of messages || []) {
     if (message.role === "assistant") {
-      if (!activeAssistant) activeAssistant = createAssistantTurn(state, `history_${Date.now()}_${state.assistantTurnCount + 1}`, true);
+      if (!activeAssistant) {
+        activeAssistant = createAssistantTurn(state, `history_${Date.now()}_${state.assistantTurnCount + 1}`, true);
+        if (pendingSeam) { activeAssistant.seam = pendingSeam; pendingSeam = null; }
+      }
       const { text, toolUses, thinkingBlocks } = extractAssistantBlocks(message.content);
       activeAssistant.iterations += 1;
       // Each persisted thinking block was its own burst — seal between them so a
@@ -1147,6 +1186,14 @@ export function restoreConversation(state: ChatState, messages: ChatMessage[]): 
     }
     if (message.role !== "user") continue;
     const { text, toolResults } = extractUserMessageParts(message.content);
+    // The harness speaking for the user is not a bubble; it is the reason the next turn exists.
+    const seam = harnessSeamFor(text);
+    if (seam && !toolResults.length) {
+      if (activeAssistant) finalizeTurn(activeAssistant, { status: "complete" });
+      activeAssistant = null;
+      pendingSeam = seam;
+      continue;
+    }
     if (toolResults.length && activeAssistant) {
       toolResults.forEach((toolResult: any) => {
         const id = readStr(toolResult.tool_use_id);
@@ -1175,6 +1222,16 @@ export interface ToolGroup {
   calls: ToolCall[];
 }
 
+function toolGroupState(calls: readonly ToolCall[]): ToolState {
+  let failed = 0, active = 0;
+  for (const c of calls) {
+    const s = toolStateClass(c);
+    if (s === "fail") failed++;
+    else if (s === "running" || s === "pending") active++;
+  }
+  return failed > 0 ? "fail" : active > 0 ? "running" : "ok";
+}
+
 export function toolGroupsOf(turn: Turn): ToolGroup[] {
   const order: string[] = [];
   const byKey = new Map<string, ToolCall[]>();
@@ -1188,18 +1245,29 @@ export function toolGroupsOf(turn: Turn): ToolGroup[] {
   }
   return order.map((key) => {
     const calls = byKey.get(key)!;
-    let state: ToolState = "ok";
-    let failed = 0, running = 0, pending = 0;
-    for (const c of calls) {
-      const s = toolStateClass(c);
-      if (s === "fail") failed++;
-      else if (s === "running") running++;
-      else if (s === "pending") pending++;
-    }
-    if (failed > 0) state = "fail";
-    else if (pending > 0 || running > 0) state = "running";
-    return { key, displayName: toolDisplayName(key), state, calls };
+    return { key, displayName: toolDisplayName(key), state: toolGroupState(calls), calls };
   });
+}
+
+/**
+ * The same calls in the order they happened: a run of consecutive calls to one tool is one entry.
+ * Grouping by tool name alone put the third read of a file beside the first, three minutes and a
+ * dozen edits earlier, which made "what did it do next" impossible to follow in a long turn.
+ */
+export function toolRunsOf(turn: Turn): ToolGroup[] {
+  const runs: ToolGroup[] = [];
+  for (const call of turn.toolCallList) {
+    if (call.toolName === "subagent_spawn") continue;
+    const key = call.toolName || "tool";
+    const last = runs[runs.length - 1];
+    if (last && last.key.split("#")[0] === key) {
+      last.calls.push(call);
+      last.state = toolGroupState(last.calls);
+    } else {
+      runs.push({ key: `${key}#${runs.length}`, displayName: toolDisplayName(key), state: toolGroupState([call]), calls: [call] });
+    }
+  }
+  return runs;
 }
 
 /** What an "always allow" answer covers: a shell binary, or an MCP tool (`mcp:<server>/<tool>`
@@ -1245,6 +1313,8 @@ export interface PendingItem {
   binary: string;
   /** The agent's stated reason for the gated call, when it gave one. */
   rationale: string;
+  /** What an edit would change, per file. Empty for everything that is not an edit. */
+  previews?: DiffPreview[];
   /** Why auto mode handed this to the user, when it did. */
   reviewNote: string;
   questions: QuestionItem[] | null;
@@ -1275,6 +1345,7 @@ function pendingItemsInTurn(turn: Turn, laneId: string | null, laneLabel: string
       title: gate ? browserGateTitle(gate.proposal) : call.approvalDescription || call.label || call.displayName,
       tier: call.approvalTier,
       unrecognized: call.approvalUnrecognized, binary: approvalBinaryOf(call), rationale: call.approvalRationale,
+      previews: call.approvalPreviews,
       reviewNote: call.approvalReview?.verdict === "escalated" ? call.approvalReview.reason : "",
       questions: null, proposal: gate?.proposal ?? null, pendingSeq: call.pendingSeq,
     });
@@ -1390,6 +1461,7 @@ export function turnChrome(turn: Turn, now: number = Date.now()): TurnChrome {
   let statusText = "Done";
   if (turn.status === "error") { statusClass = "error"; statusText = "Error"; }
   else if (turn.stopReason === "max_iterations") { statusClass = "limit"; statusText = "Limit"; }
+  else if (turn.stopReason === "paused") { statusClass = "paused"; statusText = "Paused"; }
   else if (turn.status === "streaming") {
     if (pending > 0) { statusClass = "pending"; statusText = "Wait"; }
     else { statusClass = "streaming"; statusText = "Live"; }
@@ -1411,6 +1483,7 @@ export function turnChrome(turn: Turn, now: number = Date.now()): TurnChrome {
   // The message itself is shown in the turn's error callout; the footer only names the outcome.
   if (turn.status === "error") summary = "Turn ended with an error";
   else if (turn.stopReason === "max_iterations") summary = "Iteration limit reached";
+  else if (turn.stopReason === "paused") summary = "Paused at the end of a step";
   else if (pending > 0) summary = "Approval required";
   else if (running > 0 || turn.status === "streaming") summary = "Working through tool activity";
   else if (!turn.raw && turn.toolCallList.length > 0) summary = "Tool activity captured";

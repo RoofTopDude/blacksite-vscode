@@ -52,6 +52,9 @@ export interface ContinuationGateInputs {
   maxConsecutive?: number;
   /** The agent's last message, used only to pick a trigger. */
   lastMessage: string;
+  /** What the harness observed about the turn, when it knows better than the message does: a
+   *  step went blocked ("step_failed"), or the run is resuming after a restart ("interrupted"). */
+  triggerHint?: ContinuationTrigger;
 }
 
 /** Rough signal that the agent asked something rather than reported something. Deliberately
@@ -98,9 +101,10 @@ export function continuationGate(inputs: ContinuationGateInputs): ContinuationGa
 }
 
 function pickTrigger(inputs: ContinuationGateInputs): ContinuationTrigger {
+  // A resumed run has no meaningful last message: the thread was cut, not answered.
+  if (inputs.triggerHint === "interrupted") return "interrupted";
   if (looksLikeQuestion(inputs.lastMessage)) return "executor_question";
-  if (inputs.stopReason === "max_iterations") return "stalled";
-  if (!inputs.lastMessage.trim()) return "stalled";
+  if (inputs.triggerHint === "step_failed") return "step_failed";
   return "stalled";
 }
 
@@ -154,9 +158,16 @@ export function haltMessage(category: string, reason: string, whatWouldUnblock: 
  * plans, and the one being worked is the one that just changed. Returns null rather than
  * guessing when nothing qualifies.
  */
-export function activeExecutingPlan(plans: readonly TaskPlan[]): TaskPlan | null {
+export function activeExecutingPlan(plans: readonly TaskPlan[], preferredPlanId?: string): TaskPlan | null {
+  const eligible = (plan: TaskPlan): boolean => plan.executionApproved && plan.status === "active" && !planIsComplete(plan);
+  // A plan run names its plan. Taking "whichever changed last" instead would let an unrelated
+  // plan the agent happened to touch steal the conductor.
+  if (preferredPlanId) {
+    const preferred = plans.find((plan) => plan.id === preferredPlanId);
+    return preferred && eligible(preferred) ? preferred : null;
+  }
   const candidates = plans
-    .filter((plan) => plan.executionApproved && plan.status === "active" && !planIsComplete(plan))
+    .filter(eligible)
     .slice()
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   return candidates[0] ?? null;

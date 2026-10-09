@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react";
+import { memo, useState, type CSSProperties } from "react";
 import { Bot, Check, ChevronRight, Copy, Undo2, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { countLabel, formatClock, formatDuration, liveElapsedMs } from "@/lib/format";
@@ -6,7 +6,7 @@ import {
   artifactCallsOf, pendingItemsOf, placeholderText, questionCardSettled, rewindTargetFor, turnChrome, turnIsLive, turnNarrative,
   type TextSegment, type Turn as TurnModel,
 } from "@/lib/chat-model";
-import { actions, useStore } from "@/lib/store";
+import { actions, useStoreSelector } from "@/lib/store";
 import { useLiveClock } from "@/lib/use-live-clock";
 import { agentLaneColor, cssColor } from "@/lib/graph/colors";
 import { Markdown } from "./Markdown";
@@ -16,6 +16,7 @@ import { ToolLog } from "./ToolLog";
 import { LiveAction } from "./LiveAction";
 import { TranscriptDocumentCard } from "./TranscriptDocumentCard";
 import { StatusPill, turnStatusTone } from "./signal";
+import { HandoffCard, Seam } from "@/components/run/TurnNotes";
 
 /**
  * Deliverables the agent produced for the user, lifted out of the execution drawer.
@@ -220,9 +221,11 @@ function CopyReplyButton({ raw, title = "Copy reply markdown" }: { raw: string; 
 /** Rewind to before this message. The host shows what will be restored, lost and left undone
  *  before anything changes, so the button itself asks nothing. */
 function RewindButton({ userTurnId }: { userTurnId: string }) {
-  const store = useStore();
-  const target = rewindTargetFor(store.chat.turns, userTurnId, store.rewindableTurnIds);
-  if (!target || store.chat.running) return null;
+  const { target, running } = useStoreSelector(
+    (state) => ({ target: rewindTargetFor(state.chat.turns, userTurnId, state.rewindableTurnIds), running: state.chat.running }),
+    (a, b) => a.target === b.target && a.running === b.running,
+  );
+  if (!target || running) return null;
   return (
     <button
       type="button"
@@ -237,8 +240,8 @@ function RewindButton({ userTurnId }: { userTurnId: string }) {
 
 /** Where a message sent mid-run stands, in the words the user needs: will the agent see it, and when. */
 function SteerChip({ state }: { state: NonNullable<TurnModel["steer"]>["state"] }) {
-  const store = useStore();
-  const waiting = (state === "sending" || state === "queued") && pendingItemsOf(store.chat).length > 0;
+  const anythingPending = useStoreSelector((snapshot) => pendingItemsOf(snapshot.chat).length > 0);
+  const waiting = (state === "sending" || state === "queued") && anythingPending;
   const label = state === "delivered" ? "Read by the agent"
     : state === "sent_as_turn" ? "Sent as a new message"
     : state === "returned" ? "Not sent"
@@ -252,8 +255,22 @@ function SteerChip({ state }: { state: NonNullable<TurnModel["steer"]>["state"] 
   );
 }
 
-export function Turn({ turn }: { turn: TurnModel }) {
+interface TurnProps {
+  turn: TurnModel;
+  /** This turn's own revision, and the store's: the only things that can change what it shows
+   *  that are not already a hook inside it. They exist so the memo below can tell. */
+  rev?: number;
+  allRev?: number;
+}
+
+/** A turn re-renders when it, or something that can reach any turn, has changed. */
+function sameTurn(a: TurnProps, b: TurnProps): boolean {
+  return a.turn === b.turn && a.rev === b.rev && a.allRev === b.allRev;
+}
+
+export const Turn = memo(function Turn({ turn }: TurnProps) {
   const animate = !turn.historical;
+  const railShowsAction = useStoreSelector((state) => !!state.planRun && state.dismissedRunId !== state.planRun.id && state.chat.currentLiveTurnId === turn.id);
   // Called unconditionally (Rules of Hooks) even for user turns, which are always
   // status "complete" — turnIsLive is false there, so the clock never ticks for them.
   const now = useLiveClock(turnIsLive(turn));
@@ -288,6 +305,7 @@ export function Turn({ turn }: { turn: TurnModel }) {
   const showBadge = chrome.statusClass !== "complete";
   return (
     <div id={`turn-${turn.id}`} className={cn("group flex flex-col gap-1.5", animate && "turn-in")}>
+      <Seam turn={turn} />
       <div className="flex items-center gap-1.5">
         <span className="agent-marker" />
         <span className="eyebrow">Blacksite</span>
@@ -300,14 +318,16 @@ export function Turn({ turn }: { turn: TurnModel }) {
           )}
         </div>
       </div>
-      <LiveAction turn={turn} />
+      {/* While a plan run is open its bar carries the live action, where it cannot scroll away. */}
+      {!railShowsAction && <LiveAction turn={turn} />}
       <AssistantBody turn={turn} />
       {turn.lanes.length > 0 && (
         <div className="mt-1 flex flex-col gap-1.5">
           {turn.lanes.map((lane) => <LaneTile key={lane.id} lane={lane} />)}
         </div>
       )}
+      <HandoffCard turn={turn} />
       <div className="text-xs text-muted-foreground">{chrome.meta}</div>
     </div>
   );
-}
+}, sameTurn);

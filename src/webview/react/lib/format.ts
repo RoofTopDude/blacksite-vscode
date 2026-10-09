@@ -525,6 +525,7 @@ export function stopReasonLabel(reason: unknown): string {
   if (value === "end_turn") return "complete";
   if (value === "max_tokens") return "max tokens";
   if (value === "max_iterations") return "max iterations";
+  if (value === "paused") return "paused";
   if (value === "tool_use") return "tool loop";
   return value.replace(/_/g, " ");
 }

@@ -15,6 +15,11 @@ export interface Step {
   acceptanceCriteria?: string;
   maxIterations?: number;
   notes?: string[];
+  /** When the step first started and when it last finished (ISO), recorded by the host. */
+  startedAt?: string;
+  completedAt?: string;
+  /** What a finished step was shown to have: checks that cleared it, files left unchecked. */
+  evidence?: { checks?: string[]; unverified?: string[]; filesChanged?: string[] };
 }
 
 export interface Block {

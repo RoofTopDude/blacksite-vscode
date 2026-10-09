@@ -46,6 +46,11 @@ import { LoopToolService } from "./loops/loop-tool-provider.js";
 import { reviewLoopApproval } from "./continuation/approval-review.js";
 import { PlanRecoveryService, describeRecovery } from "./plans/plan-recovery-service.js";
 import { PlanContinuationService } from "./plans/plan-continuation-service.js";
+import { PlanRunService } from "./plans/plan-run-service.js";
+import { PlanRunStore } from "./plans/plan-run-store.js";
+import { AttentionCenter, type NotificationLevel } from "./chat/attention.js";
+import { AttentionSurfaces } from "./attention-surfaces.js";
+import { configuredHooks } from "./hook-settings.js";
 import { GraphAgentGateway } from "./graph-agent-gateway.js";
 import { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
 import { StructuralSnapshot } from "./graph/structural-snapshot.js";
@@ -593,6 +598,8 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   // dispatching hours from now must not re-check that on every lane.
   const chat = chatProvider;
   const loopViewRef: { current: LoopProvider | undefined } = { current: undefined };
+  /** The attention center is created with the plan run service, further down. */
+  const loopAttention: { current: AttentionCenter | undefined } = { current: undefined };
   const loopSupervisor = new LoopSupervisor(
     loops,
     new TicketStoreLoopGateway(tickets, () => graphIndexer.indexedFiles()),
@@ -608,7 +615,10 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
           ...(ticket.description ? { ticketDescription: ticket.description } : {}),
           acceptanceCriteria: ticket.acceptanceCriteria,
           territory: [...ticket.territory.files, ...ticket.territory.areas],
-          userPrompts: chat.userPromptsThisSession(),
+          // The ticket is the intent for a loop lane. What was typed into the chat is about
+          // something else, and handing it over as "the user's original requests" misled the
+          // reviewer in both directions.
+          userPrompts: [],
           tier,
           toolName,
           description,
@@ -619,6 +629,33 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     {
       notify: (_loopId, message) => loopViewRef.current?.notify(message),
       onError: (loopId, error) => console.warn(`[Blacksite] loop ${loopId} error:`, error),
+      onSettled: (loopId, title, status, reason) => {
+        loopAttention.current?.raise({
+          id: `loop:${loopId}:${status}`,
+          kind: "loop_ended",
+          severity: status === "drained" ? "success" : status === "failed" ? "error" : "needs_you",
+          source: "loop",
+          title: status === "drained" ? `Loop “${title}” finished`
+            : status === "blocked" ? `Loop “${title}” is blocked`
+              : status === "failed" ? `Loop “${title}” failed`
+                : `Loop “${title}” stopped`,
+          detail: reason.slice(0, 300),
+          at: Date.now(),
+        });
+      },
+      onParked: (loopId, title, ticketId, gate) => {
+        loopAttention.current?.raise({
+          id: `loop:${loopId}:park:${ticketId}`,
+          kind: "loop_parked",
+          severity: "needs_you",
+          source: "loop",
+          title: `${ticketId} is waiting on you in loop “${title}”`,
+          detail: `An approval was refused (${gate}). The loop is continuing with other tickets.`,
+          at: Date.now(),
+        });
+      },
+      onStarted: (loopId) => loopAttention.current?.resolveWhere((item) => item.id.startsWith(`loop:${loopId}:`)),
+      onReleased: (loopId, ticketId) => loopAttention.current?.resolve(`loop:${loopId}:park:${ticketId}`),
     },
   );
   const loopView = new LoopProvider(
@@ -666,6 +703,13 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   /* The conductor: when an approved plan's turn ends without finishing it, a fresh agent
      holding the user's original prompts decides whether to continue, escalate, or halt. Off by
      default — it spends model calls and agent turns with nobody watching. */
+  /* A plan run is the conductor's reason to exist: it names the plan, counts only the turns that
+     moved nothing, and turns the conductor on for itself. Built first so the conductor can hold
+     its context. See src/plans/plan-run-service.ts. */
+  const attention = new AttentionCenter();
+  loopAttention.current = attention;
+  const planRunStore = new PlanRunStore(workspaceRoot);
+  const planRuns = new PlanRunService(planRunStore, planning, chat.planRunHost(), attention);
   const planContinuation = new PlanContinuationService(
     planning,
     () => chat.createContinuationModel(),
@@ -686,8 +730,54 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
       },
       trace: (message) => chat.reportPlanContinuation("trace", message),
     },
+    planRuns.conductorContext(),
   );
   chat.setPlanContinuation(planContinuation);
+  chat.setPlanRuns(planRuns, attention);
+  chat.setMapRevealer((target) => graphProvider.revealNote(target));
+  context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider("blacksite-snapshot", chat.snapshotContentProvider()));
+  chat.pruneSnapshots(vscode.workspace.getConfiguration("blacksite.planRuns").get<number>("retentionDays", 30));
+  context.subscriptions.push(
+    planning.onDidChange((document) => planRuns.notePlanChanged(document)),
+    { dispose: () => planRuns.dispose() },
+  );
+
+  /* What reaches the user outside the chat: a toast when they are away, and the Notification hook. */
+  const runNotificationLevel = (): NotificationLevel => {
+    const own = planRuns.active?.charter.notifications;
+    if (own) return own;
+    const setting = vscode.workspace.getConfiguration("blacksite.notifications").get<string>("runEvents", "attention");
+    return setting === "all" || setting === "off" ? setting : "attention";
+  };
+  context.subscriptions.push(new AttentionSurfaces(attention, {
+    level: runNotificationLevel,
+    chatVisible: () => chat.isVisible(),
+    showChat: () => { void vscode.commands.executeCommand("blacksite.showRun"); },
+    runHook: (item) => {
+      void configuredHooks({
+        event: "Notification",
+        sessionId: planRuns.current?.sessionId ?? "",
+        workspaceRoot,
+        notificationType: "run",
+        message: item.detail ? `${item.title}: ${item.detail}` : item.title,
+      }).catch(() => undefined);
+    },
+  }));
+
+  /* A run that was working when the host died is now interrupted, and says so. */
+  const retentionDays = vscode.workspace.getConfiguration("blacksite.planRuns").get<number>("retentionDays", 30);
+  planRunStore.prune(retentionDays);
+  const interruptedRun = planRuns.recover();
+  if (interruptedRun && planRuns.active?.status === "interrupted" && !hasCheckpoint(context)) {
+    // With a checkpoint the resume prompt below covers it; without one this is the only notice.
+    setTimeout(() => {
+      void vscode.window.showInformationMessage(
+        `Blacksite: the plan run "${interruptedRun.planTitle}" was interrupted. Resume it?`,
+        "Resume",
+        "Not now",
+      ).then((choice) => { if (choice === "Resume") planRuns.resume(); });
+    }, 1500);
+  }
 
   // ── Plan recovery ──────────────────────────────────────────
   /* Runs once, here, before any agent session exists — which is what makes it sound. At this
@@ -919,6 +1009,31 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   context.subscriptions.push(
     vscode.commands.registerCommand("blacksite.cancelRun", () => {
       chatProvider?.cancelCurrentRun();
+    }),
+    vscode.commands.registerCommand("blacksite.showRun", async () => {
+      await vscode.commands.executeCommand("blacksite.chat.focus");
+      chatProvider?.acknowledgeRun();
+    }),
+    vscode.commands.registerCommand("blacksite.openRunPreflight", (planId?: string) => {
+      if (typeof planId === "string" && planId) void chatProvider?.openRunPreflight(planId);
+    }),
+    vscode.commands.registerCommand("blacksite.pauseRun", () => chatProvider?.planRuns?.pause()),
+    vscode.commands.registerCommand("blacksite.resumeRun", () => {
+      const outcome = chatProvider?.planRuns?.resume();
+      if (outcome && !outcome.ok) void vscode.window.showWarningMessage(`Blacksite: ${outcome.error ?? "The run could not be resumed."}`);
+    }),
+    vscode.commands.registerCommand("blacksite.stopRun", async () => {
+      const runs = chatProvider?.planRuns;
+      if (!runs?.active) {
+        void vscode.window.showInformationMessage("Blacksite: there is no plan run to stop.");
+        return;
+      }
+      const choice = await vscode.window.showWarningMessage(
+        `Stop the plan run "${runs.active.planTitle}"? Work already done stays; the run ends and its approvals are dropped.`,
+        { modal: true },
+        "Stop run",
+      );
+      if (choice === "Stop run") runs.stop();
     }),
   );
 

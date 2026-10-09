@@ -18,7 +18,7 @@
  * these functions return.
  */
 
-import type { PlanningDocument, TaskPlan, TaskPlanPhase, TaskPlanStep } from "../planning-store.js";
+import type { PlanningDocument, StepEvidence, TaskPlan, TaskPlanPhase, TaskPlanStep } from "../planning-store.js";
 import type { ContinuationBrief, ContinuationStepBrief, ContinuationTrigger } from "../continuation/continuation-model.js";
 
 /** Plan statuses whose steps are still the agent's business. An archived or cancelled plan is
@@ -101,13 +101,18 @@ function elapsedLabel(ms: number): string {
  */
 const ATTEMPT_NOTE_MARKERS = ["Delegated to a subagent lane", "Subagent lane failed", "Subagent lane interrupted"];
 
-export function attemptsFor(step: TaskPlanStep): number {
-  return step.notes.filter((note) => ATTEMPT_NOTE_MARKERS.some((marker) => note.includes(marker))).length;
+export function attemptsFor(step: TaskPlanStep, ledgerAttempts = 0): number {
+  const fromNotes = step.notes.filter((note) => ATTEMPT_NOTE_MARKERS.some((marker) => note.includes(marker))).length;
+  // A plan run counts every move to in_progress, which is the only record of an inline step's
+  // attempts; the notes only ever saw delegated ones. Whichever saw more is the better count.
+  return Math.max(fromNotes, ledgerAttempts);
 }
 
 function toStepBrief(step: TaskPlanStep): ContinuationStepBrief {
   return {
     title: step.title,
+    status: step.status,
+    ...(step.evidence ? { evidence: describeEvidence(step.evidence) } : {}),
     ...(step.detail ? { detail: step.detail } : {}),
     ...(step.acceptanceCriteria ? { acceptanceCriteria: step.acceptanceCriteria } : {}),
     // The most recent note is the one that says what happened; earlier ones are history the
@@ -118,7 +123,10 @@ function toStepBrief(step: TaskPlanStep): ContinuationStepBrief {
 
 /** The step the plan is actually on: the first in_progress step, else the first pending one. */
 export function currentStepOf(plan: TaskPlan): { phase: TaskPlanPhase; step: TaskPlanStep } | null {
-  for (const status of ["in_progress", "pending"] as const) {
+  // A blocked step is the last resort, not skipped: when it is all that is left, the conductor
+  // has to be told so, or it would report an empty plan and the run would end without anyone
+  // looking at the step that needs a decision.
+  for (const status of ["in_progress", "pending", "blocked"] as const) {
     for (const phase of plan.phases) {
       if (phase.status === "completed") continue;
       for (const step of phase.steps) {
@@ -129,6 +137,19 @@ export function currentStepOf(plan: TaskPlan): { phase: TaskPlanPhase; step: Tas
   return null;
 }
 
+/** One line saying what a finished step was shown to have. Observed, not claimed. */
+export function describeEvidence(evidence: StepEvidence): string {
+  const parts: string[] = [];
+  if (evidence.checks.length) parts.push(`checked by ${evidence.checks.slice(0, 3).join(", ")}`);
+  if (evidence.unverified.length) parts.push(`${evidence.unverified.length} changed file${evidence.unverified.length === 1 ? "" : "s"} not checked`);
+  else if (!evidence.checks.length) parts.push("nothing needed checking");
+  if (evidence.filesChanged.length) parts.push(`${evidence.filesChanged.length} file${evidence.filesChanged.length === 1 ? "" : "s"} changed`);
+  if (evidence.diagnostics && (evidence.diagnostics.errors || evidence.diagnostics.warnings)) {
+    parts.push(`${evidence.diagnostics.errors} error${evidence.diagnostics.errors === 1 ? "" : "s"}, ${evidence.diagnostics.warnings} warning${evidence.diagnostics.warnings === 1 ? "" : "s"}`);
+  }
+  return parts.join("; ");
+}
+
 export interface PlanBriefInputs {
   plan: TaskPlan;
   /** The user's own words, oldest first. Supplied by the caller from session history. */
@@ -136,6 +157,11 @@ export interface PlanBriefInputs {
   executorLastMessage: string;
   trigger: ContinuationTrigger;
   priorDecisions?: string[];
+  /** What the harness observed about the turn that just ended: steps moved, files changed, what
+   *  was checked, what failed. The conductor otherwise decides from the executor's own words. */
+  turnDigest?: string;
+  /** Times each step moved to in_progress in the plan run ledger, keyed `phaseId/stepId`. */
+  ledgerAttempts?: ReadonlyMap<string, number>;
 }
 
 /**
@@ -170,8 +196,9 @@ export function buildPlanBrief(inputs: PlanBriefInputs): ContinuationBrief {
     remaining,
     executorLastMessage: inputs.executorLastMessage,
     trigger: inputs.trigger,
-    attempts: current ? attemptsFor(current.step) : 0,
+    attempts: current ? attemptsFor(current.step, inputs.ledgerAttempts?.get(`${current.phase.id}/${current.step.id}`) ?? 0) : 0,
     ...(inputs.priorDecisions?.length ? { priorDecisions: inputs.priorDecisions } : {}),
+    ...(inputs.turnDigest ? { turnDigest: inputs.turnDigest } : {}),
   };
 }
 

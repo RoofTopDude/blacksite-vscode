@@ -4,7 +4,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import { useSyncExternalStore } from "react";
+import { useRef, useSyncExternalStore } from "react";
 import { post as rawPost, onMessage } from "./bridge";
 import { countLabel, readNum, readStr } from "./format";
 import { defaultBedrockModel } from "../../../bedrock-config.js";
@@ -13,7 +13,7 @@ import type {
   ApprovalDecision, ClaudeEffort, ExtendedSettings, HistorySession, IncomingMessage, KeyStatus, LogStats,
   MemoryStats, ModelInfo, OpenRouterConfig, OutgoingMessage, ProviderName, QCardOption, ReasoningEffort,
   ReferenceAttachmentInfo, ServiceTier, SubagentProfile, SubagentSettings, TranscriptDocumentData,
-  RequestMode, SamplingKey, ProjectSetupState,
+  RequestMode, SamplingKey, ProjectSetupState, AttentionItem, PlanRunCharterInput, PlanRunView, PreflightReport,
 } from "./protocol";
 
 /** Typed post — narrows to the chat webview's outbound protocol. */
@@ -108,8 +108,25 @@ export interface Store {
   transcriptDocuments: Record<string, TranscriptDocumentData>;
   /** Settings › Project setup, as the host last reported it. */
   projectSetup: ProjectSetupState | null;
+  /** Bumped for every change that is not a targeted stream event, so memoised turns re-render. A
+   *  streamed token bumps only the turn it belongs to; anything else could affect any turn. */
+  renderRev: number;
   /** A request to show one Settings section (from the host), applied once per nonce. */
   settingsTarget: { section: "setup"; nonce: number; focus?: { toolchain?: string; project?: string } } | null;
+  /** The plan run in progress (or the last one to finish, until it is dismissed). */
+  planRun: PlanRunView | null;
+  /** When `planRun` arrived, so its clock can keep ticking between updates. */
+  planRunAt: number;
+  /** Everything waiting on the user, most pressing first. */
+  attention: AttentionItem[];
+  /** The preflight card for a run about to start, or null. */
+  runPreflight: PreflightReport | null;
+  /** The last thing the host said about a run that the user should see, shown once. */
+  runNotice: { level: "info" | "error"; message: string; nonce: number } | null;
+  /** The step timeline is open. */
+  timelineOpen: boolean;
+  /** A run that ended and has been dismissed from the bar. */
+  dismissedRunId: string | null;
 }
 
 const defaultSettings: ExtendedSettings = {
@@ -159,14 +176,37 @@ export const store: Store = {
   attachError: null,
   transcriptDocuments: {},
   projectSetup: null,
+  renderRev: 0,
   settingsTarget: null,
+  planRun: null,
+  planRunAt: 0,
+  attention: [],
+  runPreflight: null,
+  runNotice: null,
+  timelineOpen: false,
+  dismissedRunId: null,
 };
 
 let version = 0;
 const listeners = new Set<() => void>();
 let bumpScheduled = false;
+/** Set when anything other than a targeted stream event changed, so every turn must re-render. */
+let invalidateAll = false;
 
-function bump(): void {
+/**
+ * Tell subscribers the store changed. With `targets`, only those turns are marked changed — the
+ * streaming path, where a token can only have touched the turn it belongs to. Without, every turn
+ * is invalidated, which is the safe default for the many things that can reach any of them
+ * (approvals, settings, rewind, an expanded row).
+ */
+function bump(targets?: ReadonlyArray<ChatState["turns"][number] | undefined>): void {
+  if (targets) {
+    for (const turn of targets) {
+      if (turn) turn.rev = (turn.rev ?? 0) + 1;
+    }
+  } else {
+    invalidateAll = true;
+  }
   // Host streams can deliver many token events in one frame. Coalesce store
   // notifications so React renders at most roughly once per animation-sized
   // slice instead of once per token.
@@ -175,6 +215,8 @@ function bump(): void {
   setTimeout(() => {
     bumpScheduled = false;
     version += 1;
+    if (invalidateAll) store.renderRev += 1;
+    invalidateAll = false;
     for (const l of listeners) l();
   }, 16);
 }
@@ -194,6 +236,34 @@ export function useStore(): Store {
   return store;
 }
 
+/**
+ * Subscribe to one derived value. The component renders again only when the value changes, which
+ * is what lets a settled turn ignore the stream of updates that a live one is producing — a
+ * component that calls useStore() is re-rendered by every one of them.
+ */
+export function useStoreSelector<T>(select: (state: Store) => T, equal: (a: T, b: T) => boolean = Object.is): T {
+  const cache = useRef<{ version: number; value: T } | null>(null);
+  const read = (): T => {
+    const cached = cache.current;
+    if (cached && cached.version === version) return cached.value;
+    const next = select(store);
+    if (cached && equal(cached.value, next)) {
+      cached.version = version;
+      return cached.value;
+    }
+    cache.current = { version, value: next };
+    return next;
+  };
+  return useSyncExternalStore(subscribe, read, read);
+}
+
+/** Streamed events whose effect is confined to the turn they name (and the live turn that holds a
+ *  lane). Everything else may reach any turn and invalidates them all. */
+const TARGETED_STREAM_EVENTS: ReadonlySet<string> = new Set([
+  "stream_delta", "stream_thinking", "stream_tool_output", "stream_provider_activity",
+  "stream_iteration", "stream_tool_call", "stream_tool_result", "stream_usage",
+]);
+
 /* ── Incoming host messages ───────────────────────────────────────────── */
 
 function handleIncoming(msg: IncomingMessage): void {
@@ -212,10 +282,44 @@ function handleIncoming(msg: IncomingMessage): void {
       store.focusNonce += 1;
       break;
 
-    case "stream_start":
+    case "stream_start": {
       chat.running = true;
-      if (!chat.currentLiveTurnId) ensureParentLiveTurn(chat, msg.id);
+      const live = chat.currentLiveTurnId ? chat.byId.get(chat.currentLiveTurnId) : undefined;
+      const turn = live ?? ensureParentLiveTurn(chat, msg.id);
+      // Only a turn the user did not start has anything to explain. A turn the user began already
+      // has their message above it.
+      if (!live && msg.origin && msg.origin !== "user" && msg.origin !== "steer") {
+        turn.origin = msg.origin;
+        if (msg.seam) turn.seam = msg.seam;
+      }
       break;
+    }
+
+    case "plan_run_state":
+      store.planRun = msg.run;
+      store.planRunAt = Date.now();
+      // A new run, or one that came back to life, brings the bar back.
+      if (msg.run && store.dismissedRunId && msg.run.id !== store.dismissedRunId) store.dismissedRunId = null;
+      if (!msg.run) store.timelineOpen = false;
+      break;
+
+    case "plan_run_notice":
+      store.runNotice = { level: msg.level === "error" ? "error" : "info", message: String(msg.message ?? ""), nonce: (store.runNotice?.nonce ?? 0) + 1 };
+      break;
+
+    case "plan_run_preflight":
+      store.runPreflight = msg.report;
+      break;
+
+    case "attention_state":
+      store.attention = Array.isArray(msg.items) ? msg.items : [];
+      break;
+
+    case "run_handoff": {
+      const turn = chat.byId.get(String(msg.id));
+      if (turn && msg.text) turn.handoff = { reason: String(msg.reason ?? ""), text: String(msg.text) };
+      break;
+    }
 
     case "stream_subagent_lane_start":
       ensureLaneTurn(chat, msg);
@@ -344,6 +448,7 @@ function handleIncoming(msg: IncomingMessage): void {
           !!msg.unrecognizedCommand,
           String(msg.rationale || ""),
           String(msg.browserProposalId || ""),
+          Array.isArray(msg.previews) ? msg.previews : [],
         );
       }
       break;
@@ -614,12 +719,70 @@ function handleIncoming(msg: IncomingMessage): void {
       };
       break;
   }
-  bump();
+  if (TARGETED_STREAM_EVENTS.has(msg.type)) {
+    const named = msg as { id?: string; laneId?: string };
+    bump([
+      named.laneId ? chat.byId.get(named.laneId) : undefined,
+      named.id ? chat.byId.get(named.id) : undefined,
+      // A lane is drawn inside the turn that spawned it.
+      chat.currentLiveTurnId ? chat.byId.get(chat.currentLiveTurnId) : undefined,
+    ]);
+  } else {
+    bump();
+  }
 }
 
 /* ── Actions (webview → host) ─────────────────────────────────────────── */
 
 export const actions = {
+  /** Ask the host to read a plan and report what a run of it would involve. */
+  requestRunPreflight(planId: string): void {
+    post({ type: "plan_run_preflight", planId });
+  },
+  closeRunPreflight(): void {
+    store.runPreflight = null;
+    bump();
+  },
+  startPlanRun(planId: string, charter: PlanRunCharterInput): void {
+    store.runPreflight = null;
+    store.dismissedRunId = null;
+    post({ type: "plan_run_start", planId, charter });
+    bump();
+  },
+  pausePlanRun(): void { post({ type: "plan_run_pause" }); },
+  restoreToStep(phaseId: string, stepId: string): void { post({ type: "plan_run_restore_step", phaseId, stepId }); },
+  openRunReport(): void { post({ type: "plan_run_report" }); },
+  showRunOnMap(): void { post({ type: "plan_run_show_map" }); },
+  reviewChanges(scope: "run" | "conversation"): void { post({ type: "plan_run_review_changes", scope }); },
+  /** Scroll the transcript to a turn, e.g. the one that finished a step. */
+  revealTurn(turnId: string): void {
+    store.view = "chat";
+    bump();
+    // The element only exists once the chat view has rendered.
+    setTimeout(() => {
+      const target = document.getElementById(`turn-${turnId}`);
+      if (target) target.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 40);
+  },
+  /** Open Settings › Project setup. */
+  openProjectSetup(): void {
+    store.view = "settings";
+    store.settingsTarget = { section: "setup", nonce: (store.settingsTarget?.nonce ?? 0) + 1 };
+    bump();
+  },
+  resumePlanRun(): void { post({ type: "plan_run_resume" }); },
+  stopPlanRun(): void { post({ type: "plan_run_stop" }); },
+  retryProviderNow(): void { post({ type: "plan_run_retry_provider" }); },
+  toggleTimeline(open?: boolean): void {
+    store.timelineOpen = open ?? !store.timelineOpen;
+    bump();
+  },
+  /** Hide the bar for a run that has ended and been read. */
+  dismissRun(): void {
+    store.dismissedRunId = store.planRun?.id ?? null;
+    store.timelineOpen = false;
+    bump();
+  },
   setView(view: ViewName): void {
     store.view = view;
     if (view === "settings") post({ type: "get_settings" });

@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import "./theme.core.css";
 import "./theme.shared.css";
 import "./theme.chat.css";
+import "./theme.run.css";
 import { App } from "./App";
 import { prefetchMarkdown } from "./lib/use-markdown";
 

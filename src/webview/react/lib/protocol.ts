@@ -382,6 +382,11 @@ export interface TranscriptDocumentData {
 
 /** Messages received from the extension host (host → webview). */
 import type { ProjectSetupState } from "../../../toolchains/setup-types.js";
+import type { PlanRunCharterInput, PlanRunLiveState, PlanRunPhaseView, PlanRunStepView, PlanRunView, PreflightReport, StepEvidence } from "../../../plans/plan-run-view.js";
+import type { AttentionItem } from "../../../chat/attention.js";
+import type { DiffPreview } from "../../../diff-preview.js";
+
+export type { DiffPreview, AttentionItem, PlanRunCharterInput, PlanRunLiveState, PlanRunPhaseView, PlanRunStepView, PlanRunView, PreflightReport, StepEvidence };
 
 export type { ProjectSetupState } from "../../../toolchains/setup-types.js";
 
@@ -390,11 +395,20 @@ export type SteerState = "sending" | "queued" | "delivered" | "sent_as_turn" | "
 export type IncomingMessage =
   | { type: "history_restored"; messages?: ChatMessage[] }
   | { type: "inject_context"; text: string; label: string }
-  | { type: "stream_start"; id: string }
-  | { type: "stream_subagent_lane_start"; id: string; parentToolCallId?: string; laneId?: string; subRequestId?: string; label?: string; task?: string; isFollowUp?: boolean }
+  /** `origin` is who began the turn; anything but the user comes with a `seam` that says why. */
+  | { type: "stream_start"; id: string; origin?: string; seam?: string }
+  /** Where a plan run stands right now, or null when there is none. */
+  | { type: "plan_run_state"; run: PlanRunView | null }
+  | { type: "plan_run_notice"; level?: "info" | "error"; message?: string }
+  | { type: "plan_run_preflight"; report: PreflightReport }
+  /** Everything waiting on the user, from the chat, its lanes, the plan run and ticket loops. */
+  | { type: "attention_state"; items: AttentionItem[] }
+  /** The harness's own account of a turn that stopped short: where it got to and what is left. */
+  | { type: "run_handoff"; id: string; reason?: string; text?: string }
+  | { type: "stream_subagent_lane_start"; id: string; parentToolCallId?: string; laneId?: string; subRequestId?: string; label?: string; task?: string; isFollowUp?: boolean; budget?: { maxToolRounds: number; maxRuntimeSeconds: number } }
   | { type: "stream_iteration"; id: string; iteration?: number; laneId?: string }
   | { type: "stream_thinking"; id: string; text?: string; laneId?: string }
-  | { type: "stream_provider_activity"; id: string; phase: string; message: string; laneId?: string }
+  | { type: "stream_provider_activity"; id: string; phase: string; message: string; laneId?: string; outage?: boolean; retryAt?: number }
   | {
       type: "stream_usage"; id: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number;
       contextLength?: number; laneId?: string;
@@ -414,7 +428,7 @@ export type IncomingMessage =
   /** Output of a still-running command, in arrival order. `capped`: the host stopped streaming
    *  this call's output (it ran past the live cap); the final result still carries its tail. */
   | { type: "stream_tool_output"; id: string; toolCallId?: string; chunks?: Array<{ stream: "stdout" | "stderr"; text: string }>; capped?: boolean; laneId?: string }
-  | { type: "stream_approval_pending"; id: string; toolCallId?: string; description?: string; tier?: string; unrecognizedCommand?: boolean; laneId?: string; rationale?: string; browserProposalId?: string }
+  | { type: "stream_approval_pending"; id: string; toolCallId?: string; description?: string; tier?: string; unrecognizedCommand?: boolean; laneId?: string; rationale?: string; browserProposalId?: string; previews?: DiffPreview[] }
   | { type: "stream_approval_result"; id: string; toolCallId?: string; granted?: boolean; decision?: ApprovalDecision; laneId?: string }
   /** Auto mode's decision on a gated call: "allowed" ran it, "escalated" is asking the user next. */
   | { type: "stream_approval_review"; id: string; toolCallId?: string; verdict?: "allowed" | "escalated"; reason?: string; laneId?: string }
@@ -477,6 +491,16 @@ export type OutgoingMessage =
   | { type: "open_transcript_document"; documentId: string }
   | { type: "remove_attachment"; id: string }
   | { type: "cancel_current" }
+  | { type: "plan_run_preflight"; planId: string }
+  | { type: "plan_run_start"; planId: string; charter: PlanRunCharterInput }
+  | { type: "plan_run_pause" }
+  | { type: "plan_run_resume" }
+  | { type: "plan_run_stop" }
+  | { type: "plan_run_retry_provider" }
+  | { type: "plan_run_restore_step"; phaseId: string; stepId: string }
+  | { type: "plan_run_report" }
+  | { type: "plan_run_show_map" }
+  | { type: "plan_run_review_changes"; scope: "run" | "conversation" }
   | { type: "compact_conversation" }
   | { type: "open_skills_panel" }
   | { type: "new_chat" }

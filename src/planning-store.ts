@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import { PlanDocStore, MAX_DOC_BODY } from "./plan-doc-store.js";
 import { atomicWriteJson, ensureDir, readJsonDocument } from "./shared/durable-file.js";
 import { newId, nowIso } from "./shared/identifiers.js";
+import type { StepEvidence } from "./plans/plan-run-view.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const PLANNING_FILE = "planning.json";
@@ -88,6 +89,8 @@ export interface PlanDocMeta {
   byteSize: number;
 }
 
+export type { StepEvidence } from "./plans/plan-run-view.js";
+
 export interface TaskPlanStep {
   id: string;
   title: string;
@@ -101,6 +104,10 @@ export interface TaskPlanStep {
   status: PlanStepStatus;
   notes: string[];
   updatedAt: string;
+  /** When the step first moved to in_progress, and when it last moved to completed. */
+  startedAt?: string;
+  completedAt?: string;
+  evidence?: StepEvidence;
 }
 
 export interface PlanPhaseRunEvidence {
@@ -677,6 +684,29 @@ function normalizeTaskPlanStep(value: unknown): TaskPlanStep | null {
     status,
     notes: normalizeNotes(record.notes),
     updatedAt: typeof record.updatedAt === "string" && record.updatedAt ? record.updatedAt : nowIso(),
+    startedAt: typeof record.startedAt === "string" && record.startedAt ? record.startedAt : undefined,
+    completedAt: status === "completed" && typeof record.completedAt === "string" && record.completedAt ? record.completedAt : undefined,
+    evidence: normalizeStepEvidence(record.evidence),
+  };
+}
+
+function normalizeStepEvidence(value: unknown): StepEvidence | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const list = (input: unknown, max: number): string[] => (Array.isArray(input)
+    ? input.map((entry) => cleanText(entry, 300)).filter(Boolean).slice(0, max)
+    : []);
+  const diagnostics = record.diagnostics && typeof record.diagnostics === "object" && !Array.isArray(record.diagnostics)
+    ? record.diagnostics as Record<string, unknown>
+    : undefined;
+  const runIds = list(record.runIds, 20);
+  return {
+    checks: list(record.checks, 20),
+    unverified: list(record.unverified, 50),
+    filesChanged: list(record.filesChanged, 100),
+    ...(diagnostics ? { diagnostics: { errors: Math.max(0, Number(diagnostics.errors) || 0), warnings: Math.max(0, Number(diagnostics.warnings) || 0) } } : {}),
+    ...(runIds.length ? { runIds } : {}),
+    at: typeof record.at === "string" && record.at ? record.at : nowIso(),
   };
 }
 
@@ -1520,6 +1550,54 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
     };
   }
 
+  /**
+   * Put every step after the given one back to pending. Used when the files are restored to how
+   * they were after that step: the later steps' "completed" no longer describes anything.
+   */
+  resetStepsAfter(planId: string, phaseId: string, stepId: string, note: string): { reset: number } {
+    const document = this.read();
+    const plan = document.plans.find((entry) => entry.id === planId);
+    if (!plan) return { reset: 0 };
+    let after = false;
+    let reset = 0;
+    const timestamp = nowIso();
+    for (const phase of plan.phases) {
+      for (const step of phase.steps) {
+        if (after && step.status !== "pending") {
+          step.status = "pending";
+          delete step.startedAt;
+          delete step.completedAt;
+          delete step.evidence;
+          step.notes = appendNote(step.notes, note);
+          step.updatedAt = timestamp;
+          reset += 1;
+        }
+        if (phase.id === phaseId && step.id === stepId) after = true;
+      }
+      phase.updatedAt = timestamp;
+    }
+    if (reset > 0) {
+      plan.updatedAt = timestamp;
+      delete plan.completedAt;
+      if (plan.status === "completed") plan.status = "active";
+      reconcilePlan(plan);
+      this.write(document);
+    }
+    return { reset };
+  }
+
+  /** Record what a finished step was shown to have. A label for the user and the conductor. */
+  setStepEvidence(planId: string, phaseId: string, stepId: string, evidence: StepEvidence): PlanningDocument {
+    const document = this.read();
+    const step = document.plans.find((entry) => entry.id === planId)
+      ?.phases.find((entry) => entry.id === phaseId)
+      ?.steps.find((entry) => entry.id === stepId);
+    if (!step) return document;
+    step.evidence = normalizeStepEvidence(evidence);
+    this.write(document);
+    return document;
+  }
+
   isExecutionApproved(planId: string): boolean {
     const plan = this.read().plans.find((entry) => entry.id === planId);
     return Boolean(plan?.executionApproved);
@@ -1862,7 +1940,18 @@ export class PlanningStore implements PlanningProvider, vscode.Disposable {
           step.maxIterations = normalizeMaxIterations(payload.stepMaxIterations);
         }
         const stepStatus = normalizeStepStatus(payload.stepStatus);
-        if (stepStatus) step.status = stepStatus;
+        if (stepStatus) {
+          if (stepStatus === "in_progress") {
+            step.startedAt = step.startedAt ?? timestamp;
+            delete step.completedAt;
+          } else if (stepStatus === "completed") {
+            step.startedAt = step.startedAt ?? timestamp;
+            step.completedAt = timestamp;
+          } else if (stepStatus === "pending") {
+            delete step.completedAt;
+          }
+          step.status = stepStatus;
+        }
         if (payload.stepNote != null) step.notes = appendNote(step.notes, payload.stepNote);
         step.updatedAt = timestamp;
       }

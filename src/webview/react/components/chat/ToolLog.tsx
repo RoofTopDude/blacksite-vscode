@@ -16,14 +16,15 @@ import { useBrowserGates } from "@/lib/research-store";
 import { BrowserProposalBody, BrowserProposalPlaceholder } from "./BrowserApprovals";
 import { toolIconCategory, type ToolIconCategory } from "@/lib/tool-icons";
 import type { ApprovalDecision } from "@/lib/protocol";
-import { actions, useStore } from "@/lib/store";
+import { actions, useStoreSelector } from "@/lib/store";
+import { toolRunsOf } from "@/lib/chat-model";
 import { terminalTail } from "@/lib/terminal-output";
 import { TerminalPane, shellCommandLine } from "./TerminalPane";
 
 /** True when the reveal request (the live-action strip asking for its call) targets one of
  *  these calls — each disclosure level on the way down opens itself for it. */
 function useRevealTarget(ids: readonly string[]): boolean {
-  const { revealToolCallId } = useStore();
+  const revealToolCallId = useStoreSelector((state) => state.revealToolCallId);
   return revealToolCallId != null && ids.includes(revealToolCallId);
 }
 import { useLiveClock } from "@/lib/use-live-clock";
@@ -552,7 +553,7 @@ function ToolGroup({ group, parentLive }: { group: ReturnType<typeof toolGroupsO
         className="chat-interactive flex w-full items-center gap-2 rounded-md px-1.5 py-1.5 text-left hover:bg-white/[0.035]"
       >
         <ChevronRight className={cn("disclosure size-3 shrink-0 text-muted-foreground", open && "rotate-90")} />
-        <ToolIcon toolName={group.key} />
+        <ToolIcon toolName={group.key.split("#")[0] ?? group.key} />
         <SignalDot tone={tone} pulse={parentLive && group.state === "running"} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold text-foreground">{group.displayName}</div>
@@ -612,7 +613,8 @@ export function ToolLog({ turn }: { turn: Turn }) {
   // A question card has its own deliberate lifecycle: it lives in the drawer while pending,
   // then becomes the resolved card in the transcript. Showing its raw tool payload here would
   // duplicate the question and expose the choices before the user has responded.
-  const groups = toolGroupsOf(turn).filter((group) => group.key !== "question_card");
+  const [byTime, setByTime] = useState(true);
+  const groups = (byTime ? toolRunsOf(turn) : toolGroupsOf(turn)).filter((group) => group.key.split("#")[0] !== "question_card");
   // Delegated-lane spawns render as their own card below (see LaneTile), not as a row
   // here — excluded from these stats too so the "N tool calls" summary matches what
   // actually expands underneath it.
@@ -684,6 +686,22 @@ export function ToolLog({ turn }: { turn: Turn }) {
 
       {showGroups && (
         <div className={cn("flex flex-col gap-1", needsSummary && "reveal-in")}>
+          {needsSummary && groups.length > 1 && (
+            <div className="flex items-center justify-end gap-1 px-1 text-2xs text-muted-foreground" role="group" aria-label="Order of tool calls">
+              {([[true, "In order"], [false, "By tool"]] as const).map(([value, label]) => (
+                <button
+                  key={label}
+                  type="button"
+                  aria-pressed={byTime === value}
+                  onClick={() => setByTime(value)}
+                  className={cn("chat-interactive rounded px-1.5 py-0.5 hover:text-foreground", byTime === value && "bg-white/[0.07] text-foreground")}
+                  title={value ? "List the calls in the order they happened." : "Group the calls by the tool that made them."}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
           {groups.map((group) => <ToolGroup key={group.key} group={group} parentLive={parentLive} />)}
         </div>
       )}

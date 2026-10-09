@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Check, ChevronDown, Copy, ExternalLink, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatBytes, shortText } from "@/lib/format";
-import { actions, useStore } from "@/lib/store";
+import { actions, useStoreSelector } from "@/lib/store";
 import { Markdown } from "./Markdown";
 
 const SCHEMA = "blacksite.transcript_document.v1";
@@ -45,12 +45,11 @@ function titleCase(value: string): string {
     requested, while Open always points to its persisted conversation file. */
 export function TranscriptDocumentCard({ result }: { result: unknown }) {
   const document = useMemo(() => parseDocument(result), [result]);
-  const store = useStore();
   const [expanded, setExpanded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const loaded = document ? store.transcriptDocuments[document.documentId] : undefined;
+  const loaded = useStoreSelector((state) => (document ? state.transcriptDocuments[document.documentId] : undefined));
   const markdown = loaded?.markdown ?? document?.previewMarkdown ?? "";
   const hasFullDocument = Boolean(loaded?.markdown) || Boolean(document && document.previewMarkdown.length >= document.sizeChars);
 

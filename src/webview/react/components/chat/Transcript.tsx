@@ -87,7 +87,7 @@ export function Transcript({ onStarter }: { onStarter: (prompt: StarterPrompt) =
                 Show earlier · {hiddenCount} more {hiddenCount === 1 ? "turn" : "turns"}
               </button>
             )}
-            {shownTurns.map((turn) => <Turn key={turn.id} turn={turn} />)}
+            {shownTurns.map((turn) => <Turn key={turn.id} turn={turn} rev={turn.rev ?? 0} allRev={store.renderRev} />)}
           </div>
         ) : (
           <div className="turn-in relative flex flex-col items-center gap-2.5 px-4 py-10 text-center">

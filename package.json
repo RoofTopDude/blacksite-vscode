@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.32.0",
+  "version": "1.33.0-pre.1",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -184,6 +184,26 @@
       {
         "command": "blacksite.cancelRun",
         "title": "Stop Response",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.showRun",
+        "title": "Open Plan Run",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.pauseRun",
+        "title": "Pause Plan Run",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.resumeRun",
+        "title": "Resume Plan Run",
+        "category": "Blacksite"
+      },
+      {
+        "command": "blacksite.stopRun",
+        "title": "Stop Plan Run",
         "category": "Blacksite"
       },
       {
@@ -1103,14 +1123,36 @@
         "blacksite.planContinuation.enabled": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Automatically continue an approved plan when a turn ends without finishing it. A separate agent — holding your original prompts verbatim — decides whether to continue, escalate, or halt, and writes the message that continues it. **Off by default: this spends model calls and agent turns with nobody watching.**"
+          "markdownDescription": "Automatically continue an approved plan when a turn ends without finishing it. A separate agent — holding your original prompts verbatim — decides whether to continue, escalate, or halt, and writes the message that continues it. **Off by default: this spends model calls and agent turns with nobody watching.** A plan run started with **Run plan…** turns continuation on for itself, whatever this says."
+        },
+        "blacksite.planRuns.retentionDays": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 365,
+          "markdownDescription": "How many days a finished plan run's record (its ledger and event log under `.blacksite/plan-runs`) is kept. Runs that have not finished are never removed."
+        },
+        "blacksite.notifications.runEvents": {
+          "type": "string",
+          "enum": [
+            "attention",
+            "all",
+            "off"
+          ],
+          "default": "attention",
+          "enumDescriptions": [
+            "Notify when the agent needs you, a run fails, or a plan run finishes.",
+            "Also notify about waits and pauses that need nothing from you.",
+            "Never show a notification outside the chat."
+          ],
+          "markdownDescription": "When Blacksite interrupts you outside the chat. Notifications only appear when you are not already looking at it, and a run's own choice made when it started takes precedence."
         },
         "blacksite.planContinuation.maxConsecutive": {
           "type": "number",
           "default": 5,
           "minimum": 1,
           "maximum": 20,
-          "markdownDescription": "How many times in a row the plan may be continued before stopping to check in. The counter resets whenever you send a message."
+          "markdownDescription": "How many times in a row the plan may be continued before stopping to check in. The counter resets whenever you send a message. During a plan run it counts only the automatic turns that finished no step, so a run that keeps making progress is not stopped."
         },
         "blacksite.pau.enabled": {
           "type": "boolean",

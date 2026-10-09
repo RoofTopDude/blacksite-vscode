@@ -184,6 +184,19 @@ export function computeBackoffMs(
   return Math.floor(rand() * ceiling);
 }
 
+/**
+ * Waits between attempts while a provider outage is being waited out (see AgentSession's
+ * `providerOutageWaitMs`): long enough not to hammer a service that is down, short enough that a
+ * recovery is noticed within minutes. The last entry repeats.
+ */
+export const OUTAGE_RETRY_SCHEDULE_MS: readonly number[] = [30_000, 60_000, 120_000, 300_000];
+
+/** The wait before slow retry number `slowAttempt` (zero-based), never longer than what is left. */
+export function outageDelayMs(slowAttempt: number, remainingMs: number): number {
+  const scheduled = OUTAGE_RETRY_SCHEDULE_MS[Math.min(Math.max(slowAttempt, 0), OUTAGE_RETRY_SCHEDULE_MS.length - 1)]!;
+  return Math.max(0, Math.min(scheduled, remainingMs));
+}
+
 /** Sleep that resolves early (rather than rejecting) if the signal aborts, so the caller
  *  can re-check `signal.aborted` and unwind cleanly. */
 export function interruptibleSleep(ms: number, signal?: AbortSignal): Promise<void> {

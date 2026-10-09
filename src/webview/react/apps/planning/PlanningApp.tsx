@@ -1,6 +1,6 @@
 import { RelatedWork } from "@/components/WorkspaceBar";
 import { useEffect, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { AlertTriangle, ChevronDown, Plus, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PanelHeader } from "@/components/PanelHeader";
@@ -64,11 +64,27 @@ function NoteList({ label = "Activity", notes }: { label?: string; notes?: strin
   );
 }
 
+/** "7m 12s" / "1h 05m" between two ISO stamps, or "" when either is missing or out of order. */
+function stepDuration(startedAt?: string, completedAt?: string): string {
+  if (!startedAt || !completedAt) return "";
+  const ms = Date.parse(completedAt) - Date.parse(startedAt);
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  const total = Math.round(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return h > 0 ? `${h}h ${String(m).padStart(2, "0")}m` : m > 0 ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
+}
+
 function StepRow(
-  { idLabel, primary, detail, acceptanceCriteria, status, maxIterations, notes }: {
+  { idLabel, primary, detail, acceptanceCriteria, status, maxIterations, notes, startedAt, completedAt, evidence }: {
     idLabel: string; primary: string; detail?: string; acceptanceCriteria?: string; status: string; maxIterations?: number; notes?: string[];
+    startedAt?: string; completedAt?: string; evidence?: Step["evidence"];
   },
 ) {
+  const took = status === "completed" ? stepDuration(startedAt, completedAt) : "";
+  const checked = evidence?.checks?.length ?? 0;
+  const unverified = evidence?.unverified?.length ?? 0;
   return (
     <div className="flex items-start justify-between gap-2 rounded-md bg-white/[0.03] px-2 py-1.5">
       <div className="min-w-0">
@@ -81,11 +97,18 @@ function StepRow(
           </div>
         )}
         <NoteList label="Latest updates" notes={notes} />
+        {status === "completed" && (took || checked > 0 || unverified > 0) && (
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 text-2xs text-muted-foreground">
+            {took && <span title="From the first time the step started to when it finished.">took {took}</span>}
+            {checked > 0 && <span className="text-[color:var(--s-ok)]" title={`Cleared by: ${evidence?.checks?.join(", ")}`}>checked · {evidence?.checks?.[0]}</span>}
+            {unverified > 0 && <span className="text-[color:var(--s-warn)]" title={`Changed and not checked:\n${evidence?.unverified?.join("\n")}`}>{unverified} unverified</span>}
+          </div>
+        )}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         {!!maxIterations && (
-          <span className="rounded-full bg-white/10 px-1.5 py-px font-mono text-xs text-muted-foreground" title={`Worth iterating on — up to ${maxIterations} self-review passes`}>
-            ↻ ×{maxIterations}
+          <span className="inline-flex items-center gap-0.5 rounded-full bg-white/10 px-1.5 py-px font-mono text-xs text-muted-foreground" title={`Worth iterating on — up to ${maxIterations} self-review passes`}>
+            <RotateCw className="size-2.5" aria-hidden="true" />×{maxIterations}
           </span>
         )}
         <StatusBadge status={status} />
@@ -225,10 +248,10 @@ function DocAddRow({ planId, phaseId }: { planId: string; phaseId?: string }) {
   return (
     <div className="flex gap-1.5">
       <Button size="xs" variant="outline" onClick={() => post({ type: "new_plan_doc", planId, phaseId, kind: "notes", title: "New note" })}>
-        ＋ New note
+        <Plus aria-hidden="true" />New note
       </Button>
       <Button size="xs" variant="outline" onClick={() => post({ type: "add_plan_doc_file", planId, phaseId })}>
-        ＋ Add reference
+        <Plus aria-hidden="true" />Add reference
       </Button>
     </div>
   );
@@ -252,7 +275,7 @@ function PhaseExtras({ phase }: { phase: Phase }) {
         <div className="flex items-start gap-1.5 text-xs text-muted-foreground">
           {phase.complexity && <StatusBadge status={phase.complexity} />}
           {phase.risks && (
-            <span className="min-w-0 flex-1">⚠ <PlanMarkdown raw={phase.risks} variant="inline" /></span>
+            <span className="min-w-0 flex-1"><AlertTriangle className="mr-1 inline size-3 align-[-1px]" style={{ color: "var(--s-warn)" }} aria-label="Risk" /><PlanMarkdown raw={phase.risks} variant="inline" /></span>
           )}
         </div>
       )}
@@ -344,7 +367,7 @@ function FileTicketButton({ phaseTitle, files }: { phaseTitle: string; files: st
   if (!open) {
     return (
       <Button size="xs" variant="outline" onClick={() => setOpen(true)} title="File work this phase turned up but shouldn't absorb">
-        ＋ File as ticket
+        <Plus aria-hidden="true" />File as ticket
       </Button>
     );
   }
@@ -470,13 +493,23 @@ function ExecutionGate({ planId, approved, status }: { planId: string; approved:
           The agent will keep planning, researching, and asking questions — but won&apos;t start implementing until you approve.
         </div>
       </div>
-      <Button
-        size="sm"
-        className="shrink-0"
-        onClick={() => post({ type: "set_plan_execution_approval", planId, approved: true })}
-      >
-        Approve execution
-      </Button>
+      <div className="flex shrink-0 gap-1.5">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => post({ type: "set_plan_execution_approval", planId, approved: true })}
+          title="Let the agent start implementing, without starting a run. You stay in the loop turn by turn."
+        >
+          Approve execution
+        </Button>
+        <Button
+          size="sm"
+          onClick={() => post({ type: "start_plan_run", planId })}
+          title="Read the plan for gaps, choose limits, then let the agent work through it unattended."
+        >
+          Run plan…
+        </Button>
+      </div>
     </div>
   );
 }
@@ -573,6 +606,9 @@ function PhaseCard(
                 status={step.status || "pending"}
                 maxIterations={step.maxIterations}
                 notes={step.notes}
+                startedAt={step.startedAt}
+                completedAt={step.completedAt}
+                evidence={step.evidence}
               />
             ))}
           </div>
@@ -623,6 +659,16 @@ function PlanCard(
             {progress.blocked > 0 && <span className="text-[color:var(--s-err)]">{progress.blocked} blocked</span>}
             {current && <span className="text-foreground">Now: {current.id}</span>}
             {!terminal && <ExecutionToggle planId={plan.id} approved={approved} />}
+            {!terminal && approved && plan.status !== "on_hold" && progress.done < progress.total && (
+              <button
+                type="button"
+                className="chat-interactive inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-px text-2xs font-medium text-primary hover:bg-primary/20"
+                onClick={() => post({ type: "start_plan_run", planId: plan.id })}
+                title="Read the plan for gaps, choose limits, then let the agent work through it unattended."
+              >
+                Run plan…
+              </button>
+            )}
             <AgentArchiveToggle planId={plan.id} allowed={!!plan.agentCanArchive} />
           </div>
           <div className="mt-2 flex items-center gap-2">

@@ -1,5 +1,6 @@
 import * as path from "path";
 import * as vscode from "vscode";
+import { compactDiff, type DiffPreview } from "./diff-preview.js";
 import { WorkspaceIdentity } from "./lsp/workspace-identity.js";
 import {
   inspectWorkspaceEdit,
@@ -56,6 +57,9 @@ export interface EditApprovalRequest {
   /** Workspace-relative paths the edit touches (text and resource operations alike). Lets an
    *  approver decide by *where* a change lands, not only by how it is described. */
   paths?: string[];
+  /** A compact diff for each of the first few files, so the approval card can show what changes
+   *  instead of only naming the files. */
+  previews?: DiffPreview[];
 }
 
 export type EditApprovalProvider = (request: EditApprovalRequest) => Promise<"apply" | "all" | "reject" | null>;
@@ -220,7 +224,18 @@ export class WorkspaceEditApplier {
   ): Promise<"apply" | "all" | "reject"> {
     const { approvalProvider, rationale } = opts;
     const resourceOperations = inspection.resourceOperations.length + inspection.opaqueResourceOperations;
+    // What changes, in the approval card itself. Bounded in files and lines; the editor diffs below
+    // remain the full review.
+    const previews: DiffPreview[] = [];
+    for (const [uri, edits] of entries.slice(0, MAX_PREVIEW_DIFFS)) {
+      try {
+        const document = await vscode.workspace.openTextDocument(uri);
+        const diff = compactDiff(this._rel(uri), document.getText(), applyTextEdits(document, edits));
+        if (diff.additions || diff.deletions) previews.push(diff);
+      } catch { /* a file that cannot be read as text has no preview; the summary still names it */ }
+    }
     const requestBase: Omit<EditApprovalRequest, "summary"> = {
+      previews: previews.length ? previews : undefined,
       fileCount: Math.max(entries.length, inspection.touchedUris.length),
       resourceOperations: resourceOperations || undefined,
       resourceOperationDetails: inspection.resourceOperations.map((operation) => this._resourceOperationLabel(operation)),

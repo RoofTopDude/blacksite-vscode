@@ -51,6 +51,63 @@ next one resumes from the plan rather than from your memory of what was happenin
 Plans are also how you keep a long piece of work honest. A phase with acceptance criteria is a phase
 you can check.
 
+### Plan runs
+
+A plan run is how you leave a plan to the agent for hours and still know what happened. Start one
+with **Run plan…** on the plan in the Plans panel, or **Blacksite: Open Plan Run** from the command
+palette.
+
+**Before it starts**, a preflight card reads the plan for the gaps that most often stall an
+unattended run: steps with no definition of done, open questions, blocked steps, phases that name no
+files. It lists the projects the plan will touch and anything missing from their toolchains, with a
+link to Project setup. None of this stops you starting; it is there so you have seen it. Then you set
+the run's limits:
+
+- **Stop at** a dollar amount and **Stop after** a number of minutes. The model cannot raise these.
+- **If it needs me**: keep waiting, or pause with a note after a number of minutes.
+- **Tell me**: when it needs you or finishes, about every wait as well, or never.
+- **Approvals**: Ask or Auto, the same setting as the composer. Destructive operations always ask.
+
+**While it runs**, a bar pinned above the chat shows the state in one word (Working, Needs you,
+Waiting, Quiet, Paused, Done), the run's own clock and spend, a progress bar with a segment per
+phase, what the agent is doing right now, and every running subagent lane with how much of its
+allowance it has used. **Steps** opens every phase and step with when it ran, how long it took, how
+often it was tried, and what checked it ("✓ npm test", or "2 unverified"). A step nothing checked is
+labelled, never blocked.
+
+A turn the agent starts on its own — the conductor continuing the plan, a resume — is marked in the
+transcript with a line saying why, where your message would have been. "Allow all" answers you give
+during the run cover those turns too, and end when the run does or when you send a new message.
+
+**When something needs you**, the chat view's icon shows a count, the status bar says so, and if
+you are not looking at the chat a notification appears with a **Show** button. Your Notification
+hooks receive the same events, so you can send them to your phone. Clicking the status bar item opens
+the chat; it never cancels the run.
+
+**Pause** stops the run at the end of the tool call it is in, so nothing is cut off mid-command.
+**Stop** ends it. If the model provider goes down, the run waits and retries on a slowing schedule
+(30 seconds, then up to 5 minutes, for up to 30 minutes) instead of failing, and the bar counts down to
+the next attempt with a **Retry now** button. If VS Code closes or reloads mid-run, the run is marked
+interrupted and **Resume** picks it up from the conversation as it was, told where it stopped.
+
+Whenever a turn stops short — at the round limit, on an error, on a pause — the harness writes a note
+of where it got to, what it changed, and what it never checked. You see it as a card; the next turn
+is given it too.
+
+**Restore points.** After each step the run records the files of each project it works in, using a
+private git store in the extension's own storage. Your repository, index, branches and stash are
+never touched, and your `.gitignore` applies. **Restore to here** on a finished step shows exactly
+which files would be put back or removed, then does it, sets the later steps back to pending, and
+offers to undo. Changes outside the project folders — services, databases — are not covered, and a
+repository nested inside a project is recorded as a single entry; the run says so.
+
+**When it ends**, a report is added to the plan's documents: each step's outcome, time and evidence,
+what was never checked, what needs a decision, the files changed, what the conductor decided, and
+where it stopped. **Changes** on the bar opens every file changed since the run started as one review.
+
+The run's record lives in `.blacksite/plan-runs/` (gitignored) and finished runs are removed after
+`blacksite.planRuns.retentionDays`.
+
 ### Todos
 
 Lighter than a plan: a flat checklist for work inside a single session. The agent creates and updates
