@@ -64,6 +64,9 @@ const buildOptions = {
       `}`,
     ].join("\n"),
   },
+  // @blacksite-agent/llm is a real workspace package; its "source" export condition points at
+  // its TypeScript, so the extension bundles the package source with no separate build step.
+  conditions: ["source"],
   alias: {
     "@blacksite/local-runtime":          resolve(packages, "local-runtime/src"),
     "@blacksite/browser-bridge-protocol": resolve(packages, "browser-bridge-protocol/src"),

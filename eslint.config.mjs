@@ -4,6 +4,18 @@ import reactHooks from "eslint-plugin-react-hooks";
 import jsxA11y from "eslint-plugin-jsx-a11y";
 import tseslint from "typescript-eslint";
 
+/* Boundaries for packages/llm (see the config entries that use these). */
+const LLM_FORBIDDEN_PATHS = [{ name: "vscode", message: "@blacksite-agent/llm runs outside VS Code; take what you need as an argument." }];
+const LLM_ESCAPES = [
+  // Deep enough to leave packages/llm from any file in src/, src/node/ or test/.
+  { group: ["../../../*", "../../src/*", "../../tests/*"], message: "Import from inside packages/llm only." },
+  { group: ["@blacksite/*"], message: "The published package cannot depend on the extension's private packages." },
+];
+const LLM_NODE_BUILTINS = {
+  group: ["node:*", "fs", "fs/*", "path", "os", "http", "https", "crypto", "child_process", "readline", "stream", "stream/*", "url", "util", "zlib", "net", "tls", "events"],
+  message: "The core entry must stay runtime-neutral; put Node-only code under src/node.",
+};
+
 export default tseslint.config(
   {
     ignores: [
@@ -87,6 +99,31 @@ export default tseslint.config(
       // failing the build on it.
       "jsx-a11y/click-events-have-key-events": "warn",
       "jsx-a11y/no-static-element-interactions": "warn",
+    },
+  },
+  {
+    // The model transport package is published on its own: it may not reach back into the
+    // extension, the editor API or the extension's private packages. Its core entry is also
+    // runtime-neutral (fetch, Web Streams, WebCrypto) so a browser or worker can load it;
+    // Node-only code lives under src/node and ships as "@blacksite-agent/llm/node".
+    files: ["packages/llm/**/*.ts"],
+    rules: {
+      "no-restricted-imports": ["error", { paths: LLM_FORBIDDEN_PATHS, patterns: [...LLM_ESCAPES, LLM_NODE_BUILTINS] }],
+    },
+  },
+  {
+    files: ["packages/llm/src/node/**/*.ts", "packages/llm/test/**/*.ts", "packages/llm/*.ts"],
+    rules: {
+      "no-restricted-imports": ["error", { paths: LLM_FORBIDDEN_PATHS, patterns: LLM_ESCAPES }],
+    },
+  },
+  {
+    // The extension consumes the package through its public entry points only.
+    files: ["src/**/*.ts", "tests/**/*.ts"],
+    rules: {
+      "no-restricted-imports": ["error", {
+        patterns: [{ group: ["**/packages/llm/src/**", "@blacksite-agent/llm/src/*", "@blacksite-agent/llm/dist/*"], message: "Import \"@blacksite-agent/llm\", \"/node\" or \"/testing\" instead of the package's files." }],
+      }],
     },
   },
   {

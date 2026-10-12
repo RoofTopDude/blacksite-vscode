@@ -1,0 +1,64 @@
+[
+  {
+    "url": "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1/messages",
+    "headers": {
+      "anthropic-version": "2023-06-01",
+      "authorization": "<volatile>",
+      "content-type": "application/json",
+      "x-amz-date": "<volatile>"
+    },
+    "bodySha256": "c8cc01efdd3db4c0",
+    "body": {
+      "model": "anthropic.claude-sonnet-4-6",
+      "max_tokens": 32768,
+      "system": [
+        {
+          "type": "text",
+          "text": "You are the snapshot agent.",
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        }
+      ],
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "What is the current Node LTS?",
+              "cache_control": {
+                "type": "ephemeral"
+              }
+            }
+          ]
+        }
+      ],
+      "tools": {
+        "names": [
+          "shell_run",
+          "file_list",
+          "file_read",
+          "file_write",
+          "workspace_refresh",
+          "file_glob",
+          "file_search",
+          "test_run",
+          "git_op",
+          "tool_output_page",
+          "tool_output_search",
+          "question_card",
+          "tool_search"
+        ],
+        "sha256": "691d4d21b9238b07"
+      },
+      "stream": true,
+      "thinking": {
+        "type": "adaptive"
+      },
+      "output_config": {
+        "effort": "medium"
+      }
+    }
+  }
+]

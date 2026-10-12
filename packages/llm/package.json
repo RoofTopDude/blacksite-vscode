@@ -1,0 +1,43 @@
+{
+  "name": "@blacksite-agent/llm",
+  "version": "0.1.0",
+  "description": "Provider-neutral model transport for Blacksite: one event stream from Anthropic, OpenAI, OpenRouter, Bedrock and ChatGPT.",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./node": {
+      "source": "./src/node/index.ts",
+      "types": "./dist/node/index.d.ts",
+      "import": "./dist/node/index.js"
+    },
+    "./testing": {
+      "source": "./src/testing/index.ts",
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RoofTopDude/blacksite-vscode.git",
+    "directory": "packages/llm"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  }
+}

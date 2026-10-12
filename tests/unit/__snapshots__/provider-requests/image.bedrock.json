@@ -1,0 +1,127 @@
+[
+  {
+    "url": "https://bedrock-runtime.us-east-1.amazonaws.com/model/us.anthropic.claude-sonnet-4-5-20250929-v1%3A0/converse-stream",
+    "headers": {
+      "accept": "application/vnd.amazon.eventstream",
+      "authorization": "<volatile>",
+      "content-type": "application/json",
+      "x-amz-date": "<volatile>"
+    },
+    "bodySha256": "66ca631e0c1b82e4",
+    "body": {
+      "modelId": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "text": "What is in this picture?"
+            },
+            {
+              "image": {
+                "format": "png",
+                "source": {
+                  "bytes": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAwS2OUAAAAABJRU5ErkJggg=="
+                }
+              }
+            },
+            {
+              "cachePoint": {
+                "type": "default"
+              }
+            }
+          ]
+        }
+      ],
+      "inferenceConfig": {
+        "maxTokens": 32768
+      },
+      "system": [
+        {
+          "text": "You are the snapshot agent."
+        },
+        {
+          "cachePoint": {
+            "type": "default"
+          }
+        }
+      ],
+      "toolConfig": {
+        "tools": {
+          "names": [
+            "shell_run",
+            "process_start",
+            "process_status",
+            "process_read_output",
+            "process_send_input",
+            "process_stop",
+            "file_list",
+            "file_read",
+            "file_move",
+            "file_copy",
+            "file_write",
+            "file_delete",
+            "file_mkdir",
+            "workspace_refresh",
+            "file_glob",
+            "file_search",
+            "test_detect",
+            "test_run",
+            "git_op",
+            "memory_append",
+            "memory_read",
+            "tool_output_page",
+            "tool_output_search",
+            "worktree_op",
+            "github_list_issues",
+            "github_get_issue",
+            "github_create_issue",
+            "github_list_prs",
+            "github_get_pr",
+            "github_get_pr_context",
+            "github_create_pr",
+            "github_list_branches",
+            "github_get_file",
+            "github_search_code",
+            "github_add_comment",
+            "gitlab_list_issues",
+            "gitlab_get_issue",
+            "gitlab_create_issue",
+            "gitlab_list_mrs",
+            "gitlab_get_mr",
+            "gitlab_get_mr_context",
+            "gitlab_create_mr",
+            "gitlab_list_branches",
+            "jira_list_issues",
+            "jira_get_issue",
+            "jira_create_issue",
+            "jira_update_issue",
+            "jira_add_comment",
+            "jira_list_projects",
+            "confluence_search",
+            "confluence_get_page",
+            "confluence_create_page",
+            "confluence_update_page",
+            "confluence_list_spaces",
+            "salesforce_query",
+            "salesforce_get_object",
+            "salesforce_create_object",
+            "salesforce_update_object",
+            "salesforce_list_objects",
+            "question_card",
+            "ui_design_tokens",
+            "ui_preview_render",
+            "<cachePoint>"
+          ],
+          "sha256": "0c269a6a8c1b3667"
+        }
+      },
+      "additionalModelRequestFields": {
+        "thinking": {
+          "type": "enabled",
+          "budget_tokens": 4000
+        }
+      }
+    }
+  }
+]

@@ -1,0 +1,49 @@
+[
+  {
+    "url": "https://api.openai.com/v1/chat/completions",
+    "headers": {
+      "authorization": "<volatile>",
+      "content-type": "application/json"
+    },
+    "bodySha256": "97c28fa07bc1dd70",
+    "body": {
+      "model": "gpt-4.1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are the snapshot agent."
+        },
+        {
+          "role": "user",
+          "content": "What is the current Node LTS?"
+        }
+      ],
+      "tools": {
+        "names": [
+          "shell_run",
+          "file_list",
+          "file_read",
+          "file_write",
+          "workspace_refresh",
+          "file_glob",
+          "file_search",
+          "test_run",
+          "git_op",
+          "tool_output_page",
+          "tool_output_search",
+          "question_card",
+          "tool_search"
+        ],
+        "sha256": "fc2275d119c294a1"
+      },
+      "tool_choice": "auto",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "prompt_cache_key": "<session>",
+      "prompt_cache_retention": "24h",
+      "max_tokens": 32768
+    }
+  }
+]

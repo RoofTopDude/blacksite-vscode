@@ -8,11 +8,16 @@ export default defineConfig({
       vscode: fileURLToPath(new URL("./tests/unit/helpers/vscode-mock.ts", import.meta.url)),
       "@blacksite/file-content": fileURLToPath(new URL("./packages/file-content/src/index.ts", import.meta.url)),
       "@blacksite/local-runtime": fileURLToPath(new URL("./packages/local-runtime/src/index.ts", import.meta.url)),
+      // The workspace package's "source" condition, spelled as aliases (subpaths first: the
+      // first matching key wins).
+      "@blacksite-agent/llm/node": fileURLToPath(new URL("./packages/llm/src/node/index.ts", import.meta.url)),
+      "@blacksite-agent/llm/testing": fileURLToPath(new URL("./packages/llm/src/testing/index.ts", import.meta.url)),
+      "@blacksite-agent/llm": fileURLToPath(new URL("./packages/llm/src/index.ts", import.meta.url)),
     },
   },
   test: {
     environment: "node",
-    include: ["tests/unit/**/*.spec.ts"],
+    include: ["tests/unit/**/*.spec.ts", "packages/llm/test/**/*.spec.ts"],
     restoreMocks: true,
     clearMocks: true,
     coverage: {

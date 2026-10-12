@@ -1,0 +1,238 @@
+[
+  {
+    "url": "https://api.openai.com/v1/responses",
+    "headers": {
+      "authorization": "<volatile>",
+      "content-type": "application/json"
+    },
+    "bodySha256": "cb2491278ede9496",
+    "body": {
+      "model": "o4-mini",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Read the readme and summarise it.",
+              "prompt_cache_breakpoint": {
+                "mode": "explicit"
+              }
+            }
+          ]
+        }
+      ],
+      "instructions": "You are the snapshot agent.",
+      "tools": {
+        "names": [
+          "shell_run",
+          "process_start",
+          "process_status",
+          "process_read_output",
+          "process_send_input",
+          "process_stop",
+          "file_list",
+          "file_read",
+          "file_move",
+          "file_copy",
+          "file_write",
+          "file_delete",
+          "file_mkdir",
+          "workspace_refresh",
+          "file_glob",
+          "file_search",
+          "test_detect",
+          "test_run",
+          "git_op",
+          "memory_append",
+          "memory_read",
+          "tool_output_page",
+          "tool_output_search",
+          "worktree_op",
+          "github_list_issues",
+          "github_get_issue",
+          "github_create_issue",
+          "github_list_prs",
+          "github_get_pr",
+          "github_get_pr_context",
+          "github_create_pr",
+          "github_list_branches",
+          "github_get_file",
+          "github_search_code",
+          "github_add_comment",
+          "gitlab_list_issues",
+          "gitlab_get_issue",
+          "gitlab_create_issue",
+          "gitlab_list_mrs",
+          "gitlab_get_mr",
+          "gitlab_get_mr_context",
+          "gitlab_create_mr",
+          "gitlab_list_branches",
+          "jira_list_issues",
+          "jira_get_issue",
+          "jira_create_issue",
+          "jira_update_issue",
+          "jira_add_comment",
+          "jira_list_projects",
+          "confluence_search",
+          "confluence_get_page",
+          "confluence_create_page",
+          "confluence_update_page",
+          "confluence_list_spaces",
+          "salesforce_query",
+          "salesforce_get_object",
+          "salesforce_create_object",
+          "salesforce_update_object",
+          "salesforce_list_objects",
+          "question_card",
+          "ui_design_tokens",
+          "ui_preview_render"
+        ],
+        "sha256": "7df2394984522bbb"
+      },
+      "tool_choice": "auto",
+      "stream": true,
+      "store": false,
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "max_output_tokens": 32768,
+      "prompt_cache_key": "<session>",
+      "prompt_cache_retention": "24h",
+      "reasoning": {
+        "effort": "medium",
+        "summary": "auto"
+      }
+    }
+  },
+  {
+    "url": "https://api.openai.com/v1/responses",
+    "headers": {
+      "authorization": "<volatile>",
+      "content-type": "application/json"
+    },
+    "bodySha256": "dd299429575b0928",
+    "body": {
+      "model": "o4-mini",
+      "input": [
+        {
+          "type": "message",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "Read the readme and summarise it.",
+              "prompt_cache_breakpoint": {
+                "mode": "explicit"
+              }
+            }
+          ]
+        },
+        {
+          "type": "reasoning",
+          "id": "rs_1",
+          "summary": [
+            {
+              "type": "summary_text",
+              "text": "I should read the readme."
+            }
+          ],
+          "encrypted_content": "ENC_1"
+        },
+        {
+          "type": "function_call",
+          "call_id": "call_1",
+          "name": "file_read",
+          "arguments": "{\"path\":\"README.md\"}"
+        },
+        {
+          "type": "function_call_output",
+          "call_id": "call_1",
+          "output": "{\"ok\":true,\"content\":\"# Readme\\nhello\"}"
+        }
+      ],
+      "instructions": "You are the snapshot agent.",
+      "tools": {
+        "names": [
+          "shell_run",
+          "process_start",
+          "process_status",
+          "process_read_output",
+          "process_send_input",
+          "process_stop",
+          "file_list",
+          "file_read",
+          "file_move",
+          "file_copy",
+          "file_write",
+          "file_delete",
+          "file_mkdir",
+          "workspace_refresh",
+          "file_glob",
+          "file_search",
+          "test_detect",
+          "test_run",
+          "git_op",
+          "memory_append",
+          "memory_read",
+          "tool_output_page",
+          "tool_output_search",
+          "worktree_op",
+          "github_list_issues",
+          "github_get_issue",
+          "github_create_issue",
+          "github_list_prs",
+          "github_get_pr",
+          "github_get_pr_context",
+          "github_create_pr",
+          "github_list_branches",
+          "github_get_file",
+          "github_search_code",
+          "github_add_comment",
+          "gitlab_list_issues",
+          "gitlab_get_issue",
+          "gitlab_create_issue",
+          "gitlab_list_mrs",
+          "gitlab_get_mr",
+          "gitlab_get_mr_context",
+          "gitlab_create_mr",
+          "gitlab_list_branches",
+          "jira_list_issues",
+          "jira_get_issue",
+          "jira_create_issue",
+          "jira_update_issue",
+          "jira_add_comment",
+          "jira_list_projects",
+          "confluence_search",
+          "confluence_get_page",
+          "confluence_create_page",
+          "confluence_update_page",
+          "confluence_list_spaces",
+          "salesforce_query",
+          "salesforce_get_object",
+          "salesforce_create_object",
+          "salesforce_update_object",
+          "salesforce_list_objects",
+          "question_card",
+          "ui_design_tokens",
+          "ui_preview_render"
+        ],
+        "sha256": "7df2394984522bbb"
+      },
+      "tool_choice": "auto",
+      "stream": true,
+      "store": false,
+      "include": [
+        "reasoning.encrypted_content"
+      ],
+      "max_output_tokens": 32768,
+      "prompt_cache_key": "<session>",
+      "prompt_cache_retention": "24h",
+      "reasoning": {
+        "effort": "medium",
+        "summary": "auto"
+      }
+    }
+  }
+]

@@ -1,0 +1,213 @@
+[
+  {
+    "url": "https://api.openai.com/v1/chat/completions",
+    "headers": {
+      "authorization": "<volatile>",
+      "content-type": "application/json"
+    },
+    "bodySha256": "8e926ab0373d3fdc",
+    "body": {
+      "model": "gpt-4.1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are the snapshot agent."
+        },
+        {
+          "role": "user",
+          "content": "Read the readme and summarise it."
+        }
+      ],
+      "tools": {
+        "names": [
+          "shell_run",
+          "process_start",
+          "process_status",
+          "process_read_output",
+          "process_send_input",
+          "process_stop",
+          "file_list",
+          "file_read",
+          "file_move",
+          "file_copy",
+          "file_write",
+          "file_delete",
+          "file_mkdir",
+          "workspace_refresh",
+          "file_glob",
+          "file_search",
+          "test_detect",
+          "test_run",
+          "git_op",
+          "memory_append",
+          "memory_read",
+          "tool_output_page",
+          "tool_output_search",
+          "worktree_op",
+          "github_list_issues",
+          "github_get_issue",
+          "github_create_issue",
+          "github_list_prs",
+          "github_get_pr",
+          "github_get_pr_context",
+          "github_create_pr",
+          "github_list_branches",
+          "github_get_file",
+          "github_search_code",
+          "github_add_comment",
+          "gitlab_list_issues",
+          "gitlab_get_issue",
+          "gitlab_create_issue",
+          "gitlab_list_mrs",
+          "gitlab_get_mr",
+          "gitlab_get_mr_context",
+          "gitlab_create_mr",
+          "gitlab_list_branches",
+          "jira_list_issues",
+          "jira_get_issue",
+          "jira_create_issue",
+          "jira_update_issue",
+          "jira_add_comment",
+          "jira_list_projects",
+          "confluence_search",
+          "confluence_get_page",
+          "confluence_create_page",
+          "confluence_update_page",
+          "confluence_list_spaces",
+          "salesforce_query",
+          "salesforce_get_object",
+          "salesforce_create_object",
+          "salesforce_update_object",
+          "salesforce_list_objects",
+          "question_card",
+          "ui_design_tokens",
+          "ui_preview_render"
+        ],
+        "sha256": "991590248874b212"
+      },
+      "tool_choice": "auto",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "prompt_cache_key": "<session>",
+      "prompt_cache_retention": "24h",
+      "max_tokens": 32768
+    }
+  },
+  {
+    "url": "https://api.openai.com/v1/chat/completions",
+    "headers": {
+      "authorization": "<volatile>",
+      "content-type": "application/json"
+    },
+    "bodySha256": "b22c76e7fa0f3ffe",
+    "body": {
+      "model": "gpt-4.1",
+      "messages": [
+        {
+          "role": "system",
+          "content": "You are the snapshot agent."
+        },
+        {
+          "role": "user",
+          "content": "Read the readme and summarise it."
+        },
+        {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_1",
+              "type": "function",
+              "function": {
+                "name": "file_read",
+                "arguments": "{\"path\":\"README.md\"}"
+              }
+            }
+          ]
+        },
+        {
+          "role": "tool",
+          "content": "{\"ok\":true,\"content\":\"# Readme\\nhello\"}",
+          "tool_call_id": "call_1"
+        }
+      ],
+      "tools": {
+        "names": [
+          "shell_run",
+          "process_start",
+          "process_status",
+          "process_read_output",
+          "process_send_input",
+          "process_stop",
+          "file_list",
+          "file_read",
+          "file_move",
+          "file_copy",
+          "file_write",
+          "file_delete",
+          "file_mkdir",
+          "workspace_refresh",
+          "file_glob",
+          "file_search",
+          "test_detect",
+          "test_run",
+          "git_op",
+          "memory_append",
+          "memory_read",
+          "tool_output_page",
+          "tool_output_search",
+          "worktree_op",
+          "github_list_issues",
+          "github_get_issue",
+          "github_create_issue",
+          "github_list_prs",
+          "github_get_pr",
+          "github_get_pr_context",
+          "github_create_pr",
+          "github_list_branches",
+          "github_get_file",
+          "github_search_code",
+          "github_add_comment",
+          "gitlab_list_issues",
+          "gitlab_get_issue",
+          "gitlab_create_issue",
+          "gitlab_list_mrs",
+          "gitlab_get_mr",
+          "gitlab_get_mr_context",
+          "gitlab_create_mr",
+          "gitlab_list_branches",
+          "jira_list_issues",
+          "jira_get_issue",
+          "jira_create_issue",
+          "jira_update_issue",
+          "jira_add_comment",
+          "jira_list_projects",
+          "confluence_search",
+          "confluence_get_page",
+          "confluence_create_page",
+          "confluence_update_page",
+          "confluence_list_spaces",
+          "salesforce_query",
+          "salesforce_get_object",
+          "salesforce_create_object",
+          "salesforce_update_object",
+          "salesforce_list_objects",
+          "question_card",
+          "ui_design_tokens",
+          "ui_preview_render"
+        ],
+        "sha256": "991590248874b212"
+      },
+      "tool_choice": "auto",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "prompt_cache_key": "<session>",
+      "prompt_cache_retention": "24h",
+      "max_tokens": 32768
+    }
+  }
+]

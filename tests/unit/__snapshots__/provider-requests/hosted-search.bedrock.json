@@ -1,0 +1,70 @@
+[
+  {
+    "url": "https://bedrock-runtime.us-east-1.amazonaws.com/model/us.anthropic.claude-sonnet-4-5-20250929-v1%3A0/converse-stream",
+    "headers": {
+      "accept": "application/vnd.amazon.eventstream",
+      "authorization": "<volatile>",
+      "content-type": "application/json",
+      "x-amz-date": "<volatile>"
+    },
+    "bodySha256": "06b8caa01b08f74a",
+    "body": {
+      "modelId": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "text": "What is the current Node LTS?"
+            },
+            {
+              "cachePoint": {
+                "type": "default"
+              }
+            }
+          ]
+        }
+      ],
+      "inferenceConfig": {
+        "maxTokens": 32768
+      },
+      "system": [
+        {
+          "text": "You are the snapshot agent."
+        },
+        {
+          "cachePoint": {
+            "type": "default"
+          }
+        }
+      ],
+      "toolConfig": {
+        "tools": {
+          "names": [
+            "shell_run",
+            "file_list",
+            "file_read",
+            "file_write",
+            "workspace_refresh",
+            "file_glob",
+            "file_search",
+            "test_run",
+            "git_op",
+            "tool_output_page",
+            "tool_output_search",
+            "question_card",
+            "tool_search",
+            "<cachePoint>"
+          ],
+          "sha256": "0d56791da0d06fb4"
+        }
+      },
+      "additionalModelRequestFields": {
+        "thinking": {
+          "type": "enabled",
+          "budget_tokens": 4000
+        }
+      }
+    }
+  }
+]

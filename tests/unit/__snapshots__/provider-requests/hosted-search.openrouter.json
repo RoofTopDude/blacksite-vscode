@@ -1,0 +1,69 @@
+[
+  {
+    "url": "https://openrouter.ai/api/v1/chat/completions",
+    "headers": {
+      "authorization": "<volatile>",
+      "content-type": "application/json",
+      "http-referer": "https://blacksite.dev",
+      "x-title": "Blacksite"
+    },
+    "bodySha256": "ef8a4c1e21370eb5",
+    "body": {
+      "model": "anthropic/claude-sonnet-4.6",
+      "messages": [
+        {
+          "role": "system",
+          "content": [
+            {
+              "type": "text",
+              "text": "You are the snapshot agent.",
+              "cache_control": {
+                "type": "ephemeral"
+              }
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "What is the current Node LTS?",
+              "cache_control": {
+                "type": "ephemeral"
+              }
+            }
+          ]
+        }
+      ],
+      "tools": {
+        "names": [
+          "shell_run",
+          "file_list",
+          "file_read",
+          "file_write",
+          "workspace_refresh",
+          "file_glob",
+          "file_search",
+          "test_run",
+          "git_op",
+          "tool_output_page",
+          "tool_output_search",
+          "question_card",
+          "tool_search",
+          "openrouter:web_search"
+        ],
+        "sha256": "09ce5c7c5c76f7da"
+      },
+      "tool_choice": "auto",
+      "stream": true,
+      "stream_options": {
+        "include_usage": true
+      },
+      "max_tokens": 32768,
+      "reasoning": {
+        "effort": "medium"
+      }
+    }
+  }
+]
