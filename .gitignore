@@ -3,6 +3,7 @@ out/
 *.tsbuildinfo
 # Built output of the workspace packages (npm run build:llm); published, never committed.
 packages/*/dist/
+packages/*/temp/
 
 # Packaged extension artifacts — these are release outputs, never source.
 # Committing them is what bloated the previous history; publish them to

@@ -30,7 +30,10 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json"
+    "build": "tsc -p tsconfig.build.json",
+    "api": "api-extractor run -c api-extractor.json && api-extractor run -c api-extractor.node.json && api-extractor run -c api-extractor.testing.json",
+    "check:api": "npm run build && npm run api",
+    "update:api": "npm run build && api-extractor run --local -c api-extractor.json && api-extractor run --local -c api-extractor.node.json && api-extractor run --local -c api-extractor.testing.json"
   },
   "repository": {
     "type": "git",
@@ -39,5 +42,8 @@
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
+  },
+  "devDependencies": {
+    "@microsoft/api-extractor": "^7.59.4"
   }
 }

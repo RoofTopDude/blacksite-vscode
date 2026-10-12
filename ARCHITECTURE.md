@@ -23,13 +23,16 @@ context), and those two halves talk only by `postMessage`.
 │   │                            │               │    runs,loops,data,…}    │
 │   ├─ AgentSession  ← the loop  │               └──────────────────────────┘
 │   │    └─ tools ──┐            │
-│   └─ stores (disk)│            │               packages/  (vendored, bundled in)
-└───────────────────┼────────────┘                 local-runtime   fs/shell/git/MCP
+│   └─ stores (disk)│            │               packages/  (bundled in)
+└───────────────────┼────────────┘                 llm             model transport (npm workspace,
+                    │                                              published as @blacksite-agent/llm)
+                    │                              llm-cli         blacksite-llm, its terminal client
+                    │                              local-runtime   fs/shell/git/MCP
                     │                              file-content    PDF/CSV/XLSX extract
                     ▼                              browser-bridge-protocol
         provider APIs (Anthropic, OpenAI,
-        OpenRouter, Bedrock) — direct from
-        the user's machine, no proxy
+        OpenRouter, Bedrock, ChatGPT via Codex)
+        — direct from the user's machine, no proxy
 ```
 
 ## The two halves
@@ -49,8 +52,8 @@ siblings, `_onSettingsMessage` and `_onCredentialMessage`.
 ## The agent loop
 
 `src/agent-session.ts` is the core. `AgentSession.send()` is the agentic loop: build a request,
-stream a provider turn, run whatever tools the model called, feed the results back, repeat until
-the model stops or a limit trips.
+stream a provider turn through `@blacksite-agent/llm`, run whatever tools the model called, feed
+the results back, repeat until the model stops or a limit trips.
 
 Around that loop sit the concerns that make long-horizon work survivable, each of which is why the
 file is as large as it is: context compaction, tool-result overflow paging, verification and
@@ -60,20 +63,33 @@ Extracted from it, and the right place to look first:
 
 | Module | What it owns |
 | --- | --- |
-| `src/agent/wire/{anthropic,openai,bedrock}.ts` | Per-provider wire format: messages, tools, cache breakpoints, stop reasons |
-| `src/agent/wire/strict-schema.ts` | The JSON-Schema subset both OpenAI and Anthropic accept for strict tool use |
-| `src/agent/transcript-hygiene.ts` | Provider-neutral passes that make a history safe to send (orphan repair, image stripping, empty-content filling) |
+| `packages/llm/` | Everything that talks to a model provider: see below |
+| `src/agent/transcript-hygiene.ts` | The attached-context envelope, and the passes that shrink a transcript before it is persisted (image stubs, browser-payload redaction) |
 | `src/agent/tool-output-store.ts` | Retains oversized tool results for `tool_output_page` / `tool_output_search` |
 | `src/tools/definitions.ts` | Every tool's schema and description — the agent's entire advertised surface |
-| `src/provider-retry.ts` | Retry classification and backoff shared by all four providers |
 
-`agent-session.ts` re-exports everything it moved, so an import from `"./agent-session.js"` still
-resolves. Prefer importing from the specific module in new code.
+**The model transport: `packages/llm`.** Every provider request is built and parsed in this
+package, published privately as `@blacksite-agent/llm` (see its
+[README](packages/llm/README.md)). It is an npm workspace; the extension, its tests and the
+webview use its TypeScript directly through the `source` export condition, so there is no
+separate build step during development.
 
-**Four providers, one loop.** Anthropic, OpenAI (both Chat Completions and Responses), OpenRouter,
-and Bedrock each get a `_streamTurn*` method that normalizes its stream into the same event shape.
-Everything downstream is provider-agnostic. Adding a provider means a wire module, a stream method,
-and a stop-reason normalizer — not touching the loop.
+- **Requests in, events out.** Each turn, `AgentSession` builds a plain-data `ModelRequest`
+  (`_buildModelRequest`): history, tool plan, thinking plan, context tail, hosted search. A
+  `ModelClient` (one per session; it keeps the capability latches) sends it on the right route
+  and yields `ProviderTurnStreamEvent`s. `ProviderTurnRunner` folds them into a result and owns
+  retries and the outage wait.
+- **Routes.** Anthropic, Bedrock Converse, Bedrock Mantle, OpenAI Chat Completions (also
+  OpenRouter) and OpenAI Responses each live in `packages/llm/src/providers/`; the per-provider
+  wire converters are in `packages/llm/src/wire/`. Adding a provider means a route, a wire
+  module and a stop-reason normalizer — not touching the loop.
+- **ChatGPT** is a `ModelTransport` over the Codex app-server (`packages/llm/src/node/`), and
+  `AgentSessionOptions.modelTransport` accepts any other transport the same way.
+- **Boundaries.** Lint keeps the package off `vscode`, `src/` and Node built-ins (outside
+  `src/node`); `tests/browser/llm-core-browser.spec.ts` runs the core in Chrome.
+- **Request snapshots.** `tests/unit/provider-request-snapshots.spec.ts` pins the exact body each
+  route sends. Prompt caching depends on byte-identical prefixes, so a snapshot diff is a
+  behaviour change to review, never something to accept just to pass.
 
 ## Tools and the runtime boundary
 
@@ -152,7 +168,8 @@ index generation rather than per consumer.
 | `src/loops/` | ~3.2k | Ticket Loops — supervised unattended queue execution |
 | `src/data/` | ~2.8k | SQLite workbench, migrations, pgvector sidecar |
 | `src/tools/` | ~2.6k | Tool definitions |
-| `packages/` | ~7k | Vendored runtime libraries |
+| `packages/llm/` | ~9.5k | Model transport (`@blacksite-agent/llm`) |
+| `packages/` (others) | ~9k | Local runtime, file-content extraction, browser-bridge protocol, the `blacksite-llm` CLI |
 
 ## Known rough edges
 
@@ -160,8 +177,9 @@ Honest notes, so nobody assumes the current shape is the intended one:
 
 - **`src/` root is flat** — ~41k lines across ~110 files with no subfoldering, while the
   subsystems above are organized. New code should prefer a directory.
-- **`agent-session.ts` (~6.3k) and `chat-provider.ts` (~4.7k) are still large.** The streaming
-  methods and the compaction cluster are the next extraction candidates.
+- **`agent-session.ts` (~6k) and `chat-provider.ts` (~6.3k) are still large.** The provider
+  streaming moved to `packages/llm`; the tool dispatch chain and the session factory in
+  `ChatProvider` are what an agent-core package would need next.
 - **`mcp-panel.ts` is hand-rolled vanilla-JS webview markup**, inconsistent with every other
   surface being React. It escapes its interpolations (`esc()`), but it is the odd one out.
 - **`docs/responsiveness-and-file-size-review.md`** catalogs congestion and performance findings

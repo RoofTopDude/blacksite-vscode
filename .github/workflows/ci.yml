@@ -48,6 +48,15 @@ jobs:
       - name: Build
         run: npm run build
 
+      # @blacksite-agent/llm as it would be published: its built output must match the reviewed API
+      # reports (packages/llm/etc), and the CLI, which loads that built output like any other
+      # consumer, must pass its offline probe.
+      - name: Model transport package
+        run: |
+          npm run check:api
+          npm run build -w @blacksite-agent/llm-cli
+          node packages/llm-cli/dist/cli.js probe --fixture
+
       - name: Browser policy integration
         run: |
           npx --no-install playwright-core install --with-deps chromium

@@ -12,7 +12,7 @@ import type { BedrockCredentials } from "../bedrock-types.js";
  *  Never throws — a missing/malformed AWS config file is a normal "not set up" state here,
  *  not an error. */
 export function resolveBedrockCredentialsFromEnvironment(
-  env: NodeJS.ProcessEnv = process.env,
+  env: Readonly<Record<string, string | undefined>> = process.env,
   home: string = os.homedir(),
 ): BedrockCredentials | undefined {
   const envCreds = resolveAwsEnvCredentials(env);

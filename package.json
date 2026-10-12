@@ -1324,6 +1324,7 @@
     "compile": "tsc -p tsconfig.json --noEmit && npm run compile:llm",
     "compile:llm": "tsc -p packages/llm/tsconfig.json && tsc -p packages/llm/tsconfig.node.json && tsc -p packages/llm-cli/tsconfig.json",
     "build:llm": "npm run build -w @blacksite-agent/llm && npm run build -w @blacksite-agent/llm-cli",
+    "check:api": "npm run check:api -w @blacksite-agent/llm",
     "typecheck:webview": "tsc -p src/webview/react/tsconfig.json",
     "lint:host": "eslint src tests scripts packages/llm packages/llm-cli --ignore-pattern src/webview/react/**",
     "lint:webview": "eslint src/webview/react",
