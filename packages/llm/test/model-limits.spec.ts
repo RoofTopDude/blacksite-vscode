@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { resolveClaudeLimits, resolveContextWindow, resolveOutputCeiling, isOpenAIReasoningModel } from "@blacksite-agent/llm";
-import { getContextLength } from "../../src/model-fetcher.js";
+import { getContextLength } from "@blacksite-agent/llm";
 
 describe("context windows", () => {
   it("gives the current Claude family its real 1M window", () => {

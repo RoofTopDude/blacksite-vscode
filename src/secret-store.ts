@@ -1,9 +1,6 @@
 import * as vscode from "vscode";
-import * as fs from "fs";
-import * as os from "os";
-import * as path from "path";
 import type { BedrockCredentials } from "./bedrock-types.js";
-import { parseAwsIniFile, resolveAwsEnvCredentials, resolveAwsProfile } from "./aws-credential-chain.js";
+import { resolveBedrockCredentialsFromEnvironment } from "@blacksite-agent/llm/node";
 
 const PREFIX = "blacksite.apiKey.";
 
@@ -95,36 +92,7 @@ export class SecretStore {
         }
       } catch { /* fall through to the credential chain below */ }
     }
-    return this._resolveBedrockCredentialsFromEnvironment();
-  }
-
-  /** Environment vars, then `~/.aws/{credentials,config}` for the active/default profile.
-   *  Never throws — a missing/malformed AWS config file is a normal "not set up" state here,
-   *  not an error. */
-  private _resolveBedrockCredentialsFromEnvironment(): BedrockCredentials | undefined {
-    const envCreds = resolveAwsEnvCredentials(process.env);
-
-    const profileName = process.env["AWS_PROFILE"] || "default";
-    const readIni = (p: string): Record<string, Record<string, string>> => {
-      try { return parseAwsIniFile(fs.readFileSync(p, "utf8")); } catch { return {}; }
-    };
-    const home = os.homedir();
-    const credentialsIni = readIni(path.join(home, ".aws", "credentials"));
-    const configIni = readIni(path.join(home, ".aws", "config"));
-    const resolved = resolveAwsProfile(profileName, credentialsIni, configIni);
-
-    // AWS precedence: env credentials win over profile-file credentials, and env region wins
-    // over profile-file region — resolved independently, so e.g. env keys with a
-    // profile-file-only region (or a region-only env var with profile-file keys) still combine
-    // into a full config instead of one missing field silently discarding the other source.
-    const accessKeyId = envCreds?.accessKeyId || resolved.accessKeyId;
-    const secretAccessKey = envCreds?.secretAccessKey || resolved.secretAccessKey;
-    const sessionToken = envCreds?.sessionToken || resolved.sessionToken;
-    const region = envCreds?.region || resolved.region;
-    if (accessKeyId && secretAccessKey && region) {
-      return { region, accessKeyId, secretAccessKey, sessionToken };
-    }
-    return undefined;
+    return resolveBedrockCredentialsFromEnvironment();
   }
 
   async setBedrockConfig(config: BedrockCredentials): Promise<void> {

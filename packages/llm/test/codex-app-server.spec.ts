@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodexAppServer, type CodexMessage } from "../../src/codex-app-server.js";
+import { CodexAppServer, type CodexMessage } from "@blacksite-agent/llm/node";
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
 afterEach(() => vi.unstubAllEnvs());

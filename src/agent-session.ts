@@ -29,6 +29,7 @@ import {
   type ModelClient,
   type ModelRequest,
   type ModelTransport,
+  subscriptionTransport,
   type TransportContext,
 } from "@blacksite-agent/llm";
 // Re-exported: specs and older call sites import these from here.
@@ -1627,7 +1628,10 @@ export class AgentSession {
       openrouterProvider: opts.openrouterProvider,
       openrouterFallbackModels: opts.openrouterFallbackModels,
     });
-    this._modelTransport = opts.modelTransport ?? this._modelClient;
+    this._modelTransport = opts.modelTransport
+      ?? (opts.subscriptionStream
+        ? subscriptionTransport(opts.subscriptionStream, { reasoningEffort: opts.reasoningEffort, serviceTier: opts.serviceTier })
+        : this._modelClient);
     this._signal = opts.signal;
     this._disabledTools = new Set(opts.disabledTools ?? []);
     /* Assigned here rather than as a field initializer: `opts` is a constructor
@@ -2698,28 +2702,7 @@ export class AgentSession {
 
   /** Opens one attempt's stream. Called once per attempt, so a retry re-sends the same request. */
   private _openProviderStream(): AsyncGenerator<ProviderTurnStreamEvent> {
-    if (!this.opts.subscriptionStream) return this._modelTransport.stream(this._buildModelRequest(), this._signal);
-    const subscriptionContext = this._dynamicContext();
-    const hostedForChatGpt = this._hostedSearch();
-    return this.opts.subscriptionStream({
-      model: this.opts.model,
-      systemPrompt: this._compressedSummary
-        ? `${this.opts.systemPrompt}\n\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}`
-        : this.opts.systemPrompt,
-      // The workspace block travels apart from the conversation: the service decides whether it
-      // is sent at all, because every copy it sends stays in a reused thread.
-      messages: normalizeForProvider(this.messages),
-      ...(subscriptionContext ? { contextTail: subscriptionContext } : {}),
-      conversationId: this.sessionId,
-      tools: this._toolPlan().wire,
-      ...(hostedForChatGpt ? { hostedSearch: { scope: hostedForChatGpt.scope, allowedDomains: hostedForChatGpt.allowedDomains, deniedDomains: hostedForChatGpt.deniedDomains } } : {}),
-      signal: this._signal,
-      reasoningEffort: this.opts.reasoningEffort,
-      // Codex names the tiers "priority" (Fast) and "default" (Standard); anything else
-      // leaves the account's own default in charge.
-      serviceTier: this.opts.serviceTier === "fast" || this.opts.serviceTier === "priority" ? "priority"
-        : this.opts.serviceTier === "default" ? "default" : undefined,
-    });
+    return this._modelTransport.stream(this._buildModelRequest(), this._signal);
   }
 
   /** Everything this turn's request needs, as plain data for the model client. */
@@ -3027,18 +3010,9 @@ export class AgentSession {
     return this.opts.toolLoading?.() === "on_demand";
   }
 
-  /**
-   * The provider route this session runs on, when that route has a web search of its own:
-   * Claude through the Anthropic API, any model through OpenRouter, and ChatGPT sign-in. Claude on
-   * Bedrock has none (Converse or Mantle), and a custom base URL may be a gateway that rejects
-   * server tools, so neither is offered.
-   */
+  /** The route's own web search, when this session's route has one (see hostedSearchRouteFor). */
   private _hostedSearchRoute(): HostedSearchRoute | undefined {
-    if (this.opts.subscriptionStream) return { provider: "chatgpt", label: "ChatGPT" };
-    const base = this.opts.baseUrl;
-    if (this.provider === "anthropic" && (!base || /^https:\/\/api\.anthropic\.com\//i.test(base))) return { provider: "anthropic", label: "Claude" };
-    if (this.provider === "openrouter" && (!base || /^https:\/\/openrouter\.ai\//i.test(base))) return { provider: "openrouter", label: "OpenRouter" };
-    return undefined;
+    return this._modelTransport.hostedSearchRoute;
   }
 
   /** The provider's search to declare on this request: on for this chat, on a route that has one. */

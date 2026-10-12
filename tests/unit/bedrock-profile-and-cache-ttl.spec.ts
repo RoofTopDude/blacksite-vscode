@@ -15,7 +15,7 @@ import {
   defaultBedrockModel,
 } from "@blacksite-agent/llm";
 import { bedrockSupportsCacheTtl1h, resolveClaudeLimits } from "@blacksite-agent/llm";
-import { normalizeModelIdForFallbackLookup } from "../../src/model-fetcher.js";
+import { normalizeModelIdForFallbackLookup } from "@blacksite-agent/llm";
 import { parseClaudeVersion, resolveThinkingMode } from "@blacksite-agent/llm";
 import { eventFrame, streamFromChunks } from "@blacksite-agent/llm/testing";
 

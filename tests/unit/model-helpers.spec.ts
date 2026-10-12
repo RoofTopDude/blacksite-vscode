@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { findModelByQuery, modelShortLabel } from "../../src/webview/react/components/settings/helpers.js";
-import type { ModelInfo } from "../../src/webview/react/lib/protocol.js";
+import type { ModelInfo } from "@blacksite-agent/llm";
 
 const MODELS: ModelInfo[] = [
   { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6", contextLength: 200000 },

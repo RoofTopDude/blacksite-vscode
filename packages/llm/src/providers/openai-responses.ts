@@ -19,7 +19,7 @@ import {
   withResponsesCacheBreakpoints,
 } from "../wire/openai.js";
 import { fetchWithRetry } from "../transport/fetch-retry.js";
-import { PROVIDER_BASE_URLS, type ModelRequest, type TransportContext } from "../transport/request.js";
+import { PROVIDER_BASE_URLS, resolveCredential, type ModelRequest, type TransportContext } from "../transport/request.js";
 import { readResponseLines } from "../transport/sse.js";
 
 /**
@@ -39,6 +39,7 @@ import { readResponseLines } from "../transport/sse.js";
  */
 
 export async function* streamOpenAIResponses(ctx: TransportContext, req: ModelRequest): AsyncGenerator<ProviderTurnStreamEvent> {
+  const apiKey = await resolveCredential(ctx.config.apiKey);
   // `opts.baseUrl` is documented and UI-labeled as the Chat Completions endpoint override
   // (used verbatim by `streamOpenAIChat`) — the Responses API lives at a sibling path, not
   // the same URL. Swap the well-known suffix so a proxy/Azure/local-server override still
@@ -91,7 +92,7 @@ export async function* streamOpenAIResponses(ctx: TransportContext, req: ModelRe
   const doFetch = (signal: AbortSignal | undefined): Promise<Response> => fetch(url, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${ctx.config.apiKey}`,
+      "Authorization": `Bearer ${apiKey}`,
       "content-type": "application/json",
     },
     body: JSON.stringify(body),

@@ -3,7 +3,7 @@ import {
   estimateUsageCostUsd, getContextLength, getMaxOutputTokens, getModelPricing,
   mapAnthropicModelEntry, mapOpenRouterModelEntry, normalizeModelIdForFallbackLookup,
   SONNET_5_INTRO_PRICING_ENDS, sonnet5Pricing,
-} from "../../src/model-fetcher.js";
+} from "@blacksite-agent/llm";
 
 describe("getContextLength", () => {
   it("resolves a known Bedrock cross-region inference-profile model id from the fallback table", () => {

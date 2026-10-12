@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defaultClientConditions, defineConfig } from "vite";
 import tailwindcss from "@tailwindcss/vite";
 import cssInjectedByJsPlugin from "vite-plugin-css-injected-by-js";
 import { dirname, resolve } from "path";
@@ -57,6 +57,9 @@ function emitPreviewStylesheet() {
 export default defineConfig(({ mode }) => ({
   root: rootDir,
   resolve: {
+    // @blacksite-agent/llm is a workspace package; its "source" condition points at its TypeScript,
+    // so the webview bundles the package source exactly like the extension host does.
+    conditions: ["source", ...defaultClientConditions],
     alias: {
       "@": resolve(rootDir, "src/webview/react"),
     },

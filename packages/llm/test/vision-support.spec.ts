@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { getVisionSupport, modelFamilySupportsVision, mapOpenRouterModelEntry } from "../../src/model-fetcher.js";
-import { bedrockModelsToModelInfo, type BedrockAvailableModel } from "../../src/bedrock-models.js";
+import { getVisionSupport, modelFamilySupportsVision, mapOpenRouterModelEntry } from "@blacksite-agent/llm";
+import { bedrockModelsToModelInfo, type BedrockAvailableModel } from "@blacksite-agent/llm";
 import type { ProviderName } from "@blacksite-agent/llm";
 
 /* Vision support used to come from the static model table, matched on the exact id, whenever no

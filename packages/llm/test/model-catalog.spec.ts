@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BEDROCK_MANTLE_MODELS, getFallbackModels, type ModelInfo } from "../../src/model-fetcher.js";
+import { BEDROCK_MANTLE_MODELS, getFallbackModels, type ModelInfo } from "@blacksite-agent/llm";
 import {
   BEDROCK_CONVERSE_DEFAULT_MODEL,
   BEDROCK_MANTLE_DEFAULT_MODEL,

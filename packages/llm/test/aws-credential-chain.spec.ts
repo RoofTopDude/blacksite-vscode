@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseAwsIniFile, resolveAwsEnvCredentials, resolveAwsProfile } from "../../src/aws-credential-chain.js";
+import { parseAwsIniFile, resolveAwsEnvCredentials, resolveAwsProfile } from "@blacksite-agent/llm";
 
 // AWS credential chain: env vars, then a named profile in ~/.aws/{credentials,config} — the
 // same precedence every AWS SDK/CLI uses, so Bedrock stops being static-keys-only for anyone

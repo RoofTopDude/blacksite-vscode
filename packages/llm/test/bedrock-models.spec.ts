@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isOnDemandInvokable, listAvailableBedrockModels } from "../../src/bedrock-models.js";
+import { isOnDemandInvokable, listAvailableBedrockModels } from "@blacksite-agent/llm";
 
 const CREDS = {
   region: "us-east-1",

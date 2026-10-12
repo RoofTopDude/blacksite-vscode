@@ -13,8 +13,8 @@ import {
 } from "@blacksite-agent/llm";
 import { resolveAnthropicNativeBlocks } from "@blacksite-agent/llm";
 import { toResponsesInputItems } from "@blacksite-agent/llm";
-import { ChatGptService, toCodexInputItems, type SubscriptionRequest } from "../../src/chatgpt-service.js";
-import type { CodexAppServer, CodexMessage } from "../../src/codex-app-server.js";
+import { ChatGptService, toCodexInputItems, type SubscriptionRequest } from "@blacksite-agent/llm/node";
+import type { CodexAppServer, CodexMessage } from "@blacksite-agent/llm/node";
 import { BrowserApprovalCoordinator } from "../../src/browser/approval-coordinator.js";
 import type { BrowserProposal, HostedSearchPolicy } from "../../src/browser/approval-types.js";
 import { DomainPolicy, normalizePolicy } from "../../src/browser/domain-policy.js";

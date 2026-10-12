@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ChatProvider } from "../../src/chat-provider.js";
 import type { AgentMessage, ImageBlock } from "@blacksite-agent/llm";
-import type { ModelInfo } from "../../src/model-fetcher.js";
+import type { ModelInfo } from "@blacksite-agent/llm";
 import { PERSISTED_IMAGE_STUB, stripImagesForPersistence } from "../../src/agent/transcript-hygiene.js";
 
 /* The host decides whether a session's model can see images and hands a rebuilt session its

@@ -27,14 +27,22 @@ export const PROVIDER_BASE_URLS = {
   openaiResponses: "https://api.openai.com/v1/responses",
 } as const;
 
+/** A credential, or a function that returns the current one. A function is called once per request
+ *  attempt, so short-lived credentials (STS, SSO, a gateway token) can refresh between turns. */
+export type CredentialSource<T> = T | (() => T | Promise<T>);
+
+export async function resolveCredential<T>(source: CredentialSource<T> | undefined): Promise<T | undefined> {
+  return typeof source === "function" ? await (source as () => T | Promise<T>)() : source;
+}
+
 /** Session-lived settings for one provider route. */
 export interface ModelClientConfig {
   provider: ProviderName;
   /** Anthropic, OpenAI and OpenRouter key. Unused on Bedrock, which signs with `bedrock`. */
-  apiKey?: string;
+  apiKey?: CredentialSource<string>;
   /** Overrides the provider's endpoint (a proxy, a gateway, a local server). */
   baseUrl?: string;
-  bedrock?: BedrockCredentials;
+  bedrock?: CredentialSource<BedrockCredentials>;
   bedrockApi?: "converse" | "mantle";
   /** Read per turn: whether Bedrock's newer stop reasons are mapped rather than collapsed. */
   bedrockExtendedStopReasons?: () => boolean;

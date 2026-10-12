@@ -19,10 +19,10 @@ import {
   withBedrockRollingCacheBreakpoint,
   withBedrockToolsCacheBreakpoint,
 } from "../wire/bedrock.js";
-import { makeAbortError, type ModelRequest, type TransportContext } from "../transport/request.js";
+import { makeAbortError, resolveCredential, type ModelRequest, type TransportContext } from "../transport/request.js";
 
 export async function* streamBedrockConverseTurn(ctx: TransportContext, req: ModelRequest): AsyncGenerator<ProviderTurnStreamEvent> {
-  const credentials = ctx.config.bedrock;
+  const credentials = await resolveCredential(ctx.config.bedrock);
   if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
 
   const plan = req.thinking;

@@ -6,11 +6,11 @@ import { applyAnthropicThinking, resolveAnthropicBetaExtras } from "../thinking-
 import type { ProviderTurnStreamEvent } from "../types.js";
 import { buildAnthropicSystemBlocks } from "../wire/anthropic.js";
 import { fetchWithRetry } from "../transport/fetch-retry.js";
-import type { ModelRequest, TransportContext } from "../transport/request.js";
+import { resolveCredential, type ModelRequest, type TransportContext } from "../transport/request.js";
 import { anthropicWireMessages, buildAnthropicWireTools, looksLikeStrictRejection, parseAnthropicSSE } from "./anthropic.js";
 
 export async function* streamBedrockMantle(ctx: TransportContext, req: ModelRequest): AsyncGenerator<ProviderTurnStreamEvent> {
-  const credentials = ctx.config.bedrock;
+  const credentials = await resolveCredential(ctx.config.bedrock);
   if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
 
   // Mantle is the Anthropic Messages API behind a SigV4-signed Bedrock endpoint, so it takes the

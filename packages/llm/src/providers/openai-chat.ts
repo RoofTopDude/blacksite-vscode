@@ -25,7 +25,7 @@ import {
   withOpenRouterCacheControl,
 } from "../wire/openai.js";
 import { fetchWithRetry } from "../transport/fetch-retry.js";
-import { PROVIDER_BASE_URLS, type ModelRequest, type TransportContext } from "../transport/request.js";
+import { PROVIDER_BASE_URLS, resolveCredential, type ModelRequest, type TransportContext } from "../transport/request.js";
 import { readResponseLines } from "../transport/sse.js";
 
 /**
@@ -40,6 +40,7 @@ export function openAIEffectiveSystem(system: string, summary: string): string {
 }
 
 export async function* streamOpenAIChat(ctx: TransportContext, req: ModelRequest): AsyncGenerator<ProviderTurnStreamEvent> {
+  const apiKey = await resolveCredential(ctx.config.apiKey);
   const provider = ctx.config.provider;
   const url  = ctx.config.baseUrl ?? PROVIDER_BASE_URLS[provider as "openrouter" | "openai"];
   const effectiveSystem = openAIEffectiveSystem(req.system, req.systemSummary);
@@ -196,7 +197,7 @@ export async function* streamOpenAIChat(ctx: TransportContext, req: ModelRequest
   const doFetch = (signal: AbortSignal | undefined): Promise<Response> => fetch(url, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${ctx.config.apiKey}`,
+      "Authorization": `Bearer ${apiKey}`,
       "content-type": "application/json",
       ...extraHeaders,
     },

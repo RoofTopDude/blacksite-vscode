@@ -20,7 +20,7 @@ import {
 } from "../wire/anthropic.js";
 import { expandToolReferences } from "../wire/tool-search.js";
 import { fetchWithRetry } from "../transport/fetch-retry.js";
-import { PROVIDER_BASE_URLS, type ModelRequest, type ModelToolPlan, type TransportContext } from "../transport/request.js";
+import { PROVIDER_BASE_URLS, resolveCredential, type ModelRequest, type ModelToolPlan, type TransportContext } from "../transport/request.js";
 import { readResponseLines } from "../transport/sse.js";
 
 /** How many times one turn follows a `pause_turn` (a long server-side search) before giving up. */
@@ -105,7 +105,7 @@ export async function* streamAnthropic(ctx: TransportContext, req: ModelRequest)
 
   const anthropicHeaders: Record<string, string> = {
     "anthropic-version": "2023-06-01",
-    "x-api-key": ctx.config.apiKey ?? "",
+    "x-api-key": (await resolveCredential(ctx.config.apiKey)) ?? "",
     "content-type": "application/json",
   };
   // claude-3-7 is the one model that still needs the interleaved-thinking beta header. Claude 4+

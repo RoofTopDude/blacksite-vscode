@@ -3,6 +3,7 @@
     "target": "ES2024",
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "customConditions": ["source"],
     "jsx": "react-jsx",
     "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "strict": true,
