@@ -1,5 +1,5 @@
 import type { BedrockCredentials } from "./bedrock-types.js";
-import { invokeBedrockEmbedding } from "./bedrock-client.js";
+import { invokeBedrockEmbedding } from "./bedrock-embedding.js";
 import { defaultEmbeddingForProvider, voyageSupportsOutputDimension, type EmbeddingModelSpec } from "./embedding-models.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────────

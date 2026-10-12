@@ -7,7 +7,7 @@ import {
   type AgentEvent,
   type AgentSessionOptions,
 } from "../../src/agent-session.js";
-import { buildRequestBody } from "../../src/bedrock-client.js";
+import { buildRequestBody } from "@blacksite-agent/llm";
 import {
   BEDROCK_CONVERSE_DEFAULT_MODEL,
   BEDROCK_CONVERSE_LEGACY_DEFAULT_MODEL,

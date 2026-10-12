@@ -1,7 +1,31 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { signBedrockRequest, streamBedrockConverse, mantleMessage, buildRequestBody } from "../../src/bedrock-client.js";
+import { signBedrockRequest, streamBedrockConverse, mantleMessage, buildRequestBody } from "@blacksite-agent/llm";
 import type { BedrockConverseStreamEvent } from "@blacksite-agent/llm";
 import { HttpError } from "@blacksite-agent/llm";
+
+const PINNED = [
+  {
+    "content-type": "application/json",
+    "x-amz-date": "20250102T030405Z",
+    "Authorization": "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20250102/us-east-1/bedrock/aws4_request, SignedHeaders=content-type;host;x-amz-date, Signature=b93d49bdf100db55296d3d9639346d4bf6ed399440ce4abceac2233a62fb5dcb"
+  },
+  {
+    "content-type": "application/json",
+    "x-amz-date": "20250102T030405Z",
+    "Authorization": "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20250102/us-east-1/bedrock/aws4_request, SignedHeaders=content-type;host;x-amz-date;x-amz-security-token, Signature=3b03f3b47e10da0ee1b0640faed67137028382855f3762c2187753dc384a61a8",
+    "x-amz-security-token": "SESSION/TOKEN+="
+  },
+  {
+    "content-type": "application/json",
+    "anthropic-version": "2023-06-01",
+    "x-amz-date": "20250102T030405Z",
+    "Authorization": "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20250102/us-east-1/bedrock-mantle/aws4_request, SignedHeaders=content-type;host;x-amz-date, Signature=d8ef1d06a859a84e3e90fdd2aea3e9e998a36d07f934fbf720fc41a27ee22fe2"
+  },
+  {
+    "x-amz-date": "20250102T030405Z",
+    "Authorization": "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20250102/us-east-1/bedrock/aws4_request, SignedHeaders=content-type;host;x-amz-date, Signature=27a1d2f1f8b1e83fb463f2535bb95d084a83df4611e55b1c4d5df9a18287ff06"
+  }
+];
 
 const CREDS = {
   region: "us-east-1",
@@ -18,9 +42,9 @@ describe("signBedrockRequest", () => {
     vi.useRealTimers();
   });
 
-  it("produces a SigV4 Authorization header with the right scope and signed headers", () => {
+  it("produces a SigV4 Authorization header with the right scope and signed headers", async () => {
     const url = "https://bedrock-runtime.us-east-1.amazonaws.com/model/some.model/converse-stream";
-    const headers = signBedrockRequest(CREDS, "POST", url, { "content-type": "application/json" }, "{}");
+    const headers = await signBedrockRequest(CREDS, "POST", url, { "content-type": "application/json" }, "{}");
 
     expect(headers["x-amz-date"]).toBe("20250102T030405Z");
     expect(headers["Authorization"]).toContain("AWS4-HMAC-SHA256 ");
@@ -31,28 +55,42 @@ describe("signBedrockRequest", () => {
     expect(headers["x-amz-security-token"]).toBeUndefined();
   });
 
-  it("is deterministic for identical inputs at a fixed time", () => {
+  it("is deterministic for identical inputs at a fixed time", async () => {
     const url = "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse";
-    const a = signBedrockRequest(CREDS, "POST", url, { "content-type": "application/json" }, "{}");
-    const b = signBedrockRequest(CREDS, "POST", url, { "content-type": "application/json" }, "{}");
+    const a = await signBedrockRequest(CREDS, "POST", url, { "content-type": "application/json" }, "{}");
+    const b = await signBedrockRequest(CREDS, "POST", url, { "content-type": "application/json" }, "{}");
     expect(a["Authorization"]).toBe(b["Authorization"]);
   });
 
-  it("includes the session token in the signed headers and result", () => {
+  it("includes the session token in the signed headers and result", async () => {
     const url = "https://bedrock-runtime.us-east-1.amazonaws.com/model/m/converse";
-    const headers = signBedrockRequest({ ...CREDS, sessionToken: "tok" }, "POST", url, { "content-type": "application/json" }, "{}");
+    const headers = await signBedrockRequest({ ...CREDS, sessionToken: "tok" }, "POST", url, { "content-type": "application/json" }, "{}");
     expect(headers["x-amz-security-token"]).toBe("tok");
     expect(headers["Authorization"]).toContain("SignedHeaders=content-type;host;x-amz-date;x-amz-security-token");
   });
 
-  it("uses bedrock-mantle service name and signs the mantle host when service param is bedrock-mantle", () => {
+  it("uses bedrock-mantle service name and signs the mantle host when service param is bedrock-mantle", async () => {
     const url = "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1/messages";
-    const headers = signBedrockRequest(CREDS, "POST", url, { "content-type": "application/json", "anthropic-version": "2023-06-01" }, "{}", "bedrock-mantle");
+    const headers = await signBedrockRequest(CREDS, "POST", url, { "content-type": "application/json", "anthropic-version": "2023-06-01" }, "{}", "bedrock-mantle");
 
     expect(headers["Authorization"]).toContain("Credential=AKIAEXAMPLE/20250102/us-east-1/bedrock-mantle/aws4_request");
     // host signed must be the mantle host, not bedrock-runtime
     expect(headers["Authorization"]).toContain("SignedHeaders=");
     expect(headers["Authorization"]).toMatch(/Signature=[0-9a-f]{64}$/);
+  });
+
+  /* Exact signatures from the node:crypto signer this one replaced, for four request shapes:
+     a Converse body with non-ASCII text, an inference-profile ARN with a session token, Mantle,
+     and a GET with a query string. A Web Crypto port has to reproduce them byte for byte. */
+  it("reproduces the pinned signatures exactly", async () => {
+    const creds = { region: "us-east-1", accessKeyId: "AKIDEXAMPLE", secretAccessKey: "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY" };
+    const signed = [
+      await signBedrockRequest(creds, "POST", "https://bedrock-runtime.us-east-1.amazonaws.com/model/anthropic.claude-sonnet-4-5-20250929-v1:0/converse-stream", { "content-type": "application/json" }, '{"messages":[{"role":"user","content":[{"text":"héllo ✓"}]}]}'),
+      await signBedrockRequest({ ...creds, sessionToken: "SESSION/TOKEN+=" }, "POST", "https://bedrock-runtime.eu-west-1.amazonaws.com/model/arn%3Aaws%3Abedrock%3Aeu-west-1%3A123%3Ainference-profile%2Feu.anthropic.claude/converse-stream", { "content-type": "application/json" }, "{}"),
+      await signBedrockRequest(creds, "POST", "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1/messages", { "content-type": "application/json", "anthropic-version": "2023-06-01" }, '{"a":1}', "bedrock-mantle"),
+      await signBedrockRequest(creds, "GET", "https://bedrock.us-east-1.amazonaws.com/foundation-models?byOutputModality=TEXT&byInferenceType=ON_DEMAND", {}, ""),
+    ];
+    expect(signed).toEqual(PINNED);
   });
 });
 
@@ -248,10 +286,14 @@ describe("streamBedrockConverse", () => {
     // A successful Bedrock HTTP response can still leave the event stream half-open with no
     // first frame. This used to await reader.read() forever and freeze the active turn.
     const body = new ReadableStream<Uint8Array>({ start() { /* deliberately never enqueue or close */ } });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, body } as unknown as Response));
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, body } as unknown as Response);
+    vi.stubGlobal("fetch", fetchMock);
 
     const pending = collect();
     const rejected = expect(pending).rejects.toThrow("Bedrock stream produced no data for 300s");
+    // Signing is async (Web Crypto), so the request goes out a few ticks later: start the clock
+    // only once it has, or the idle timer would be armed after the advance.
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
     await vi.advanceTimersByTimeAsync(300_000);
     await rejected;
   });

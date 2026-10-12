@@ -186,7 +186,7 @@ async function bedrockGetJson<T>(
   const headers: Record<string, string> = { accept: "application/json", "content-type": "application/json" };
 
   try {
-    const signedHeaders = signBedrockRequest(creds, "GET", url.toString(), headers, "");
+    const signedHeaders = await signBedrockRequest(creds, "GET", url.toString(), headers, "");
     const response = await fetch(url.toString(), {
       method: "GET",
       headers: signedHeaders,

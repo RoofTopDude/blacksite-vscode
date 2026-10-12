@@ -1,5 +1,5 @@
 /**
- * Coverage for the OpenAI service-tier graceful fallback in `_streamTurnOpenAI`: a non-default
+ * Coverage for the OpenAI service-tier graceful fallback in `streamOpenAIChat`: a non-default
  * tier (flex/priority) that turns out unavailable — either because capacity is momentarily out
  * (429) or the selected model doesn't support that tier at all (400, which OpenAI reports by
  * naming the `service_tier` param in the error body) — must retry the same turn once at the
@@ -40,9 +40,9 @@ function createOpenAISession(serviceTier?: OpenAIServiceTier) {
     serviceTier,
     maxIterations: 5,
     checkpointingEnabled: false,
-    // maxAttempts: 1 isolates the NEW tier-fallback logic under test from _fetchWithRetry's own
+    // maxAttempts: 1 isolates the NEW tier-fallback logic under test from fetchWithRetry's own
     // internal backoff/retry cycle (already covered by provider-retry.spec.ts) — each fetch call
-    // below maps 1:1 to a _fetchWithRetry cycle instead of being retried internally first.
+    // below maps 1:1 to a fetchWithRetry cycle instead of being retried internally first.
     retryPolicy: { maxAttempts: 1, baseDelayMs: 1, maxDelayMs: 2 },
     memoryProvider: { append: () => undefined, readMemory: () => "", readContext: () => "" },
   } as never);

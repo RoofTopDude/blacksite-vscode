@@ -6,10 +6,8 @@ import { browserTool, redactBrowserPayload } from "./browser/privacy.js";
 import type { HostedSearchPolicy, HostedSearchRoute } from "./browser/approval-types.js";
 import type { LocalRuntime, McpServer } from "@blacksite/local-runtime";
 import {
-  applyAnthropicThinking,
   planThinking,
   resolveAnthropicBetaExtras as resolveAnthropicBetaExtrasFor,
-  toBedrockThinking,
   type AnthropicBetaExtras,
   type AnthropicBetaOptions,
   type CacheTtl,
@@ -23,6 +21,15 @@ import {
   normalizeOpenAIStopReason,
   openAIStreamError,
   responsesStreamError,
+  buildAnthropicWireTools,
+  createModelClient,
+  openAIEffectiveSystem,
+  ProviderTurnEventQueue,
+  ProviderTurnRunner,
+  type ModelClient,
+  type ModelRequest,
+  type ModelTransport,
+  type TransportContext,
 } from "@blacksite-agent/llm";
 // Re-exported: specs and older call sites import these from here.
 export { anthropicStreamError, normalizeAnthropicStopReason, normalizeOpenAIStopReason, openAIStreamError, responsesStreamError };
@@ -108,7 +115,6 @@ import { planModeRefusal, planModeWithholds } from "./plan-mode-policy.js";
 import { isMcpTypedToolName, type McpTypedTool } from "./mcp-tool-catalog.js";
 import {
   buildToolRoster,
-  expandToolReferences,
   firstSentence,
   isCoreTool,
   searchTools,
@@ -118,34 +124,21 @@ import {
 } from "./agent/tool-loading.js";
 import { saveCheckpoint, clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
-import { streamBedrockConverse, signBedrockRequest, mantleEndpoint } from "./bedrock-client.js";
-import type { ConverseOptions } from "./bedrock-client.js";
 import {
   DEFAULT_RETRY_POLICY,
-  HttpError,
-  FLEX_STREAM_IDLE_TIMEOUT_MS,
-  STREAM_IDLE_TIMEOUT_MS,
-  StreamIdleTimeoutError,
-  computeBackoffMs,
-  interruptibleSleep,
   isRetryableError,
-  isRetryableStatus,
   isContextOverflowErrorMessage,
   extractContextOverflowLimit,
   isOutputTokenLimitErrorMessage,
   extractOutputTokenLimit,
-  parseRetryAfter,
-  ProviderStreamError,
 } from "./provider-retry.js";
 import {
   resolveOutputCeiling,
-  bedrockSupportsCacheTtl1h,
   isOpenAIReasoningModel,
   resolveReasoningEffort,
-  toOpenRouterReasoningEffort,
   type OpenAIReasoningEffort,
 } from "./model-limits.js";
-import { buildSamplingBody, type SamplingKey } from "./sampling-parameters.js";
+import { type SamplingKey } from "./sampling-parameters.js";
 
 /* Provider wire-format and transcript-hygiene helpers were lifted out of this file; it
    re-exports them so the ~60 call sites and specs that import them from "agent-session.js"
@@ -260,33 +253,21 @@ export {
 // Re-exported: call sites and tests reach these through agent-session.
 export { resolveOutputCeiling, isOpenAIReasoningModel };
 import {
-  acceptsSamplingParams,
-  DEFAULT_CLAUDE_EFFORT,
-  parseClaudeVersion,
   recommendsRefusalFallback,
-  resolveThinkingMode,
   supportsFastMode,
   supportsTaskBudget,
 } from "./thinking-modes.js";
 // Re-exported: the webview UI gates the new beta-feature toggles on these.
 export { recommendsRefusalFallback, supportsFastMode, supportsTaskBudget };
 import type { RetryPolicy } from "./provider-retry.js";
-import { outageDelayMs } from "./provider-retry.js";
 import {
-  anthropicSearchResults,
-  anthropicWebSearchTool,
   hostedSearchSummary,
-  openRouterCitations,
-  openRouterServerToolCall,
-  openRouterWebSearchTool,
 } from "./agent/hosted-search.js";
 import type {
   BedrockCredentials,
-  BedrockConverseStreamEvent,
 } from "./bedrock-types.js";
 import type {
   AgentMessage,
-  CompactionBlock,
   ContentBlock,
   ImageBlock,
   ProviderTurnResult,
@@ -294,21 +275,12 @@ import type {
   ProviderTurnSink,
   ProviderTurnStreamEvent,
   ProviderActivityEvent,
-  ReasoningBlock,
   ToolResultBlock,
   ToolUseBlock,
 } from "./agent-loop-contract.js";
 
 const DEFAULT_MAX_TOKENS = 32768;
 const DEFAULT_MAX_ITER   = 40;
-/** How many times one reply may be resumed after the API pauses a long server-side search. */
-const MAX_PAUSE_TURN_RESUMES = 5;
-/** What one Anthropic response stream ended with, for the caller that may have to resume it. */
-interface AnthropicParseResult {
-  rawStopReason: string;
-  /** Every completed block in Anthropic wire form, in order: a paused reply's exact content. */
-  wireBlocks: Array<Record<string, unknown>>;
-}
 /**
  * Conservative context-window assumed when a model's real window is unknown (not in the
  * static table, absent from the live model catalog, and the catalog fetch failed). Its
@@ -657,15 +629,6 @@ function duplicateToolRoundPrompt(rounds: number, tools: string): string {
 // ── Provider config ────────────────────────────────────────────────────────────
 
 export type { ProviderName } from "@blacksite-agent/llm";
-
-const PROVIDER_DEFAULTS: Record<ProviderName, { baseUrl: string; authHeader: "x-api-key" | "Bearer" }> = {
-  anthropic:  { baseUrl: "https://api.anthropic.com/v1/messages",          authHeader: "x-api-key" },
-  openrouter: { baseUrl: "https://openrouter.ai/api/v1/chat/completions",   authHeader: "Bearer" },
-  openai:     { baseUrl: "https://api.openai.com/v1/chat/completions",      authHeader: "Bearer" },
-  // Bedrock signs requests per-call (SigV4) and resolves its endpoint from the
-  // region; this entry only satisfies the Record type — the Bedrock path never reads it.
-  bedrock:    { baseUrl: "",                                                authHeader: "x-api-key" },
-};
 
 // ── Public event types ─────────────────────────────────────────────────────────
 
@@ -1301,6 +1264,9 @@ export interface AgentSessionOptions {
   /** Semantic memory index — enables tool-call similarity injection and rolling transcript chunk search. */
   agentMemoryIndex?: AgentMemoryIndex;
   providerTurnSessionFactory?: (session: AgentSession) => ProviderTurnSession;
+  /** Streams the model turns instead of the built-in client for `provider` (a gateway that holds the
+   *  credentials, a recorded transport in tests). Requests are built exactly as for the built-in one. */
+  modelTransport?: ModelTransport;
 }
 
 export interface MemoryProvider {
@@ -1454,6 +1420,13 @@ export class AgentSession {
    * cancellation, so the runner calls attachSignal() right before iterating.
    */
   private _signal?: AbortSignal;
+  /** The built-in client for this session's provider; holds what the routes learn about the
+   *  endpoint, and is what PAU measures the wire against. */
+  private readonly _modelClient: ModelClient;
+  /** What actually streams the turns: `opts.modelTransport` when given, else the built-in client. */
+  private readonly _modelTransport: ModelTransport;
+  /** Retries a turn and owns the outage wait "Retry now" ends. */
+  private readonly _turnRunner = new ProviderTurnRunner();
   /**
    * "Allow All" answers given during the current request, keyed by what they approved (category
    * and tier). Cleared when a user message starts a new request (and when the owning plan run
@@ -1578,25 +1551,6 @@ export class AgentSession {
   private _duplicateToolRoundNudgeCount = 0;
   /** Set after the missing-contextLength diagnostic has been emitted once. */
   private _contextLengthWarned = false;
-  /**
-   * Set once a Bedrock Converse call rejects a request specifically because of its
-   * cache breakpoints (some models/regions/quota configurations don't support prompt
-   * caching, and unlike the ARN-based context-length gap, this can't be capability-checked
-   * ahead of time from the model id alone). Once set, subsequent Bedrock turns this
-   * session skip cache breakpoints entirely instead of paying a failed-request retry
-   * every turn.
-   */
-  private _bedrockCacheUnsupported = false;
-  /** Set once Bedrock rejects the one-hour cache TTL for this session's model; later turns keep
-   *  the 5-minute cache points instead of retrying the TTL. */
-  private _bedrockCacheTtlUnsupported = false;
-  /** Set once OpenRouter rejects a request whose only difference from an accepted one is the
-   *  cache anchor on a trailing tool result. Later turns keep the documented system/user anchors
-   *  and stop paying a failed round trip for the tool one. */
-  private _openRouterToolCacheRejected = false;
-  /** Set after an endpoint rejects `strict: true` tool definitions (Anthropic/Mantle) — the
-   *  session then sends plain schemas for the rest of its life instead of probing every turn. */
-  private _strictToolsUnsupported = false;
   /** Current pending user gate, if the loop is waiting on approval or an answer. */
   private _pendingGate: PendingGateState | undefined;
   /** Timestamp when the first checkpoint was saved for this session; preserved across updates. */
@@ -1654,6 +1608,26 @@ export class AgentSession {
   constructor(private readonly opts: AgentSessionOptions) {
     this.sessionId = `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     this.provider = opts.provider ?? "anthropic";
+    this._modelClient = createModelClient({
+      provider: this.provider,
+      apiKey: opts.apiKey,
+      baseUrl: opts.baseUrl,
+      bedrock: opts.bedrock,
+      bedrockApi: opts.bedrockApi,
+      bedrockExtendedStopReasons: opts.bedrockExtendedStopReasons,
+      useResponsesApi: opts.useResponsesApi,
+      cacheTtl: opts.cacheTtl,
+      retryPolicy: opts.retryPolicy,
+      serviceTier: opts.serviceTier,
+      reasoningEffort: opts.reasoningEffort,
+      sampling: opts.sampling,
+      modelSupportedParameters: opts.modelSupportedParameters,
+      httpReferer: opts.httpReferer,
+      xTitle: opts.xTitle,
+      openrouterProvider: opts.openrouterProvider,
+      openrouterFallbackModels: opts.openrouterFallbackModels,
+    });
+    this._modelTransport = opts.modelTransport ?? this._modelClient;
     this._signal = opts.signal;
     this._disabledTools = new Set(opts.disabledTools ?? []);
     /* Assigned here rather than as a field initializer: `opts` is a constructor
@@ -2582,15 +2556,18 @@ export class AgentSession {
   /**
    * The system string the OpenAI/OpenRouter wire body actually carries.
    *
-   * Single definition of truth for `_streamTurnOpenAI` and the PAU trace. They used to build
+   * Single definition of truth for the OpenAI wire body and the PAU trace (openAIEffectiveSystem). They used to build
    * this independently, and the PAU side omitted the compressed summary — so on exactly the
    * long, compacted sessions the measurement matters most for, it was analysing a system prompt
    * the provider never saw.
    */
   private _openAIEffectiveSystem(): string {
-    return this._compressedSummary
-      ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}\n---`
-      : this.opts.systemPrompt;
+    return openAIEffectiveSystem(this.opts.systemPrompt, this._compressedSummary);
+  }
+
+  /** The Anthropic wire tool list for `plan`, exactly as the transport builds it. */
+  private _buildAnthropicWireTools(plan = this._toolPlan(), hosted?: HostedSearchPolicy): Array<Record<string, unknown>> {
+    return buildAnthropicWireTools(this._transportContext(), plan, hosted);
   }
 
   /**
@@ -2703,252 +2680,70 @@ export class AgentSession {
     };
   }
 
-  /** Ends the current outage wait early, so a "Retry now" takes effect at once. */
-  private _outageWake?: () => void;
+  /** Try the provider again now instead of at the scheduled time. No effect outside an outage wait. */
+  retryProviderNow(): boolean {
+    return this._turnRunner.retryNow();
+  }
 
-  /** Wait out part of a provider outage; resolves on the timer, on cancel, or on {@link retryProviderNow}. */
-  private _outageSleep(ms: number): Promise<void> {
-    return new Promise<void>((resolve) => {
-      const signal = this._signal;
-      const finish = (): void => {
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", finish);
-        this._outageWake = undefined;
-        resolve();
-      };
-      const timer = setTimeout(finish, Math.max(0, ms));
-      if (signal?.aborted) { finish(); return; }
-      signal?.addEventListener("abort", finish, { once: true });
-      this._outageWake = finish;
+  /** One provider turn through the session's model client (or its ChatGPT subscription). */
+  private _runProviderTurnWithRetry(sink: ProviderTurnSink): Promise<ProviderTurnResult> {
+    return this._turnRunner.run(() => this._openProviderStream(), sink, {
+      retryPolicy: this.opts.retryPolicy,
+      outageWaitMs: this.opts.providerOutageWaitMs,
+      signal: this._signal,
+      label: this.provider,
+      model: this.opts.model,
     });
   }
 
-  /** Try the provider again now instead of at the scheduled time. No effect outside an outage wait. */
-  retryProviderNow(): boolean {
-    const wake = this._outageWake;
-    if (!wake) return false;
-    wake();
-    return true;
+  /** Opens one attempt's stream. Called once per attempt, so a retry re-sends the same request. */
+  private _openProviderStream(): AsyncGenerator<ProviderTurnStreamEvent> {
+    if (!this.opts.subscriptionStream) return this._modelTransport.stream(this._buildModelRequest(), this._signal);
+    const subscriptionContext = this._dynamicContext();
+    const hostedForChatGpt = this._hostedSearch();
+    return this.opts.subscriptionStream({
+      model: this.opts.model,
+      systemPrompt: this._compressedSummary
+        ? `${this.opts.systemPrompt}\n\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}`
+        : this.opts.systemPrompt,
+      // The workspace block travels apart from the conversation: the service decides whether it
+      // is sent at all, because every copy it sends stays in a reused thread.
+      messages: normalizeForProvider(this.messages),
+      ...(subscriptionContext ? { contextTail: subscriptionContext } : {}),
+      conversationId: this.sessionId,
+      tools: this._toolPlan().wire,
+      ...(hostedForChatGpt ? { hostedSearch: { scope: hostedForChatGpt.scope, allowedDomains: hostedForChatGpt.allowedDomains, deniedDomains: hostedForChatGpt.deniedDomains } } : {}),
+      signal: this._signal,
+      reasoningEffort: this.opts.reasoningEffort,
+      // Codex names the tiers "priority" (Fast) and "default" (Standard); anything else
+      // leaves the account's own default in charge.
+      serviceTier: this.opts.serviceTier === "fast" || this.opts.serviceTier === "priority" ? "priority"
+        : this.opts.serviceTier === "default" ? "default" : undefined,
+    });
   }
 
-  /**
-   * Run one provider turn, retrying a transient failure that struck *after* streaming began.
-   *
-   * `_fetchWithRetry` only covers the pre-stream phase (connect + response status), because a
-   * retry there cannot duplicate output — nothing has been emitted yet. But every provider also
-   * reports failures *inside* a 200 stream (see {@link ProviderStreamError}), and those were
-   * thrown straight to the turn's terminal error handler with no retry at all. On Bedrock that
-   * was close to fatal: AWS delivers throttles as in-band exception frames, so the single most
-   * common transient failure on that provider bypassed the entire retry layer.
-   *
-   * Retrying mid-stream is safe here only because the turn is not committed until this method
-   * returns: the accumulators below are re-initialised per attempt, and a `turn_reset` tells the
-   * UI to drop the partial bubble. The re-issued request is byte-identical (it is rebuilt from
-   * `this.messages`, which the loop has not touched), so the model simply generates again.
-   */
-  private async _runProviderTurnWithRetry(sink: ProviderTurnSink): Promise<ProviderTurnResult> {
-    const policy = this.opts.retryPolicy ?? DEFAULT_RETRY_POLICY;
-    let outageStartedAt: number | undefined;
-    let outageRetries = 0;
+  /** Everything this turn's request needs, as plain data for the model client. */
+  private _buildModelRequest(): ModelRequest {
+    const toolPlan = this._toolPlan();
+    return {
+      model: this.opts.model,
+      system: this.opts.systemPrompt,
+      systemSummary: this._compressedSummary,
+      contextTail: this._dynamicContext(),
+      messages: this.messages,
+      tools: { wire: toolPlan.wire, deferred: toolPlan.deferred, references: this._toolReferenceResults },
+      thinking: this._planThinking(),
+      hostedSearch: this._hostedSearch(),
+      nativeToolSearch: this._nativeToolSearch(),
+      conversationId: this.sessionId,
+      turnIndex: this._iteration,
+      anthropicBeta: { ...pickBetaOptions(this.opts), contextEditingExcludeTools: UNSHEDDABLE_TOOL_NAMES },
+    };
+  }
 
-    for (let attempt = 0; attempt < policy.maxAttempts; attempt++) {
-      if (this._signal?.aborted) throw makeAbortError();
-      let activityPhase: ProviderActivityEvent["phase"] | undefined;
-      let activityMessage: string | undefined;
-      const activity = (phase: ProviderActivityEvent["phase"], message: string): void => {
-        if (phase === activityPhase && message === activityMessage) return;
-        activityPhase = phase;
-        activityMessage = message;
-        sink.emit({ type: "provider_activity", phase, message });
-      };
-      activity("waiting", `Waiting for ${this.provider} · ${this.opts.model} (attempt ${attempt + 1}/${policy.maxAttempts})`);
-      // Re-initialised per attempt: a retry must not splice its output onto the partial
-      // generation that failed.
-      const thinkingBlocks: ReasoningBlock[] = [];
-      const toolCalls: ToolUseBlock[] = [];
-      let text = "";
-      // The same turn in arrival order. Used only when it holds provider-executed work, which
-      // must replay exactly where it happened; otherwise the canonical order below is kept.
-      const ordered: ContentBlock[] = [];
-      let pendingText = "";
-      let hasNative = false;
-      const flushText = (): void => {
-        if (pendingText) ordered.push({ type: "text", text: pendingText });
-        pendingText = "";
-      };
-      let stopReason: AgentStopReason | undefined;
-      let compactionBlock: CompactionBlock | undefined;
-      let usage:
-        | {
-          inputTokens: number;
-          outputTokens: number;
-          cacheReadTokens: number;
-          cacheWriteTokens: number;
-          serviceTier?: string;
-        }
-        | undefined;
-
-      const subscriptionContext = this.opts.subscriptionStream ? this._dynamicContext() : "";
-      const hostedForChatGpt = this.opts.subscriptionStream ? this._hostedSearch() : undefined;
-      const stream = this.opts.subscriptionStream
-        ? this.opts.subscriptionStream({
-          model: this.opts.model,
-          systemPrompt: this._compressedSummary
-            ? `${this.opts.systemPrompt}\n\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}`
-            : this.opts.systemPrompt,
-          // The workspace block travels apart from the conversation: the service decides whether it
-          // is sent at all, because every copy it sends stays in a reused thread.
-          messages: normalizeForProvider(this.messages),
-          ...(subscriptionContext ? { contextTail: subscriptionContext } : {}),
-          conversationId: this.sessionId,
-          tools: this._toolPlan().wire,
-          ...(hostedForChatGpt ? { hostedSearch: { scope: hostedForChatGpt.scope, allowedDomains: hostedForChatGpt.allowedDomains, deniedDomains: hostedForChatGpt.deniedDomains } } : {}),
-          signal: this._signal,
-          reasoningEffort: this.opts.reasoningEffort,
-          // Codex names the tiers "priority" (Fast) and "default" (Standard); anything else
-          // leaves the account's own default in charge.
-          serviceTier: this.opts.serviceTier === "fast" || this.opts.serviceTier === "priority" ? "priority"
-            : this.opts.serviceTier === "default" ? "default" : undefined,
-        })
-        : this.provider === "anthropic"
-        ? this._streamTurnAnthropic()
-        : this.provider === "bedrock"
-        ? (this.opts.bedrockApi === "mantle" ? this._streamTurnBedrockMantle() : this._streamTurnBedrock())
-        : (this.provider === "openai" && this.opts.useResponsesApi && isOpenAIReasoningModel(this.opts.model))
-        ? this._streamTurnOpenAIResponses()
-        : this._streamTurnOpenAI();
-
-      try {
-        for await (const event of stream) {
-          if (event.type === "text_delta") activity("responding", `${this.provider} is streaming a response`);
-          else if (event.type === "thinking_delta" || event.type === "thinking_block" || event.type === "redacted_thinking_block") {
-            activity("thinking", `${this.provider} is reasoning`);
-          } else if (event.type === "notice" && /retry|retrying/i.test(event.message)) activity("retrying", event.message);
-          else if (event.type === "provider_activity") {
-            activity(event.phase, event.message);
-            continue;
-          }
-          sink.emit(event);
-          if (event.type === "text_delta") {
-            text += event.text;
-            pendingText += event.text;
-          } else if (event.type === "thinking_block") {
-            const block: ReasoningBlock = {
-              type: "thinking",
-              thinking: event.text,
-              ...(event.signature ? { signature: event.signature } : {}),
-              ...(event.encryptedContent ? { encryptedContent: event.encryptedContent } : {}),
-              ...(event.reasoningItemId ? { reasoningItemId: event.reasoningItemId } : {}),
-            };
-            thinkingBlocks.push(block);
-            flushText();
-            ordered.push(block);
-          } else if (event.type === "redacted_thinking_block") {
-            thinkingBlocks.push({ type: "redacted_thinking", data: event.data });
-            flushText();
-            ordered.push({ type: "redacted_thinking", data: event.data });
-          } else if (event.type === "tool_use_block") {
-            toolCalls.push(event.block);
-            flushText();
-            ordered.push(event.block);
-          } else if (event.type === "provider_native_block") {
-            flushText();
-            ordered.push(event.block);
-            hasNative = true;
-          } else if (event.type === "compaction_block") {
-            compactionBlock = { type: "compaction", content: event.content };
-          } else if (event.type === "stop_reason") {
-            stopReason = event.reason;
-          } else if (event.type === "usage_update") {
-            usage = {
-              inputTokens: event.inputTokens,
-              outputTokens: event.outputTokens,
-              cacheReadTokens: event.cacheReadTokens,
-              cacheWriteTokens: event.cacheWriteTokens,
-              serviceTier: event.serviceTier,
-            };
-          }
-        }
-        if (stopReason === undefined) {
-          throw new ProviderStreamError(`${this.provider} stream ended before a completion event`, true);
-        }
-      } catch (err) {
-        if (this._signal?.aborted || !isRetryableError(err)) throw err;
-        const isLast = attempt >= policy.maxAttempts - 1;
-        // Fast retries are used up. A plan run keeps trying on a slow schedule instead of ending
-        // an unattended run over a service that is briefly down.
-        let outageWaitMs: number | undefined;
-        if (isLast) {
-          const budget = this.opts.providerOutageWaitMs?.() ?? 0;
-          outageStartedAt ??= Date.now();
-          const remaining = budget - (Date.now() - outageStartedAt);
-          if (budget <= 0 || remaining <= 0) throw err;
-          outageWaitMs = outageDelayMs(outageRetries++, remaining);
-        }
-
-        // Release the provider stream before re-issuing — without this the abandoned generator
-        // holds its socket open for the whole backoff, and a Bedrock retry storm would leak one
-        // connection per attempt.
-        await stream.return(undefined).catch(() => { /* generator may already be done */ });
-
-        const reason = err instanceof Error ? err.message : String(err);
-        const delayMs = outageWaitMs ?? computeBackoffMs(attempt, policy, err instanceof HttpError ? err.retryAfterSeconds : null);
-        sink.emit({ type: "turn_reset", reason });
-        if (outageWaitMs !== undefined) {
-          sink.emit({
-            type: "provider_activity",
-            phase: "retrying",
-            message: `${this.provider} is unavailable (${reason.replace(/\s+/g, " ").slice(0, 120)}) — trying again in ${formatDelay(delayMs)}`,
-            outage: true,
-            retryAt: Date.now() + delayMs,
-          });
-          sink.emit({
-            type: "notice",
-            level: "warn",
-            message: `${this.provider} is unavailable (${reason}). The plan run is waiting and will try again in ${formatDelay(delayMs)}.`,
-          });
-          await this._outageSleep(delayMs);
-          // Stay on the last attempt: the next failure is another slow retry, not a restart of the fast ones.
-          attempt = policy.maxAttempts - 2;
-          continue;
-        }
-        activity("retrying", `${this.provider}: retrying in ${formatDelay(delayMs)} (attempt ${attempt + 2}/${policy.maxAttempts})`);
-        sink.emit({
-          type: "notice",
-          level: "warn",
-          message: `${this.provider} request failed (${reason}) — discarding any partial response and retrying in ${formatDelay(delayMs)} (attempt ${attempt + 2}/${policy.maxAttempts})…`,
-        });
-        await interruptibleSleep(delayMs, this._signal);
-        continue;
-      } finally {
-        sink.emit({ type: "provider_activity", phase: "idle", message: "" });
-      }
-
-      let normalizedStopReason = stopReason ?? "protocol_violation";
-      if (toolCalls.length > 0 && normalizedStopReason !== "tool_use") {
-        normalizedStopReason = "protocol_violation";
-      } else if (toolCalls.length === 0 && normalizedStopReason === "tool_use") {
-        normalizedStopReason = "protocol_violation";
-      }
-      flushText();
-      return {
-        text,
-        thinkingBlocks,
-        toolCalls,
-        stopReason: normalizedStopReason,
-        usage,
-        // Thinking does not count: a reply that reasoned but wrote no text and made no call leaves
-        // the user with nothing on screen, which is exactly what the empty-reply recovery is for.
-        // Thinking models (the default on current Claude models) produce this shape rather than a
-        // truly blank one, so counting their reasoning as content disabled the recovery for them.
-        empty: text.trim().length === 0 && toolCalls.length === 0 && !compactionBlock,
-        compactionBlock,
-        ...(hasNative ? { orderedBlocks: ordered } : {}),
-      };
-    }
-
-    // Unreachable: the loop either returns a result or throws on the final attempt.
-    throw new Error(`${this.provider}: provider turn failed after ${policy.maxAttempts} attempts`);
+  /** The transport context the PAU measurement shares with the wire. */
+  private _transportContext(): TransportContext {
+    return { config: this._modelClient.config, latches: this._modelClient.latches, signal: this._signal };
   }
 
   private _keepRecentCount(): number {
@@ -3362,16 +3157,6 @@ export class AgentSession {
     if (this._getTools().some((tool) => tool.name === name)) this._loadedTools.add(name);
   }
 
-  /** Anthropic-format history for the wire, with tool_search results expanded natively. */
-  private _anthropicWireMessages(sentToolNames: ReadonlySet<string>, expandNative = false): unknown[] {
-    const messages = appendWorkspaceContextTail(
-      withRollingCacheBreakpoint(stripUnsignedThinking(resolveAnthropicNativeBlocks(normalizeForProvider(this.messages), expandNative)), this.opts.cacheTtl),
-      this._dynamicContext(),
-    );
-    return this._nativeToolSearch()
-      ? expandToolReferences(messages as Array<{ role: string; content: unknown }>, this._toolReferenceResults, sentToolNames)
-      : messages;
-  }
 
   private _handleTranscriptRead(payload: Record<string, unknown>): unknown {
     const query = payload["query"] ? String(payload["query"]).trim() : null;
@@ -5961,1402 +5746,7 @@ export class AgentSession {
     yield { type: "turn_complete", stopReason: "max_iterations", iterations: this._iteration - turnStartIteration };
   }
 
-  // ── Anthropic native streaming ─────────────────────────────────────────────
 
-  /**
-   * POST to a provider with transient-failure retries, yielding a live "retrying…" notice
-   * between attempts and returning the successful Response. Only the pre-stream phase
-   * (connection + response status) is retried — that is where 429/529/5xx/throttle and
-   * connect failures surface, before any body has been read — so a retry can never
-   * duplicate already-streamed output. A non-retryable or exhausted non-OK response is
-   * returned as-is for the caller to turn into its provider-specific error. Honours a
-   * server `Retry-After` header.
-   */
-  private async *_fetchWithRetry(
-    label: string,
-    doFetch: (signal: AbortSignal | undefined) => Promise<Response>,
-  ): AsyncGenerator<ProviderTurnStreamEvent, Response> {
-    const policy = this.opts.retryPolicy ?? DEFAULT_RETRY_POLICY;
-    let lastErr: unknown;
-    for (let attempt = 0; attempt < policy.maxAttempts; attempt++) {
-      if (this._signal?.aborted) throw makeAbortError();
-      const isLast = attempt >= policy.maxAttempts - 1;
-      try {
-        const response = await doFetch(this._signal);
-        if (response.ok) return response;
-        if (isLast || !isRetryableStatus(response.status)) return response;
-        const retryAfter = parseRetryAfter(response.headers.get("retry-after"));
-        const delayMs = computeBackoffMs(attempt, policy, retryAfter);
-        await response.body?.cancel().catch(() => { /* releasing the socket is best-effort */ });
-        yield {
-          type: "notice",
-          level: "warn",
-          message: `${label} ${response.status} — retrying in ${formatDelay(delayMs)} (attempt ${attempt + 2}/${policy.maxAttempts})…`,
-        };
-        await interruptibleSleep(delayMs, this._signal);
-      } catch (err) {
-        lastErr = err;
-        if (this._signal?.aborted || isLast || !isRetryableError(err)) throw err;
-        const delayMs = computeBackoffMs(attempt, policy, null);
-        yield {
-          type: "notice",
-          level: "warn",
-          message: `${label} connection error (${err instanceof Error ? err.message : String(err)}) — retrying in ${formatDelay(delayMs)} (attempt ${attempt + 2}/${policy.maxAttempts})…`,
-        };
-        await interruptibleSleep(delayMs, this._signal);
-      }
-    }
-    throw lastErr instanceof Error ? lastErr : new Error(`${label}: request failed after ${policy.maxAttempts} attempts`);
-  }
-
-  /** Build the Anthropic wire tool list — strict-marked where the schema qualifies, unless the
-   *  session already learned strict isn't accepted — with the trailing cache breakpoint. */
-  private _buildAnthropicWireTools(plan = this._toolPlan(), hosted?: HostedSearchPolicy): Array<Record<string, unknown>> {
-    const tools = this._strictToolsUnsupported
-      ? plan.wire.map(({ name, description, input_schema }) =>
-          ({ name, description, input_schema }) as Record<string, unknown>)
-      : withAnthropicStrictTools(plan.wire);
-    // Deferred tools stay out of the prompt prefix until a tool_reference expands them. The plan
-    // lists every non-deferred tool first, so the tool breakpoint below lands on the last one —
-    // a deferred tool may not carry cache_control at all.
-    for (const tool of tools) if (plan.deferred.has(String(tool["name"]))) tool["defer_loading"] = true;
-    // Cache the (large, stable) tool-schema block by marking the last loaded tool. Tools come first
-    // in Anthropic's prefix order (tools → system → messages), so this entry holds the tool schemas
-    // alone — which is what lets delegated lanes, whose system prompts differ from the parent's,
-    // still share it. The system block carries its own breakpoint for tools+system. One of the
-    // four breakpoints a request may carry; see withRollingCacheBreakpoint for the other two.
-    const lastLoaded = tools.map((tool) => tool["defer_loading"] !== true).lastIndexOf(true);
-    if (lastLoaded >= 0) tools[lastLoaded]!["cache_control"] = cacheControlFor(this.opts.cacheTtl);
-    // After the breakpoint: the search tool comes and goes with consent, and keeping it out of the
-    // cached prefix means switching it on does not rewrite every tool schema at the write premium.
-    if (hosted) tools.push(anthropicWebSearchTool(hosted));
-    return tools;
-  }
-
-  /** True for a 400 plausibly caused by `strict`/schema validation — the trigger for the
-   *  one-shot retry without strict marking. A false positive costs one harmless extra
-   *  round-trip whose real error still surfaces. */
-  private static _looksLikeStrictRejection(status: number, text: string): boolean {
-    return status === 400 && /\bstrict\b|input_schema/i.test(text);
-  }
-
-  private async *_streamTurnAnthropic(): AsyncGenerator<ProviderTurnStreamEvent> {
-    const url = this.opts.baseUrl ?? PROVIDER_DEFAULTS.anthropic.baseUrl;
-
-    const plan = this._planThinking();
-    const extras = resolveAnthropicBetaExtras(this.opts.model, this.opts, false);
-
-    const makeBody = (): Record<string, unknown> => {
-      const toolPlan = this._toolPlan();
-      const hosted = this._hostedSearch();
-      const body: Record<string, unknown> = {
-        model: this.opts.model,
-        max_tokens: plan.maxTokens,
-        system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary, this.opts.cacheTtl),
-        messages: this._anthropicWireMessages(new Set(toolPlan.wire.map((tool) => tool.name)), hosted?.provider === "anthropic"),
-        tools: this._buildAnthropicWireTools(toolPlan, hosted?.provider === "anthropic" ? hosted : undefined),
-        stream: true,
-      };
-      if (plan.temperature !== undefined) body["temperature"] = plan.temperature;
-      applyAnthropicThinking(body, plan);
-      Object.assign(body, extras.bodyExtras);
-      if (extras.taskBudgetTokens) {
-        const existingOutputConfig = body["output_config"] as Record<string, unknown> | undefined;
-        body["output_config"] = { ...existingOutputConfig, task_budget: { type: "tokens", total: extras.taskBudgetTokens } };
-      }
-      return body;
-    };
-    let body = makeBody();
-
-    const anthropicHeaders: Record<string, string> = {
-      "anthropic-version": "2023-06-01",
-      "x-api-key": this.opts.apiKey,
-      "content-type": "application/json",
-    };
-    // claude-3-7 is the one model that still needs the interleaved-thinking beta header. Claude 4+
-    // has it built in, and adaptive thinking enables interleaving on its own — so this only ever
-    // applies to the budget dialect.
-    const betas = extras.betas.slice();
-    if (plan.thinking.kind === "budget" && /claude-3[-.]7/i.test(this.opts.model)) {
-      betas.push("interleaved-thinking-2025-05-14");
-    }
-    if (betas.length > 0) anthropicHeaders["anthropic-beta"] = betas.join(",");
-    const doFetch = (signal: AbortSignal | undefined): Promise<Response> => fetch(url, {
-      method: "POST",
-      headers: anthropicHeaders,
-      body: JSON.stringify(body),
-      signal,
-    });
-    let response = yield* this._fetchWithRetry("Anthropic", doFetch);
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      // Strict tool marking is an optimization, never worth failing a run over: an endpoint
-      // (or gateway) that rejects it gets one retry with the plain schemas, remembered for
-      // the rest of the session — the same live-probe pattern as the Bedrock cachePoint check.
-      if (!this._strictToolsUnsupported && AgentSession._looksLikeStrictRejection(response.status, text)) {
-        this._strictToolsUnsupported = true;
-        yield { type: "notice", level: "warn", message: "Strict tool schemas were rejected by the endpoint — retrying this turn without them." };
-        body = makeBody();
-        response = yield* this._fetchWithRetry("Anthropic", doFetch);
-        if (!response.ok) {
-          const retryText = await response.text().catch(() => "");
-          throw new Error(`Anthropic ${response.status}: ${retryText.slice(0, 400)}`);
-        }
-      } else {
-        throw new Error(`Anthropic ${response.status}: ${text.slice(0, 400)}`);
-      }
-    }
-    if (!response.body) throw new Error("No response body from Anthropic");
-
-    let parsed = yield* this._parseAnthropicSSE(response.body);
-    // A long server-side search can pause the turn. The API continues it when the paused content
-    // comes back as the final assistant message, unchanged; what streams next is the rest of the
-    // same reply, so it lands in the same turn here too.
-    const paused: Array<Record<string, unknown>> = [];
-    for (let resumes = 0; parsed.rawStopReason === "pause_turn" && resumes < MAX_PAUSE_TURN_RESUMES; resumes++) {
-      paused.push(...parsed.wireBlocks);
-      const resumed = makeBody();
-      body = { ...resumed, messages: [...(resumed["messages"] as unknown[]), { role: "assistant", content: [...paused] }] };
-      response = yield* this._fetchWithRetry("Anthropic", doFetch);
-      if (!response.ok) {
-        const text = await response.text().catch(() => "");
-        throw new Error(`Anthropic ${response.status}: ${text.slice(0, 400)}`);
-      }
-      if (!response.body) throw new Error("No response body from Anthropic");
-      parsed = yield* this._parseAnthropicSSE(response.body);
-    }
-  }
-
-  /**
-   * When server-side compaction fires, `usage.iterations` carries a per-iteration breakdown
-   * (a `"compaction"` entry plus the normal `"message"` entry) and the plain top-level
-   * `input_tokens`/`output_tokens` reflect only the message iteration — silently undercounting
-   * real spend by whatever the compaction pass itself billed. Sum the array when present;
-   * return null when absent so the caller falls back to the plain fields unchanged (the
-   * exact placement of `iterations` in the streaming variant isn't documented, so this must
-   * degrade to today's behavior rather than assume a location that turns out to be wrong).
-   */
-  private static _sumUsageIterations(usage: Record<string, unknown>): { input: number; output: number } | null {
-    const iterations = usage["iterations"];
-    if (!Array.isArray(iterations) || iterations.length === 0) return null;
-    let input = 0;
-    let output = 0;
-    for (const entry of iterations) {
-      if (!entry || typeof entry !== "object") continue;
-      input += Number((entry as Record<string, unknown>)["input_tokens"] ?? 0);
-      output += Number((entry as Record<string, unknown>)["output_tokens"] ?? 0);
-    }
-    return { input, output };
-  }
-
-  private async *_parseAnthropicSSE(body: ReadableStream<Uint8Array>): AsyncGenerator<ProviderTurnStreamEvent, AnthropicParseResult> {
-    const reader = response_body_reader(body, { idleMs: STREAM_IDLE_TIMEOUT_MS });
-    const textAcc     = new Map<number, string>();
-    const thinkingAcc = new Map<number, string>();
-    const signatureAcc = new Map<number, string>();
-    const redactedAcc = new Map<number, string>();
-    const jsonAcc     = new Map<number, string>();
-    const blockMeta   = new Map<number, { type: string; id: string; name: string }>();
-    // Provider-executed blocks (server_tool_use, web_search_tool_result) exactly as sent, the query
-    // behind each server call, and every completed block in wire form: what a paused turn must
-    // send back unchanged to be continued.
-    const nativeAcc   = new Map<number, Record<string, unknown>>();
-    const citationAcc = new Map<number, unknown[]>();
-    const searchQueries = new Map<string, string>();
-    const wireBlocks: Array<Record<string, unknown>> = [];
-    let rawStop = "";
-    let inputTokens = 0;
-    let cacheReadTokens = 0;
-    let cacheWriteTokens = 0;
-    let outputTokens = 0;
-
-    for await (const line of reader) {
-      if (!line.startsWith("data:")) continue;
-      const json = line.slice(5).trim();
-      if (!json || json === "[DONE]") continue;
-      let ev: Record<string, unknown>;
-      try { ev = JSON.parse(json) as Record<string, unknown>; } catch { continue; }
-
-      const evType = String(ev["type"] ?? "");
-
-      if (evType === "message_start") {
-        const msg = ev["message"] as Record<string, unknown> | undefined;
-        const usage = msg?.["usage"] as Record<string, unknown> | undefined;
-        if (usage) {
-          const iterations = AgentSession._sumUsageIterations(usage);
-          inputTokens = iterations?.input ?? Number(usage["input_tokens"] ?? 0);
-          cacheReadTokens = Number(usage["cache_read_input_tokens"] ?? 0);
-          cacheWriteTokens = Number(usage["cache_creation_input_tokens"] ?? 0);
-        }
-      } else if (evType === "content_block_start") {
-        const idx = Number(ev["index"]);
-        const cb = ev["content_block"] as Record<string, unknown>;
-        const cbType = String(cb["type"] ?? "");
-        blockMeta.set(idx, { type: cbType, id: String(cb["id"] ?? ""), name: String(cb["name"] ?? "") });
-        if (cbType === "text") textAcc.set(idx, "");
-        if (cbType === "thinking") thinkingAcc.set(idx, "");
-        if (cbType === "tool_use") {
-          jsonAcc.set(idx, "");
-          yield { type: "provider_activity", phase: "tool_input", message: `${this.provider} is preparing ${String(cb["name"] || "a tool call")}` };
-        } else if (cbType === "thinking" || cbType === "redacted_thinking") {
-          yield { type: "provider_activity", phase: "thinking", message: `${this.provider} is reasoning` };
-        }
-        // A redacted thinking block arrives complete in content_block_start — its encrypted payload
-        // is in `data`, and no deltas follow. The parser previously had no case for this block type
-        // at all, so it was dropped, and the assistant turn it belonged to replayed leading with
-        // tool_use instead of its reasoning — a 400 on the next request.
-        if (cbType === "redacted_thinking") redactedAcc.set(idx, String(cb["data"] ?? ""));
-        // The provider's own search. The call's input streams in like a tool_use's; its result
-        // block arrives complete, encrypted content and all, and is kept byte for byte.
-        if (cbType === "server_tool_use") {
-          jsonAcc.set(idx, "");
-          nativeAcc.set(idx, { ...cb });
-          yield { type: "provider_activity", phase: "tool_input", message: `${this.provider} is searching the web` };
-        } else if (cbType !== "tool_result" && cbType.endsWith("_tool_result")) {
-          nativeAcc.set(idx, { ...cb });
-        }
-        // A refusal-fallback switch point (only appears when the session opted into
-        // server-side fallbacks — see resolveAnthropicBetaExtras). Purely informational: the
-        // block itself is an "ignored audit marker" per Anthropic's docs, so it needs no
-        // accumulator entry — just surface which model took over.
-        if (cbType === "fallback") {
-          const from = (cb["from"] as Record<string, unknown> | undefined)?.["model"];
-          const to = (cb["to"] as Record<string, unknown> | undefined)?.["model"];
-          if (from || to) {
-            yield { type: "notice", level: "warn", message: `${from ?? "The primary model"} declined this turn — continuing on ${to ?? "the fallback model"}.` };
-          }
-        }
-      } else if (evType === "content_block_delta") {
-        const idx = Number(ev["index"]);
-        const delta = ev["delta"] as Record<string, unknown>;
-        const dType = String(delta["type"] ?? "");
-        if (dType === "text_delta") {
-          const text = String(delta["text"] ?? "");
-          textAcc.set(idx, (textAcc.get(idx) ?? "") + text);
-          yield { type: "text_delta", text };
-        } else if (dType === "thinking_delta") {
-          const text = String(delta["thinking"] ?? "");
-          thinkingAcc.set(idx, (thinkingAcc.get(idx) ?? "") + text);
-          if (text) yield { type: "thinking_delta", text };
-        } else if (dType === "signature_delta") {
-          // The cryptographic signature for a thinking block arrives in its own delta.
-          // Capture it so the block can be replayed to Anthropic verbatim — an unsigned
-          // thinking block is rejected with a 400 once extended thinking is enabled.
-          signatureAcc.set(idx, (signatureAcc.get(idx) ?? "") + String(delta["signature"] ?? ""));
-        } else if (dType === "input_json_delta") {
-          jsonAcc.set(idx, (jsonAcc.get(idx) ?? "") + String(delta["partial_json"] ?? ""));
-        } else if (dType === "citations_delta") {
-          // Kept only for continuing a paused turn, which must resend the text as it came.
-          if (delta["citation"]) citationAcc.set(idx, [...(citationAcc.get(idx) ?? []), delta["citation"]]);
-        } else if (dType === "compaction_delta") {
-          // Server-side compaction (beta compact-2026-01-12) is documented as non-incremental —
-          // the full summary arrives in exactly one delta event, unlike text/thinking which
-          // stream char-by-char. Yielding directly here (rather than accumulating into a map
-          // and reading it at content_block_stop, as every other block type does) is safe only
-          // because of that one-shot guarantee; if that ever changes, a second delta for the
-          // same index would silently overwrite rather than append.
-          const content = String(delta["content"] ?? "");
-          if (content) yield { type: "compaction_block", content };
-        }
-      } else if (evType === "content_block_stop") {
-        const idx = Number(ev["index"]);
-        const meta = blockMeta.get(idx);
-        if (meta?.type === "tool_use") {
-          let input: Record<string, unknown> = {};
-          try { input = JSON.parse(jsonAcc.get(idx) ?? "{}") as Record<string, unknown>; } catch { /* ignore */ }
-          yield { type: "tool_use_block", block: { type: "tool_use", id: meta.id, name: meta.name, input } };
-          wireBlocks.push({ type: "tool_use", id: meta.id, name: meta.name, input });
-        } else if (meta?.type === "thinking") {
-          const thinkingText = thinkingAcc.get(idx) ?? "";
-          const signature = signatureAcc.get(idx) || undefined;
-          // Emit on a signature even with no text. `display: "omitted"` (the default on Claude 4.7+)
-          // streams thinking blocks whose text is empty — but the block is still a structural part
-          // of the turn, and an assistant turn that made tool calls must lead with its reasoning on
-          // replay. Requiring text here silently dropped it and earned a 400 on the next request.
-          if (thinkingText || signature) {
-            yield { type: "thinking_block", text: thinkingText, signature };
-            wireBlocks.push({ type: "thinking", thinking: thinkingText, ...(signature ? { signature } : {}) });
-          }
-        } else if (meta?.type === "redacted_thinking") {
-          const data = redactedAcc.get(idx) ?? "";
-          if (data) {
-            yield { type: "redacted_thinking_block", data };
-            wireBlocks.push({ type: "redacted_thinking", data });
-          }
-        } else if (meta?.type === "text") {
-          // The API rejects an empty text block, so one that never received a delta is left out.
-          const citations = citationAcc.get(idx);
-          const blockText = textAcc.get(idx) ?? "";
-          if (blockText) wireBlocks.push({ type: "text", text: blockText, ...(citations?.length ? { citations } : {}) });
-        } else if (meta?.type === "server_tool_use") {
-          let input: Record<string, unknown> = {};
-          try { input = JSON.parse(jsonAcc.get(idx) || "{}") as Record<string, unknown>; } catch { /* keep {} */ }
-          const block: Record<string, unknown> = { ...nativeAcc.get(idx), input };
-          if (typeof input["query"] === "string") searchQueries.set(String(block["id"] ?? ""), input["query"]);
-          wireBlocks.push(block);
-          yield { type: "provider_native_block", block: { type: "provider_native", provider: "anthropic", block } };
-        } else if (meta && nativeAcc.has(idx)) {
-          const block = nativeAcc.get(idx)!;
-          wireBlocks.push(block);
-          yield { type: "provider_native_block", block: { type: "provider_native", provider: "anthropic", block } };
-          if (meta.type === "web_search_tool_result") {
-            const id = String(block["tool_use_id"] ?? "");
-            const { results, error } = anthropicSearchResults(block["content"]);
-            yield { type: "hosted_search", id, query: searchQueries.get(id) ?? this._priorSearchQuery(id), results, ...(error ? { error } : {}) };
-          }
-        }
-      } else if (evType === "message_delta") {
-        const delta = ev["delta"] as Record<string, unknown>;
-        const rawStopReason = String(delta["stop_reason"] ?? "end_turn");
-        rawStop = rawStopReason;
-        // stop_details is populated only on a refusal, and rides the same delta object as
-        // stop_reason/stop_sequence. Surface it as a preceding notice so the generic "declined
-        // to complete this response" diagnostic gets a specific category/explanation in front
-        // of it, instead of leaving the operator to guess why.
-        if (rawStopReason === "refusal") {
-          const details = delta["stop_details"] as Record<string, unknown> | undefined;
-          const category = details?.["category"];
-          const explanation = details?.["explanation"];
-          const parts = [
-            typeof category === "string" && category ? `category: ${category}` : null,
-            typeof explanation === "string" && explanation ? explanation : null,
-          ].filter((p): p is string => p !== null);
-          if (parts.length > 0) {
-            yield { type: "notice", level: "warn", message: `Refusal details — ${parts.join("; ")}` };
-          }
-        }
-        yield { type: "stop_reason", reason: normalizeAnthropicStopReason(rawStopReason) };
-        const usage = ev["usage"] as Record<string, unknown> | undefined;
-        if (usage) {
-          const iterations = AgentSession._sumUsageIterations(usage);
-          outputTokens = iterations?.output ?? Number(usage["output_tokens"] ?? 0);
-          // The compaction pass's own input tokens are real spend that message_start's
-          // pre-compaction snapshot couldn't have known about yet — only override upward
-          // (never let a message_delta lacking iterations erase what message_start already
-          // established from its own, possibly-present iterations breakdown).
-          if (iterations) inputTokens = Math.max(inputTokens, iterations.input);
-        }
-      } else if (evType === "error") {
-        // Anthropic (and Bedrock Mantle, which shares this parser) can send a mid-stream
-        // `{"type":"error","error":{...}}` event — e.g. overloaded_error, api_error — after
-        // already streaming partial content. Previously this matched none of the branches
-        // above, so it was silently dropped: the connection closes right after with no
-        // message_delta/stop_reason, and the turn completed as if it had ended cleanly with
-        // whatever partial text/thinking had streamed so far (sometimes nothing at all).
-        // Throwing a classified ProviderStreamError surfaces it through the turn-level retry
-        // (overloaded_error → retried with backoff) or, if fatal, the turn error handling.
-        throw anthropicStreamError(ev);
-      }
-    }
-
-    if (inputTokens > 0 || outputTokens > 0) {
-      yield { type: "usage_update", inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
-    }
-    return { rawStopReason: rawStop, wireBlocks };
-  }
-
-  /**
-   * The query of a search the model asked for in an earlier response. A server call made in the
-   * same parallel group as a client tool runs only on the next request, so its result arrives in
-   * a later response than the call that named the query.
-   */
-  private _priorSearchQuery(id: string): string {
-    for (let i = this.messages.length - 1; i >= 0; i--) {
-      const content = this.messages[i]!.content;
-      if (typeof content === "string") continue;
-      for (const block of content) {
-        if (block.type === "provider_native" && block.block["type"] === "server_tool_use" && block.block["id"] === id) {
-          const input = block.block["input"] as Record<string, unknown> | undefined;
-          return typeof input?.["query"] === "string" ? input["query"] : "";
-        }
-      }
-    }
-    return "";
-  }
-
-  // ── Bedrock (Converse) streaming ───────────────────────────────────────────
-
-  private async *_streamTurnBedrock(): AsyncGenerator<ProviderTurnStreamEvent> {
-    const credentials = this.opts.bedrock;
-    if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
-
-    const plan = this._planThinking();
-    const thinking = toBedrockThinking(plan.thinking);
-
-    // Inject the live workspace block at the message tail, kept out of the systemPrompt field
-    // so the Bedrock system/tools cache breakpoints stay stable. Critically, the block is
-    // appended AFTER the rolling cache breakpoint (see appendBedrockWorkspaceContextTail).
-    const baseBedrockMessages = toBedrockMessages(normalizeForProvider(this.messages));
-    const anchorPreviousTurn = parseClaudeVersion(this.opts.model) !== null;
-    // The session's cache TTL used to stop at the Anthropic and Mantle paths: Converse sent bare
-    // cache points, so a "1h" session (the default) quietly ran on 5-minute entries and paid to
-    // rewrite the cache after any pause. Sent only where AWS lists support, and withdrawn for the
-    // session on its own if Bedrock still rejects it, before caching as a whole is given up.
-    const cacheTtl = this.opts.cacheTtl === "1h" && !this._bedrockCacheTtlUnsupported && bedrockSupportsCacheTtl1h(this.opts.model)
-      ? "1h" as const
-      : undefined;
-    const buildConverseOpts = (useCache: boolean, withTtl = true): ConverseOptions => {
-      const ttl = useCache && withTtl ? cacheTtl : undefined;
-      return {
-        cacheEnabled: useCache,
-        cacheTtl: ttl,
-        credentials,
-        modelId: this.opts.model,
-        messages: appendBedrockWorkspaceContextTail(
-          useCache ? withBedrockRollingCacheBreakpoint(baseBedrockMessages, { anchorPreviousTurn, ttl }) : baseBedrockMessages,
-          this._dynamicContext(),
-        ),
-        systemPrompt: this.opts.systemPrompt,
-        compressedSummary: this._compressedSummary || undefined,
-        maxTokens: plan.maxTokens,
-        temperature: plan.temperature,
-        tools: useCache
-          ? withBedrockToolsCacheBreakpoint(toBedrockTools(this._toolPlan().wire), ttl)
-          : toBedrockTools(this._toolPlan().wire),
-        thinking,
-        effort: plan.effort,
-      };
-    };
-
-    // Transient failures — including the in-band throttle/overload frames that are unique to
-    // Converse — are now retried uniformly by _runProviderTurnWithRetry, which re-runs this whole
-    // generator from scratch. So the only thing left to handle here is the one case that layer
-    // cannot: the cache-breakpoint capability probe.
-    //
-    // Some model/region/quota combinations reject requests containing cachePoint blocks, and
-    // unlike the ARN context-length gap that can't be determined from the model id — so detect
-    // the rejection live. Issuing the first frame forces the request, and because nothing has
-    // been yielded to the caller yet, retrying without breakpoints is invisible. The result is
-    // remembered for the rest of the session so we don't pay a failed round-trip every turn.
-    if (this._signal?.aborted) throw makeAbortError();
-    let iterator: AsyncIterator<BedrockConverseStreamEvent>;
-    let firstResult: IteratorResult<BedrockConverseStreamEvent>;
-    try {
-      iterator = streamBedrockConverse(buildConverseOpts(!this._bedrockCacheUnsupported), this._signal)[Symbol.asyncIterator]();
-      firstResult = await iterator.next();
-    } catch (err) {
-      if (this._bedrockCacheUnsupported || !isBedrockCacheValidationError(err)) throw err;
-      let recovered = false;
-      if (cacheTtl) {
-        // Try the 5-minute cache before no cache: the TTL is the newer, narrower feature, and a
-        // model that takes cache points at all is far better off keeping them.
-        this._bedrockCacheTtlUnsupported = true;
-        yield { type: "notice", level: "info", message: "This Bedrock model rejected the 1-hour cache duration. Retrying with the 5-minute cache." };
-        try {
-          iterator = streamBedrockConverse(buildConverseOpts(true, false), this._signal)[Symbol.asyncIterator]();
-          firstResult = await iterator.next();
-          recovered = true;
-        } catch (retryErr) {
-          if (!isBedrockCacheValidationError(retryErr)) throw retryErr;
-        }
-      }
-      if (!recovered) {
-        this._bedrockCacheUnsupported = true;
-        yield { type: "notice", level: "info", message: "This Bedrock model rejected prompt caching. Retrying without cache markers." };
-        iterator = streamBedrockConverse(buildConverseOpts(false), this._signal)[Symbol.asyncIterator]();
-        firstResult = await iterator.next();
-      }
-    }
-
-    async function* replay(): AsyncGenerator<BedrockConverseStreamEvent> {
-      try {
-        if (firstResult.done) return;
-        yield firstResult.value;
-        while (true) {
-          const next = await iterator.next();
-          if (next.done) return;
-          yield next.value;
-        }
-      } finally {
-        await iterator.return?.();
-      }
-    }
-    const stream = replay();
-
-    // State keyed by Bedrock's contentBlockIndex. A reasoning block has no
-    // contentBlockStart event (AWS documents starts as tool-use-only), so inferring it from
-    // the start event loses its text/signature when the matching stop arrives. Keep the
-    // per-index accumulators just like the Anthropic SSE parser above.
-    const thinkingAcc = new Map<number, { text: string; signature?: string; redacted?: string }>();
-    const toolUseAcc = new Map<number, { id: string; name: string; input: string }>();
-    let stopReason: AgentStopReason | undefined;
-    let usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number } | null = null;
-
-    for await (const { eventType, data } of stream) {
-      switch (eventType) {
-        case "contentBlockStart": {
-          const event = data["contentBlockStart"] as { start?: Record<string, unknown>; contentBlockIndex?: unknown } | undefined;
-          const start = event?.start
-            ?? (data["start"] as Record<string, unknown> | undefined);
-          const index = Number(event?.contentBlockIndex ?? data["contentBlockIndex"] ?? 0);
-          if (start?.["toolUse"]) {
-            const tu = start["toolUse"] as { toolUseId?: string; name?: string };
-            toolUseAcc.set(index, { id: tu.toolUseId ?? "", name: tu.name ?? "", input: "" });
-            yield { type: "provider_activity", phase: "tool_input", message: `${this.provider} is preparing ${tu.name || "a tool call"}` };
-          }
-          break;
-        }
-        case "contentBlockDelta": {
-          const event = data["contentBlockDelta"] as { delta?: Record<string, unknown>; contentBlockIndex?: unknown } | undefined;
-          const delta = event?.delta
-            ?? (data["delta"] as Record<string, unknown> | undefined);
-          const index = Number(event?.contentBlockIndex ?? data["contentBlockIndex"] ?? 0);
-          if (delta?.["reasoningContent"]) {
-            yield { type: "provider_activity", phase: "thinking", message: `${this.provider} is reasoning` };
-            // Converse splits reasoning across three delta shapes on the same index: `text`,
-            // `signature`, and `redactedContent` (the safety-encrypted variant). All three must be
-            // accumulated — a block whose payload arrives only as redactedContent still has to be
-            // replayed, or the next turn leads with toolUse and Bedrock rejects it.
-            const rc = delta["reasoningContent"] as Record<string, unknown>;
-            const text = String(rc["text"] ?? "");
-            const previous = thinkingAcc.get(index) ?? { text: "" };
-            const redactedDelta = typeof rc["redactedContent"] === "string" ? rc["redactedContent"] : undefined;
-            thinkingAcc.set(index, {
-              text: previous.text + text,
-              signature: typeof rc["signature"] === "string" ? rc["signature"] : previous.signature,
-              redacted: redactedDelta !== undefined ? (previous.redacted ?? "") + redactedDelta : previous.redacted,
-            });
-            if (text) yield { type: "thinking_delta", text };
-          } else if (delta?.["toolUse"]) {
-            const toolUse = toolUseAcc.get(index);
-            if (toolUse) toolUse.input += String((delta["toolUse"] as { input?: string }).input ?? "");
-          } else if (typeof delta?.["text"] === "string") {
-            yield { type: "text_delta", text: delta["text"] as string };
-          }
-          break;
-        }
-        case "contentBlockStop": {
-          const event = data["contentBlockStop"] as { contentBlockIndex?: unknown } | undefined;
-          const index = Number(event?.contentBlockIndex ?? data["contentBlockIndex"] ?? 0);
-          const thinking = thinkingAcc.get(index);
-          if (thinking) {
-            if (thinking.redacted) {
-              yield { type: "redacted_thinking_block", data: thinking.redacted };
-            } else if (thinking.text || thinking.signature) {
-              // Signature-without-text is emitted too: on Claude 4.7+ the default display is
-              // "omitted", so reasoning arrives with an empty text field but still occupies a
-              // structural slot the next request has to replay.
-              yield { type: "thinking_block", text: thinking.text, signature: thinking.signature };
-            }
-            thinkingAcc.delete(index);
-          } else {
-            const toolUse = toolUseAcc.get(index);
-            if (!toolUse) break;
-            let input: Record<string, unknown> = {};
-            try { if (toolUse.input) input = JSON.parse(toolUse.input) as Record<string, unknown>; } catch { /* ignore */ }
-            yield { type: "tool_use_block", block: { type: "tool_use", id: toolUse.id, name: toolUse.name, input } };
-            toolUseAcc.delete(index);
-          }
-          break;
-        }
-        case "messageStop": {
-          const raw = (data["messageStop"] as { stopReason?: string } | undefined)?.stopReason
-            ?? (data["stopReason"] as string | undefined);
-          stopReason = normalizeBedrockStopReason(String(raw ?? "end_turn"), { extendedStopReasons: this.opts.bedrockExtendedStopReasons?.() });
-          break;
-        }
-        case "metadata": {
-          type BedrockStreamUsage = {
-            inputTokens?: number;
-            outputTokens?: number;
-            cacheReadInputTokens?: number;
-            cacheWriteInputTokens?: number;
-          };
-          const u = (data["metadata"] as { usage?: BedrockStreamUsage } | undefined)?.usage
-            ?? (data["usage"] as BedrockStreamUsage | undefined);
-          if (u) {
-            usage = {
-              inputTokens: Number(u.inputTokens ?? 0),
-              outputTokens: Number(u.outputTokens ?? 0),
-              cacheReadTokens: Number(u.cacheReadInputTokens ?? 0),
-              cacheWriteTokens: Number(u.cacheWriteInputTokens ?? 0),
-            };
-          }
-          break;
-        }
-        default:
-          // Bedrock surfaces a mid-stream failure as a regular protocol frame tagged via the
-          // `:exception-type` header (readEventFrame folds it into `eventType` — see
-          // bedrock-client.ts), not as an HTTP error. Previously this had no case: the frame
-          // was silently dropped, the stream ended right after with no messageStop, and the
-          // turn completed as an apparently-successful but silently EMPTY end_turn — the
-          // agent looked like it just said nothing, with no error surfaced anywhere. Throwing
-          // here routes it through the turn-level retry (throttling/overload → backoff and
-          // replay) or, if fatal, the turn error handling — instead of presenting a failure
-          // as a normal empty response.
-          {
-            const frameError = bedrockStreamFrameError(eventType, data);
-            if (frameError) throw frameError;
-          }
-          break;
-      }
-    }
-
-    if (stopReason === undefined || toolUseAcc.size > 0 || thinkingAcc.size > 0) {
-      throw new ProviderStreamError("Bedrock stream ended before the response was complete", true);
-    }
-    yield { type: "stop_reason", reason: stopReason };
-    if (usage) {
-      yield { type: "usage_update", ...usage };
-    }
-  }
-
-  // ── Bedrock Mantle (Messages API) streaming ────────────────────────────────
-
-  private async *_streamTurnBedrockMantle(): AsyncGenerator<ProviderTurnStreamEvent> {
-    const credentials = this.opts.bedrock;
-    if (!credentials) throw new Error("Bedrock provider selected but AWS credentials are not configured.");
-
-    // Mantle is the Anthropic Messages API behind a SigV4-signed Bedrock endpoint, so it takes the
-    // Messages thinking shape verbatim — including `output_config.effort`. It previously hardcoded
-    // `{type: "adaptive"}` for every model, which 400s on the budget-era models (3.7 – 4.5) that
-    // only accept `budget_tokens`; the plan below picks the dialect the selected model speaks.
-    const plan = this._planThinking();
-    const extras = resolveAnthropicBetaExtras(this.opts.model, this.opts, true);
-
-    const url = `${mantleEndpoint(credentials.region)}/anthropic/v1/messages`;
-    // Body + SigV4 signature are built together: a retry with different tools (the strict
-    // fallback below) must re-sign, since the signature covers the payload hash.
-    const makeRequest = (): { body: string; signedHeaders: Record<string, string> } => {
-      const toolPlan = this._toolPlan();
-      const reqBody: Record<string, unknown> = {
-        model: this.opts.model,
-        max_tokens: plan.maxTokens,
-        // Mantle uses the Anthropic Messages wire format — reuse the same cached-blocks
-        // builder so the stable system-prompt head is cache-eligible here too.
-        system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary, this.opts.cacheTtl),
-        messages: this._anthropicWireMessages(new Set(toolPlan.wire.map((tool) => tool.name))),
-        tools: this._buildAnthropicWireTools(toolPlan),
-        stream: true,
-      };
-      if (plan.temperature !== undefined) reqBody["temperature"] = plan.temperature;
-      applyAnthropicThinking(reqBody, plan);
-      Object.assign(reqBody, extras.bodyExtras);
-      const body = JSON.stringify(reqBody);
-      const headers: Record<string, string> = {
-        "content-type": "application/json",
-        "anthropic-version": "2023-06-01",
-        ...(extras.betas.length > 0 ? { "anthropic-beta": extras.betas.join(",") } : {}),
-      };
-      return { body, signedHeaders: signBedrockRequest(credentials, "POST", url, headers, body, "bedrock-mantle") };
-    };
-    let request = makeRequest();
-
-    const doFetch = (signal: AbortSignal | undefined): Promise<Response> =>
-      fetch(url, { method: "POST", headers: request.signedHeaders, body: request.body, signal });
-    let response = yield* this._fetchWithRetry("Bedrock Mantle", doFetch);
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      // Same strict-rejection fallback as the Anthropic-direct path — see _buildAnthropicWireTools.
-      if (!this._strictToolsUnsupported && AgentSession._looksLikeStrictRejection(response.status, text)) {
-        this._strictToolsUnsupported = true;
-        yield { type: "notice", level: "warn", message: "Strict tool schemas were rejected by the endpoint — retrying this turn without them." };
-        request = makeRequest();
-        response = yield* this._fetchWithRetry("Bedrock Mantle", doFetch);
-        if (!response.ok) {
-          const retryText = await response.text().catch(() => "");
-          throw new Error(`Bedrock Mantle ${response.status}: ${retryText.slice(0, 400)}`);
-        }
-      } else {
-        throw new Error(`Bedrock Mantle ${response.status}: ${text.slice(0, 400)}`);
-      }
-    }
-    if (!response.body) throw new Error("No response body from Bedrock Mantle");
-
-    yield* this._parseAnthropicSSE(response.body);
-  }
-
-  // ── OpenAI / OpenRouter streaming ──────────────────────────────────────────
-
-  private async *_streamTurnOpenAI(): AsyncGenerator<ProviderTurnStreamEvent> {
-    const pd   = PROVIDER_DEFAULTS[this.provider as "openrouter" | "openai"];
-    const url  = this.opts.baseUrl ?? pd.baseUrl;
-    const effectiveSystem = this._openAIEffectiveSystem();
-    // Cache breakpoints must be placed BEFORE the volatile workspace-context tail is
-    // appended, exactly like the direct Anthropic path (withRollingCacheBreakpoint before
-    // appendWorkspaceContextTail): a breakpoint on per-turn content re-writes the whole
-    // conversation at the cache-write premium every request and never gets a read hit.
-    // So: convert history → mark stable breakpoints → append the volatile tail last.
-    let msgs = toOpenAIMessages(normalizeForProvider(this.messages), effectiveSystem);
-    // Without the tool-result anchor, for the one-shot retry if OpenRouter rejects that anchor.
-    let msgsWithoutToolAnchor: ReturnType<typeof toOpenAIMessages> | undefined;
-    // Claude/Gemini models behind OpenRouter honour explicit cache breakpoints — mark the
-    // static system prefix and the rolling tail so those runs get the same prompt-cache
-    // economics as the direct Anthropic path.
-    if (this.provider === "openrouter" && openRouterSupportsCacheControl(this.opts.model)) {
-      const anchorToolTail = !this._openRouterToolCacheRejected && openRouterAnchorsToolResults(this.opts.model);
-      const marked = withOpenRouterCacheControl(msgs, this.opts.cacheTtl, { anchorToolTail });
-      if (hasOpenRouterToolTailAnchor(marked)) {
-        msgsWithoutToolAnchor = appendOpenAIWorkspaceContextTail(withOpenRouterCacheControl(msgs, this.opts.cacheTtl), this._dynamicContext());
-      }
-      msgs = marked;
-    }
-    // GPT-5.6+ takes the same treatment in OpenAI's own dialect. Earlier OpenAI models have
-    // no breakpoint concept at all and rely purely on implicit prefix caching.
-    const explicitCache = this.provider === "openai" && openAISupportsExplicitPromptCache(this.opts.model);
-    if (explicitCache) msgs = withOpenAICacheBreakpoints(msgs);
-    msgs = appendOpenAIWorkspaceContextTail(msgs, this._dynamicContext());
-    const tools: Array<Record<string, unknown>> = this._toolPlan().wire.map(t => ({
-      type: "function" as const,
-      function: { name: t.name, description: t.description, parameters: t.input_schema },
-    }));
-    // OpenRouter's server tool: the model decides when to search, OpenRouter runs it inside this
-    // request, and the sources come back as url_citation annotations.
-    const hosted = this.provider === "openrouter" ? this._hostedSearch() : undefined;
-    const hostedHere = hosted?.provider === "openrouter";
-    if (hosted && hostedHere) tools.push(openRouterWebSearchTool(hosted));
-
-    const extraHeaders: Record<string, string> = {};
-    if (this.provider === "openrouter") {
-      extraHeaders["HTTP-Referer"] = this.opts.httpReferer ?? "https://blacksite.dev";
-      extraHeaders["X-Title"] = this.opts.xTitle ?? "Blacksite";
-    }
-
-    // OpenAI reasoning models (o1/o3/o4, gpt-5 family) reject `max_tokens` and any
-    // `temperature` other than the default — they require `max_completion_tokens`
-    // and accept `reasoning_effort`. OpenRouter normalizes these, so only special-case
-    // the direct OpenAI provider.
-    const reasoning = this.provider === "openai" && isOpenAIReasoningModel(this.opts.model);
-    // OpenRouter forwards its unified `reasoning` parameter to whatever the routed model natively
-    // supports. For a Claude model that means Anthropic's own thinking config — so the same
-    // per-model dialect rules apply here as on the direct path, and the plan below is what decides
-    // between a token budget and an effort rung.
-    const plan = this._planThinking();
-    const maxTok = plan.maxTokens;
-
-    const oaiBody: Record<string, unknown> = {
-      model: this.opts.model,
-      messages: msgs,
-      tools,
-      tool_choice: "auto",
-      stream: true,
-      stream_options: { include_usage: true },
-    };
-    // OpenAI's prompt caching routes by prefix hash; a stable per-session key steers every
-    // request of this conversation to the same cache shard, materially raising hit rates for
-    // long agent runs (without it, load-balanced requests miss). OpenAI documents this as
-    // *required* for reliable matching from GPT-5.6 onward, not merely advisory.
-    if (this.provider === "openai") {
-      oaiBody["prompt_cache_key"] = this.sessionId;
-      applyOpenAICacheParams(oaiBody, this.opts.model, explicitCache && hasOpenAICacheBreakpoint(msgs));
-    }
-    // Explicit processing tier (direct OpenAI only). "auto"/unset sends nothing, leaving
-    // the account default in charge; "flex" buys reduced rates on flagship models at the
-    // cost of queued latency — the fallback below handles the capacity-miss case.
-    const serviceTier = this.provider === "openai" && this.opts.serviceTier && this.opts.serviceTier !== "auto"
-      ? this.opts.serviceTier
-      : undefined;
-    if (serviceTier) oaiBody["service_tier"] = serviceTier;
-    if (reasoning) {
-      oaiBody["max_completion_tokens"] = maxTok;
-      // Clamp to the model family's supported rungs so a persisted deep setting (e.g.
-      // "xhigh") survives a switch to a model without it instead of 400ing every turn.
-      const effort = resolveReasoningEffort(this.opts.model, this.opts.reasoningEffort);
-      if (effort) oaiBody["reasoning_effort"] = effort;
-    } else {
-      oaiBody["max_tokens"] = maxTok;
-      // plan.temperature, not opts.temperature: OpenRouter forwards this to the routed model, so a
-      // Claude 4.7+/Sonnet 5 behind OpenRouter rejects it exactly as it would on the direct path.
-      // (The plan leaves non-Claude models' temperature untouched, including OpenAI's 0–2 range.)
-      if (plan.temperature !== undefined) oaiBody["temperature"] = plan.temperature;
-      // Sampling controls beyond temperature (top_p, top_k, penalties, seed …). Filtered to
-      // what the routed model's catalog entry says it accepts, so a control that only some
-      // models expose is never sent to one that would 400 on it. Skipped entirely on the
-      // reasoning branch above, which rejects sampling parameters the same way it rejects
-      // temperature.
-      //
-      // acceptsSamplingParams is checked for the same reason plan.temperature is stripped
-      // above: a modern Claude behind OpenRouter 400s on top_p/top_k outright. The settings
-      // panel already hides these controls for those models, but the values persist per
-      // provider — so switching to one of them would otherwise keep sending whatever was
-      // configured for the previous model and fail every turn.
-      if (acceptsSamplingParams(this.opts.model)) {
-        Object.assign(oaiBody, buildSamplingBody(this.opts.sampling, this.opts.modelSupportedParameters));
-      }
-    }
-    // OpenRouter's unified `reasoning` parameter maps the user's thinking setting onto whatever the
-    // routed model natively supports, and is ignored by models without reasoning — so the same
-    // toggle that drives Anthropic/Bedrock extended thinking works here too. Which sub-field to
-    // send is decided by the routed model, not by us: a token budget on an adaptive-era Claude
-    // becomes `thinking.budget_tokens` downstream and 400s, so those models get an effort rung
-    // instead. OpenRouter's effort vocabulary is low/medium/high, so the deeper Anthropic rungs
-    // (xhigh, max) collapse to "high".
-    if (this.provider === "openrouter") {
-      if (plan.thinking.kind === "budget") {
-        oaiBody["reasoning"] = { max_tokens: plan.thinking.budgetTokens };
-      } else if (plan.thinking.kind === "adaptive") {
-        const effort = plan.effort ?? DEFAULT_CLAUDE_EFFORT;
-        oaiBody["reasoning"] = { effort: effort === "low" || effort === "medium" ? effort : "high" };
-      } else if (resolveThinkingMode(this.opts.model) === "none" && this.opts.reasoningEffort) {
-        // Non-Claude routed models (Gemini thinking, DeepSeek R1, GPT-5 via OR, …): the Claude
-        // thinking plan above can never produce a reasoning param for these, so the user's
-        // reasoning-effort setting drives the unified param directly. (This used to be sent as
-        // a top-level `reasoning_effort` no UI could set for this provider — dead code — while
-        // these models silently ran with reasoning at the routed model's default.) "none" maps
-        // to sending nothing at all, since the unified param *enables* reasoning when present.
-        const effort = toOpenRouterReasoningEffort(this.opts.reasoningEffort);
-        if (effort) oaiBody["reasoning"] = { effort };
-      }
-      // Thinking off on a Claude model: send no `reasoning` at all. OpenRouter's unified param
-      // *enables* reasoning on the routed model, so emitting an effort here would switch back on
-      // what the user turned off. (Effort-without-thinking is expressible on the Anthropic-native
-      // paths, not through this one.)
-
-      // Model fallback list — OpenRouter tries these in order if the primary model is
-      // rate-limited or unavailable, without the caller having to detect and retry itself.
-      if (this.opts.openrouterFallbackModels?.length) {
-        oaiBody["models"] = this.opts.openrouterFallbackModels;
-      }
-      // Provider-routing preferences — forwarded verbatim as OpenRouter's `provider` object.
-      // Only include fields actually set, so an all-default preferences object sends nothing
-      // rather than an empty `{}` that could be read as "restrict to zero providers".
-      const routing = this.opts.openrouterProvider;
-      if (routing) {
-        const providerField: Record<string, unknown> = {};
-        if (routing.order?.length) providerField["order"] = routing.order;
-        if (routing.allowFallbacks !== undefined) providerField["allow_fallbacks"] = routing.allowFallbacks;
-        if (routing.dataCollection) providerField["data_collection"] = routing.dataCollection;
-        if (routing.sort) providerField["sort"] = routing.sort;
-        if (Object.keys(providerField).length > 0) oaiBody["provider"] = providerField;
-      }
-    }
-
-    // Serialized at call time so the flex fallback below can mutate oaiBody and re-fetch.
-    const doFetch = (signal: AbortSignal | undefined): Promise<Response> => fetch(url, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${this.opts.apiKey}`,
-        "content-type": "application/json",
-        ...extraHeaders,
-      },
-      body: JSON.stringify(oaiBody),
-      signal,
-    });
-
-    let response = yield* this._fetchWithRetry(this.provider, doFetch);
-    if (!response.ok && response.status === 400) {
-      // Read the body once and dispatch on what it names — a 400 can be a rejected processing
-      // tier, a rejected prompt-cache parameter, or a genuine problem with the request.
-      const text = await response.text().catch(() => "");
-      if (serviceTier && /\bservice[_ ]tier\b/i.test(text)) {
-        // Flex/Fast availability is model-limited and changes over time (OpenAI's own guidance
-        // calls it "limited model availability"), so rather than hard-failing the run over a
-        // stale assumption about which models support it, detect the specific "this model
-        // doesn't support that tier" rejection and retry once at the account default. OpenAI
-        // names the rejected param in the error body, so this narrowly targets that case — an
-        // unrelated 400 (bad tool schema, oversized request, …) still surfaces as a real error.
-        yield { type: "notice", level: "warn", message: `This model doesn't support the "${serviceTier}" processing tier — running this turn at the standard tier instead.` };
-        delete oaiBody["service_tier"];
-        response = yield* this._fetchWithRetry(this.provider, doFetch);
-      } else if (looksLikePromptCacheRejection(response.status, text) && stripOpenAICacheParams(oaiBody)) {
-        // The caching dialect is picked from the model id (see openAISupportsExplicitPromptCache),
-        // which is a threshold guess for anything newer than this build. Getting it wrong must
-        // cost a round trip, not the run: retry once with no cache parameters at all, which is
-        // always valid and merely forfeits the caching gains for this turn.
-        yield { type: "notice", level: "warn", message: "This endpoint rejected the prompt-cache parameters — retrying this turn without them." };
-        response = yield* this._fetchWithRetry(this.provider, doFetch);
-      } else if (msgsWithoutToolAnchor) {
-        // The tool-result cache anchor needs array-form tool content, which is outside what
-        // OpenRouter documents. Retry with the documented anchors only; the anchor is blamed —
-        // and dropped for the session — only if that retry succeeds, so an unrelated 400 still
-        // surfaces as its own error and costs nothing beyond this one round trip.
-        oaiBody["messages"] = msgsWithoutToolAnchor;
-        response = yield* this._fetchWithRetry(this.provider, doFetch);
-        if (response.ok) {
-          this._openRouterToolCacheRejected = true;
-          yield { type: "notice", level: "info", message: "OpenRouter rejected a prompt-cache marker on tool results — continuing without it." };
-        }
-      } else {
-        throw new Error(`${this.provider} ${response.status}: ${text.slice(0, 400)}`);
-      }
-    } else if (!response.ok && response.status === 429 && serviceTier) {
-      // The requested tier was unavailable even after the standard retry/backoff cycle
-      // (flex: no spare capacity; fast: a transient limit). Fall back to the account
-      // default for THIS turn only — capacity misses are transient, so the next turn
-      // tries the requested tier again — rather than failing the run over a cost/latency
-      // preference. OpenAI does not bill a flex request that 429s on capacity.
-      await response.body?.cancel().catch(() => { /* releasing the socket is best-effort */ });
-      yield { type: "notice", level: "warn", message: `The "${serviceTier}" tier is unavailable right now — running this turn at the standard tier instead.` };
-      delete oaiBody["service_tier"];
-      response = yield* this._fetchWithRetry(this.provider, doFetch);
-    }
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new Error(`${this.provider} ${response.status}: ${text.slice(0, 400)}`);
-    }
-    if (!response.body) throw new Error(`No response body from ${this.provider}`);
-
-    // Reassemble streamed tool-call fragments. Robust to providers that omit `index`
-    // (which the old index-keyed map collapsed into one corrupt call) — see the accumulator.
-    const toolCalls = new OpenAIToolCallAccumulator();
-    let stopReason: string | undefined;
-    // Sources OpenRouter attached to the reply, and the search calls it reported itself.
-    let citations: unknown[] = [];
-    const reportedSearches = new Set<string>();
-    let oaiInputTokens = 0;
-    let oaiOutputTokens = 0;
-    let oaiCachedTokens = 0;
-    let oaiCacheWriteTokens = 0;
-    // Seeded from the body rather than the `serviceTier` const — the tier fallback above may
-    // have dropped this request back to the account default, and costing it as flex would then
-    // halve a bill that was charged in full. A backend that doesn't echo the field at all
-    // (OpenRouter, a proxy) keeps this seed instead of silently costing at standard rates.
-    let oaiServedTier = typeof oaiBody["service_tier"] === "string" ? oaiBody["service_tier"] : undefined;
-
-    // Checked against the body, not the serviceTier const — the flex fallback above may
-    // have dropped this request back to the standard tier (and its standard idle bound).
-    const idleMs = oaiBody["service_tier"] === "flex" ? FLEX_STREAM_IDLE_TIMEOUT_MS : STREAM_IDLE_TIMEOUT_MS;
-    for await (const line of response_body_reader(response.body, { idleMs })) {
-      if (!line.startsWith("data:")) continue;
-      const json = line.slice(5).trim();
-      if (!json) continue;
-      if (json === "[DONE]") break;
-      let ev: Record<string, unknown>;
-      try { ev = JSON.parse(json) as Record<string, unknown>; } catch { continue; }
-
-      // OpenRouter (and some OpenAI-compatible backends) can send a mid-stream error chunk
-      // — `{"error":{"message":...,"code":...}}`, with no `choices` — after the HTTP response
-      // already came back 200 and started streaming (the failure happens routing to the
-      // underlying model). Previously this chunk had no `choices`, so `if (!choices?.length)
-      // continue` silently skipped it, the stream then ended, and the turn completed as if
-      // finished cleanly with whatever partial text had streamed (sometimes nothing). Throw
-      // so it surfaces through the turn-level retry (429/5xx from the routed model) or, if
-      // fatal, the turn error handling — instead of vanishing.
-      const streamError = openAIStreamError(ev);
-      if (streamError) throw streamError;
-
-      // Every chunk echoes the tier that actually served this request, which OpenAI is explicit
-      // can differ from the one asked for — a flex request runs at the standard tier when flex
-      // capacity is out, and "auto" resolves to whatever the account defaults to. Billing
-      // follows what served it, so this (not `serviceTier`) is what the cost estimate needs.
-      const echoedTier = ev["service_tier"];
-      if (typeof echoedTier === "string" && echoedTier) oaiServedTier = echoedTier;
-
-      // OpenAI sends usage in a final chunk (with stream_options.include_usage)
-      const topUsage = ev["usage"] as Record<string, unknown> | undefined;
-      if (topUsage) {
-        oaiInputTokens  = Number(topUsage["prompt_tokens"] ?? 0);
-        oaiOutputTokens = Number(topUsage["completion_tokens"] ?? 0);
-        // OpenAI/OpenRouter cache the prompt prefix server-side and report the hit under
-        // prompt_tokens_details.cached_tokens — surface it so cache rate is visible in metrics.
-        const details = topUsage["prompt_tokens_details"] as Record<string, unknown> | undefined;
-        oaiCachedTokens = Number(details?.["cached_tokens"] ?? topUsage["cached_tokens"] ?? 0);
-        // Tokens newly written into the cache. Free (and unreported) before GPT-5.6; from 5.6
-        // on they bill at 1.25x uncached input, so leaving this hardcoded to 0 — as it was —
-        // hid a real and, on a long agent run, substantial charge from the cost estimate.
-        oaiCacheWriteTokens = Number(details?.["cache_write_tokens"] ?? topUsage["cache_write_tokens"] ?? 0);
-      }
-
-      const choices = ev["choices"] as Array<Record<string, unknown>> | undefined;
-      if (!choices?.length) continue;
-      const choice = choices[0] as Record<string, unknown> | undefined;
-      if (!choice) continue;
-      const delta = choice["delta"] as Record<string, unknown> | undefined;
-      const finishReason = choice["finish_reason"];
-      if (finishReason) stopReason = String(finishReason);
-
-      if (!delta) continue;
-
-      // OpenRouter streams reasoning tokens under delta.reasoning when the unified
-      // `reasoning` param is active. Display-only (thinking_delta): unlike Anthropic
-      // thinking blocks, these are never replayed into the message history, so they
-      // must not become thinking_block entries.
-      const reasoningDelta = delta["reasoning"];
-      if (typeof reasoningDelta === "string" && reasoningDelta) yield { type: "thinking_delta", text: reasoningDelta };
-
-      const content = delta["content"];
-      if (typeof content === "string" && content) yield { type: "text_delta", text: content };
-
-      if (hostedHere) {
-        const annotations = delta["annotations"];
-        if (Array.isArray(annotations)) citations = citations.concat(annotations);
-        const details = delta["reasoning_details"];
-        for (const detail of Array.isArray(details) ? details : []) {
-          const call = openRouterServerToolCall(detail);
-          if (!call || reportedSearches.has(call.id)) continue;
-          reportedSearches.add(call.id);
-          yield { type: "hosted_search", id: call.id, query: call.query, results: call.results.length ? call.results : openRouterCitations(citations) };
-        }
-      }
-
-      const toolCallDeltas = delta["tool_calls"] as Array<Record<string, unknown>> | undefined;
-      if (toolCallDeltas) {
-        yield { type: "provider_activity", phase: "tool_input", message: `${this.provider} is preparing tool calls` };
-        for (const tcd of toolCallDeltas) toolCalls.push(tcd);
-      }
-    }
-
-    if (stopReason === undefined) throw new ProviderStreamError(`${this.provider} stream ended before a finish reason`, true);
-
-    // Emit reassembled tool calls. With OpenRouter's search on, a web_search call is the server
-    // tool, already run — never ours to execute (our own web_search is off the list then).
-    const finished = toolCalls.finish();
-    let serverSearches = 0;
-    for (const block of finished) {
-      if (hostedHere && block.name === "web_search") {
-        serverSearches++;
-        if (!reportedSearches.has(block.id)) {
-          reportedSearches.add(block.id);
-          yield { type: "hosted_search", id: block.id, query: String(block.input["query"] ?? ""), results: openRouterCitations(citations) };
-        }
-        continue;
-      }
-      yield { type: "tool_use_block", block };
-    }
-    if (serverSearches > 0 && serverSearches === finished.length && stopReason === "tool_calls") stopReason = "stop";
-    // No call was reported, but the reply cites what it found: one row for the search's sources.
-    if (hostedHere && reportedSearches.size === 0) {
-      const sources = openRouterCitations(citations);
-      if (sources.length) yield { type: "hosted_search", id: `openrouter-search-${this.sessionId}-${this._iteration}`, query: "", results: sources };
-    }
-
-    yield { type: "stop_reason", reason: normalizeOpenAIStopReason(stopReason) };
-    if (oaiInputTokens > 0 || oaiOutputTokens > 0) {
-      // prompt_tokens is the total and already includes both cached and newly-written tokens;
-      // split them out so the accounting stays consistent with the Anthropic path
-      // (input + cacheRead + cacheWrite = total) and each lands on its own price.
-      const cacheRead = Math.min(oaiCachedTokens, oaiInputTokens);
-      const cacheWrite = Math.min(oaiCacheWriteTokens, oaiInputTokens - cacheRead);
-      yield {
-        type: "usage_update",
-        inputTokens: Math.max(0, oaiInputTokens - cacheRead - cacheWrite),
-        outputTokens: oaiOutputTokens,
-        cacheReadTokens: cacheRead,
-        cacheWriteTokens: cacheWrite,
-        serviceTier: oaiServedTier,
-      };
-    }
-  }
-
-  // ── OpenAI Responses API (reasoning continuity across tool-call turns) ─────
-
-  /**
-   * Opt-in alternative to `_streamTurnOpenAI` for OpenAI reasoning models. The Chat Completions
-   * API (used by `_streamTurnOpenAI`) has no way to replay a reasoning model's internal
-   * reasoning state across a tool-call round trip — each call starts the model reasoning from
-   * scratch about work it already reasoned through last turn. The Responses API's `reasoning`
-   * output items carry an opaque `encrypted_content` payload that, replayed verbatim in the
-   * next request's `input` array, preserves that continuity. Everything else about this method
-   * mirrors `_streamTurnOpenAI` as closely as the two APIs' shapes allow (retry, flex-tier
-   * fallback, idle timeout, prompt caching, service tier) — see that method's comments for the
-   * reasoning behind each of those pieces; only what genuinely differs is re-explained here.
-   *
-   * Scope: first-party OpenAI only (the Responses API is not an OpenRouter/Bedrock/Anthropic
-   * surface), custom function tools only (no built-in web_search/computer_use/file_search —
-   * this harness doesn't use OpenAI's hosted tools), text + image input (no PDF/file input).
-   */
-  private async *_streamTurnOpenAIResponses(): AsyncGenerator<ProviderTurnStreamEvent> {
-    // `opts.baseUrl` is documented and UI-labeled as the Chat Completions endpoint override
-    // (used verbatim by `_streamTurnOpenAI`) — the Responses API lives at a sibling path, not
-    // the same URL. Swap the well-known suffix so a proxy/Azure/local-server override still
-    // resolves to the right endpoint; a baseUrl that doesn't end in it is respected as-is.
-    const url = this.opts.baseUrl
-      ? this.opts.baseUrl.replace(/\/chat\/completions\/?$/, "/responses")
-      : "https://api.openai.com/v1/responses";
-    const effectiveInstructions = this._compressedSummary
-      ? `${this.opts.systemPrompt}\n\n---\n[COMPRESSED CONVERSATION HISTORY]\n${this._compressedSummary}\n---`
-      : this.opts.systemPrompt;
-
-    const plan = this._planThinking();
-    const maxTok = plan.maxTokens;
-    const reasoningEffort = resolveReasoningEffort(this.opts.model, this.opts.reasoningEffort);
-    const tools = toResponsesTools(this._toolPlan().wire);
-    const serviceTier = this.opts.serviceTier && this.opts.serviceTier !== "auto" ? this.opts.serviceTier : undefined;
-
-    const makeBody = (): Record<string, unknown> => {
-      // Breakpoints go on before the volatile tail is appended — see withResponsesCacheBreakpoints.
-      const anchored = withResponsesCacheBreakpoints(toResponsesInputItems(normalizeForProvider(this.messages)));
-      const body: Record<string, unknown> = {
-        model: this.opts.model,
-        input: appendResponsesWorkspaceContextTail(anchored, this._dynamicContext()),
-        instructions: effectiveInstructions,
-        tools,
-        tool_choice: "auto",
-        stream: true,
-        // We manage history client-side and replay reasoning items ourselves — server-side
-        // storage/previous_response_id chaining is a different (stateful) integration model
-        // this harness doesn't use. `include` is required to get encrypted_content back at
-        // all when store is false.
-        store: false,
-        include: ["reasoning.encrypted_content"],
-        max_output_tokens: maxTok,
-        // Same rationale as the Chat Completions path: steers every request of this
-        // conversation to the same cache shard for a materially higher hit rate.
-        prompt_cache_key: this.sessionId,
-      };
-      // Explicit mode is what stops implicit caching from anchoring the volatile workspace tail
-      // and re-writing the entire prompt every turn at the 1.25x premium. Gated on an anchor
-      // actually being placed: explicit with nothing anchored caches nothing at all, which is
-      // worse than the implicit behaviour this replaces.
-      applyOpenAICacheParams(body, this.opts.model, hasResponsesCacheBreakpoint(anchored));
-      if (reasoningEffort) body["reasoning"] = { effort: reasoningEffort, summary: "auto" };
-      if (serviceTier) body["service_tier"] = serviceTier;
-      return body;
-    };
-    const body = makeBody();
-
-    const doFetch = (signal: AbortSignal | undefined): Promise<Response> => fetch(url, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${this.opts.apiKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-      signal,
-    });
-
-    let response = yield* this._fetchWithRetry("OpenAI Responses", doFetch);
-    // Mirrors _streamTurnOpenAI's tier and prompt-cache fallbacks exactly — see that method.
-    if (!response.ok && response.status === 400) {
-      const text = await response.text().catch(() => "");
-      if (serviceTier && /\bservice[_ ]tier\b/i.test(text)) {
-        yield { type: "notice", level: "warn", message: `This model doesn't support the "${serviceTier}" processing tier — running this turn at the standard tier instead.` };
-        delete (body as Record<string, unknown>)["service_tier"];
-        response = yield* this._fetchWithRetry("OpenAI Responses", doFetch);
-      } else if (looksLikePromptCacheRejection(response.status, text) && stripOpenAICacheParams(body)) {
-        yield { type: "notice", level: "warn", message: "This endpoint rejected the prompt-cache parameters — retrying this turn without them." };
-        response = yield* this._fetchWithRetry("OpenAI Responses", doFetch);
-      } else {
-        throw new Error(`OpenAI Responses ${response.status}: ${text.slice(0, 400)}`);
-      }
-    } else if (!response.ok && response.status === 429 && serviceTier) {
-      await response.body?.cancel().catch(() => { /* releasing the socket is best-effort */ });
-      yield { type: "notice", level: "warn", message: `The "${serviceTier}" tier is unavailable right now — running this turn at the standard tier instead.` };
-      delete (body as Record<string, unknown>)["service_tier"];
-      response = yield* this._fetchWithRetry("OpenAI Responses", doFetch);
-    }
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new Error(`OpenAI Responses ${response.status}: ${text.slice(0, 400)}`);
-    }
-    if (!response.body) throw new Error("No response body from OpenAI Responses");
-
-    const idleMs = body["service_tier"] === "flex" ? FLEX_STREAM_IDLE_TIMEOUT_MS : STREAM_IDLE_TIMEOUT_MS;
-    yield* AgentSession._parseResponsesSSE(response_body_reader(response.body, { idleMs }));
-  }
-
-  /**
-   * Parse the Responses API's SSE event stream. Unlike Anthropic's protocol (which requires
-   * accumulating every block from incremental deltas), the Responses API hands back each
-   * output item complete and final in its own `response.output_item.done` event — deltas here
-   * are consumed only for live UI streaming (`text_delta`/`thinking_delta`), never as the
-   * source of truth for the block a caller will persist. This is a deliberately more robust
-   * design than manual accumulation: a delta shape this parser doesn't recognize can only cost
-   * a moment of missing incremental UI feedback, never a corrupted final block.
-   *
-   * Terminal detection is driven by the `status` field inside whichever `response.*` event
-   * carries a `response` object, rather than by matching an exact set of event-type strings —
-   * `response.created`/`response.in_progress` naturally fall through (status "in_progress" or
-   * "queued"), and `response.completed`/`response.incomplete`/`response.cancelled` all resolve
-   * the same way once a real terminal status arrives. This degrades gracefully if a specific
-   * discriminant string this comment doesn't name turns out to differ from what's implemented.
-   */
-  private static async *_parseResponsesSSE(lines: AsyncIterable<string>): AsyncGenerator<ProviderTurnStreamEvent> {
-    let finished = false;
-    for await (const line of lines) {
-      if (!line.startsWith("data:")) continue;
-      const json = line.slice(5).trim();
-      if (!json || json === "[DONE]") continue;
-      let ev: Record<string, unknown>;
-      try { ev = JSON.parse(json) as Record<string, unknown>; } catch { continue; }
-
-      const evType = String(ev["type"] ?? "");
-
-      if (evType === "response.output_text.delta") {
-        const text = String(ev["delta"] ?? "");
-        if (text) yield { type: "text_delta", text };
-      } else if (evType === "response.reasoning_summary_text.delta") {
-        const text = String(ev["delta"] ?? "");
-        if (text) yield { type: "thinking_delta", text };
-      } else if (evType === "response.output_item.added") {
-        const item = ev["item"] as Record<string, unknown> | undefined;
-        if (item?.["type"] === "function_call") {
-          yield { type: "provider_activity", phase: "tool_input", message: `openai is preparing ${String(item["name"] || "a tool call")}` };
-        } else if (item?.["type"] === "reasoning") {
-          yield { type: "provider_activity", phase: "thinking", message: "openai is reasoning" };
-        }
-      } else if (evType === "response.output_item.done") {
-        const item = ev["item"] as Record<string, unknown> | undefined;
-        if (!item) continue;
-        const itemType = String(item["type"] ?? "");
-        if (itemType === "reasoning") {
-          const summaryParts = item["summary"] as Array<Record<string, unknown>> | undefined;
-          const summaryText = (summaryParts ?? [])
-            .map((p) => String(p["text"] ?? ""))
-            .join("\n")
-            .trim();
-          const encryptedContent = typeof item["encrypted_content"] === "string" ? item["encrypted_content"] : undefined;
-          const reasoningItemId = typeof item["id"] === "string" ? item["id"] : undefined;
-          // Emitted even with an empty summary as long as there's an id/encrypted payload to
-          // replay — an assistant turn that made tool calls must lead with its reasoning on
-          // replay, the same rule the Anthropic-family thinking_block handling follows.
-          if ((summaryText || encryptedContent) && reasoningItemId) {
-            yield { type: "thinking_block", text: summaryText, encryptedContent, reasoningItemId };
-          }
-        } else if (itemType === "function_call") {
-          const callId = String(item["call_id"] ?? item["id"] ?? "");
-          const name = String(item["name"] ?? "");
-          let input: Record<string, unknown> = {};
-          try { input = JSON.parse(String(item["arguments"] ?? "{}")) as Record<string, unknown>; } catch { /* partial/invalid JSON → empty; handled by truncation recovery */ }
-          if (callId && name) yield { type: "tool_use_block", block: { type: "tool_use", id: callId, name, input } };
-        }
-        // "message" items: text already streamed via response.output_text.delta and is
-        // accumulated by the caller from those events — nothing further needed here.
-      } else if (evType === "error") {
-        // A top-level stream error (not scoped to a specific response) — OpenAI's own
-        // equivalent of Anthropic's mid-stream `{"type":"error",...}` event. Classified by
-        // `responsesStreamError`, which knows this endpoint's symbolic (non-numeric) codes;
-        // a retryable verdict is what lets _runProviderTurnWithRetry re-issue the turn.
-        throw responsesStreamError(ev);
-      } else if (evType.startsWith("response.")) {
-        const resp = ev["response"];
-        if (!resp || typeof resp !== "object") continue;
-        const respObj = resp as Record<string, unknown>;
-        const status = String(respObj["status"] ?? "");
-        if (!status || status === "in_progress" || status === "queued") continue; // response.created etc. — not terminal
-        if (status === "failed") {
-          // `response.failed` carries the same error object as the top-level `error` event and
-          // fails for the same reasons (a backend that gave up after the 200). It used to throw a
-          // bare Error, which isRetryableError can only classify as fatal — so the transient case
-          // ended the run here even once the `error` branch above learned to retry it.
-          throw responsesStreamError(respObj);
-        }
-        finished = true;
-        yield { type: "stop_reason", reason: normalizeResponsesStopReason(respObj) };
-        const usage = respObj["usage"] as Record<string, unknown> | undefined;
-        if (usage) {
-          const inputDetails = usage["input_tokens_details"] as Record<string, unknown> | undefined;
-          const inputTotal = Number(usage["input_tokens"] ?? 0);
-          // input_tokens is the total and already contains both details; cache writes were
-          // being read but not subtracted, so on GPT-5.6+ (the first family to report them)
-          // those tokens were counted twice — once as fresh input, once as a cache write.
-          const cacheRead = Math.min(Number(inputDetails?.["cached_tokens"] ?? 0), inputTotal);
-          const cacheWrite = Math.min(Number(inputDetails?.["cache_write_tokens"] ?? 0), inputTotal - cacheRead);
-          yield {
-            type: "usage_update",
-            inputTokens: Math.max(0, inputTotal - cacheRead - cacheWrite),
-            outputTokens: Number(usage["output_tokens"] ?? 0),
-            cacheReadTokens: cacheRead,
-            cacheWriteTokens: cacheWrite,
-            // The tier that actually served the request, which OpenAI may downgrade from the
-            // one asked for. Drives cost estimation — see the ProviderTurnStreamEvent docs.
-            serviceTier: typeof respObj["service_tier"] === "string" ? respObj["service_tier"] : undefined,
-          };
-        }
-      }
-    }
-    // A stream that closes without ever reaching a terminal response.* event (connection
-    // dropped, [DONE] arrived early) must not present as a normal end_turn — the retry layer
-    // needs to see this as a real failure to re-attempt, not silently succeed with an empty turn.
-    if (!finished) throw new ProviderStreamError("OpenAI Responses stream ended without a terminal response event", true);
-  }
-}
-
-// ── SSE line reader ────────────────────────────────────────────────────────────
-
-class ProviderTurnEventQueue<T> implements AsyncIterable<T> {
-  private readonly items: T[] = [];
-  private readonly waiters: Array<{
-    resolve: (value: IteratorResult<T>) => void;
-    reject: (reason?: unknown) => void;
-  }> = [];
-  private closed = false;
-  private error: unknown;
-
-  push(item: T): void {
-    if (this.closed) return;
-    const waiter = this.waiters.shift();
-    if (waiter) {
-      waiter.resolve({ value: item, done: false });
-      return;
-    }
-    this.items.push(item);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    while (this.waiters.length > 0) {
-      this.waiters.shift()?.resolve({ value: undefined as T, done: true });
-    }
-  }
-
-  fail(error: unknown): void {
-    if (this.closed) return;
-    this.error = error;
-    this.closed = true;
-    while (this.waiters.length > 0) {
-      this.waiters.shift()?.reject(error);
-    }
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<T> {
-    return {
-      next: () => {
-        if (this.items.length > 0) {
-          return Promise.resolve({ value: this.items.shift() as T, done: false });
-        }
-        if (this.error !== undefined) return Promise.reject(this.error);
-        if (this.closed) return Promise.resolve({ value: undefined as T, done: true });
-        return new Promise<IteratorResult<T>>((resolve, reject) => {
-          this.waiters.push({ resolve, reject });
-        });
-      },
-    };
-  }
-}
-
-async function* response_body_reader(
-  body: ReadableStream<Uint8Array>,
-  opts: { idleMs?: number } = {},
-): AsyncGenerator<string> {
-  const reader  = body.getReader();
-  const decoder = new TextDecoder();
-  const idleMs  = opts.idleMs;
-  let buffer    = "";
-  try {
-    while (true) {
-      const read = reader.read();
-      // A stalled provider (socket held open, no bytes) would otherwise hang the turn until
-      // undici's coarse 300s body timeout. Race each read against a tighter idle timer so a
-      // mid-stream stall becomes a prompt, surfaceable error. The timer resets on every chunk,
-      // so an actively-streaming turn never trips it. Apply it to the first chunk too:
-      // reasoning gets the full idle allowance, and flex requests get their longer bound.
-      let result: Awaited<ReturnType<typeof reader.read>>;
-      if (idleMs && idleMs > 0) {
-        void read.catch(() => { /* settled via race/cancel below; avoid unhandledRejection */ });
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const idle = new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () => reject(new StreamIdleTimeoutError(`No stream data for ${Math.round(idleMs / 1000)}s`)),
-            idleMs,
-          );
-        });
-        try {
-          result = await Promise.race([read, idle]);
-        } finally {
-          if (timer) clearTimeout(timer);
-        }
-      } else {
-        result = await read;
-      }
-      const { done, value } = result;
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let nl: number;
-      while ((nl = buffer.indexOf("\n")) !== -1) {
-        yield buffer.slice(0, nl).trim();
-        buffer = buffer.slice(nl + 1);
-      }
-    }
-    if (buffer.trim()) yield buffer.trim();
-  } finally {
-    try { await reader.cancel(); } catch { /* ignore */ }
-    try { reader.releaseLock(); } catch { /* ignore */ }
-  }
 }
 
 // ── Anthropic → OpenAI message conversion ─────────────────────────────────────
@@ -7470,21 +5860,6 @@ export function shellLineInvokes(line: string, name: string): boolean {
 }
 
 /** An AbortError, thrown when a retry loop notices the run was cancelled between attempts. */
-function makeAbortError(): Error {
-  const err = new Error("Aborted");
-  err.name = "AbortError";
-  return err;
-}
-
-/** Human-readable backoff delay for a retry notice ("800ms", "3s"). */
-function formatDelay(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const minutes = Math.floor(ms / 60_000);
-  const seconds = Math.round((ms % 60_000) / 1000);
-  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
-}
-
 /** Parses a "data:<mediaType>;base64,<data>" URL, as produced by reference_zoom_image. */
 function parseDataUrl(dataUrl: string): { mediaType: string; data: string } | null {
   const match = /^data:([^;]+);base64,([\s\S]+)$/.exec(dataUrl);

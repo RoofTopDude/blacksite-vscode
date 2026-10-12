@@ -31,7 +31,7 @@ export function normalizeOpenAIStopReason(reason: string): ModelStopReason {
  * Classify an OpenAI-compatible mid-stream error chunk (`{"error":{...}}`, sent by OpenRouter
  * and some gateways after the HTTP response already streamed 200 + partial content), or `null`
  * if `ev` isn't one. Exported pure function for the same reason as `anthropicStreamError` —
- * directly testable without driving the private `_streamTurnOpenAI` streaming method.
+ * directly testable without driving the `streamOpenAIChat` route.
  *
  * Retryability comes from the chunk's own `code`, which these gateways populate with the HTTP
  * status of the upstream failure (429 on a rate limit, 502/503 when the routed model is

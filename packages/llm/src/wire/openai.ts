@@ -141,7 +141,7 @@ export function appendOpenAIWorkspaceContextTail(messages: OAIMessage[], workspa
  * Threshold-shaped rather than an id list, for the same reason as {@link supportedReasoningEfforts}:
  * a model released after this code was written should get the current generation's caching
  * behaviour instead of silently falling back to the legacy path. A wrong guess is recoverable —
- * `_streamTurnOpenAI` retries once without the cache parameters if the endpoint rejects them.
+ * `streamOpenAIChat` retries once without the cache parameters if the endpoint rejects them.
  */
 export function openAISupportsExplicitPromptCache(model: string): boolean {
   const gpt = /^gpt-(\d+)(?:\.(\d+))?/.exec(model.trim().toLowerCase());
@@ -389,7 +389,7 @@ export function hasResponsesCacheBreakpoint(items: Array<Record<string, unknown>
  * started the turn — so without it every tool round since that prompt was re-sent at full price on
  * every iteration, a cost that grows with the square of the turn's length. The caller probes it
  * live and drops it for the session if the endpoint rejects the array-form tool content it needs
- * (see `_streamTurnOpenAI`); if a provider merely ignores it, the user-message anchor still holds.
+ * (see `streamOpenAIChat`); if a provider merely ignores it, the user-message anchor still holds.
  * Never mutates the input array or its messages.
  */
 export function withOpenRouterCacheControl(
@@ -431,7 +431,7 @@ export function withOpenRouterCacheControl(
 }
 
 /** Whether {@link withOpenRouterCacheControl} anchored a tool result — the one marker the live
- *  probe in `_streamTurnOpenAI` may need to withdraw. */
+ *  probe in `streamOpenAIChat` may need to withdraw. */
 export function hasOpenRouterToolTailAnchor(messages: OAIMessage[]): boolean {
   return messages.some((msg) => msg.role === "tool" && Array.isArray(msg.content));
 }

@@ -1,6 +1,6 @@
 import type { ProviderName } from "@blacksite-agent/llm";
 import { converseBedrock, mantleMessage } from "./bedrock-client.js";
-import type { BedrockThinkingConfig } from "./bedrock-client.js";
+import type { BedrockThinkingConfig } from "@blacksite-agent/llm";
 import type { BedrockCredentials } from "./bedrock-types.js";
 import { HttpError, parseRetryAfter, retryAsync } from "./provider-retry.js";
 import { isOpenAIReasoningModel, shallowestReasoningEffort } from "./model-limits.js";

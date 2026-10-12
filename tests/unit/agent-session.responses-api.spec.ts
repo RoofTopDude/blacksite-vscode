@@ -193,7 +193,7 @@ describe("OpenAI Responses API — dispatch and round trip", () => {
 /**
  * The mid-stream `error` event, driven end to end rather than through the classifier alone.
  *
- * `_runProviderTurnWithRetry` has always been able to re-issue a turn that died inside a 200
+ * `ProviderTurnRunner.run` has always been able to re-issue a turn that died inside a 200
  * stream, but this provider path could never reach it: the Responses `error` event names its
  * cause with a symbolic string code ("server_error"), and the old classifier ran that through
  * `Number()` before `isRetryableStatus`, so every real error scored NaN → fatal. Observed live as

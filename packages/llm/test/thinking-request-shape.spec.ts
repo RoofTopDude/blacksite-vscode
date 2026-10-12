@@ -12,7 +12,7 @@ import {
   toBedrockThinking,
   type ThinkingPlanInput,
 } from "@blacksite-agent/llm";
-import { buildRequestBody } from "../../src/bedrock-client.js";
+import { buildRequestBody } from "@blacksite-agent/llm";
 
 function plan(overrides: Partial<ThinkingPlanInput> = {}) {
   return planThinking({

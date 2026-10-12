@@ -3,6 +3,7 @@
    (every tool sent, non-core deferred, loads expanded from tool_reference blocks) — plus the
    persistence and PAU accounting that make the saving real and measurable. */
 
+import { anthropicWireMessages, type ModelRequest, type TransportContext } from "@blacksite-agent/llm";
 import { describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
 import type { ToolUseBlock } from "@blacksite-agent/llm";
@@ -52,7 +53,8 @@ function createSession(overrides: Partial<Opts> = {}) {
 type Internals = {
   _toolPlan(): { wire: ToolDefinition[]; deferred: ReadonlySet<string>; inContext: ToolDefinition[]; outOfContext: ToolDefinition[] };
   _buildAnthropicWireTools(): Array<Record<string, unknown>>;
-  _anthropicWireMessages(sent: ReadonlySet<string>): Array<{ role: string; content: unknown }>;
+  _buildModelRequest(): ModelRequest;
+  _transportContext(): TransportContext;
   _pauToolSchemas(format: "anthropic" | "openai"): { inContext: unknown; deferred: unknown };
   _toolReferenceResults: Map<string, string[]>;
 };
@@ -220,7 +222,11 @@ describe("native (Anthropic) deferral", () => {
       ],
       toolReferenceResults: [{ toolUseId: "load", names: ["plan_update"] }],
     } as any);
-    const wire = internals(session)._anthropicWireMessages(new Set(names(internals(session)._toolPlan().wire)));
+    const wire = anthropicWireMessages(
+      internals(session)._transportContext(),
+      internals(session)._buildModelRequest(),
+      new Set(names(internals(session)._toolPlan().wire)),
+    ) as Array<{ role: string; content: unknown }>;
     const result = (wire[2]!.content as Array<Record<string, unknown>>).find((block) => block["type"] === "tool_result");
     expect(result!["content"]).toEqual([{ type: "tool_reference", tool_name: "plan_update" }]);
   });

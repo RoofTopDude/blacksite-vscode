@@ -9,8 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, continuesRequest, type AgentEvent } from "../../src/agent-session.js";
 import type { ToolUseBlock } from "@blacksite-agent/llm";
 import type { ApprovalDecision } from "../../src/approval-gate.js";
-import { outageDelayMs, OUTAGE_RETRY_SCHEDULE_MS } from "@blacksite-agent/llm";
-import { successStream } from "@blacksite-agent/llm/testing";
+import { HttpError, outageDelayMs, OUTAGE_RETRY_SCHEDULE_MS, type ModelTransport, type ProviderTurnStreamEvent } from "@blacksite-agent/llm";
 import { ScriptedProviderSession } from "./helpers/scripted-provider-session.js";
 
 const usage = { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 };
@@ -213,7 +212,27 @@ describe("outage schedule", () => {
   });
 });
 
-function bedrockSession(outageMs: () => number) {
+/**
+ * A provider that fails with a retryable 503 for the first `failures` turns, then answers. The
+ * outage wait lives in the turn runner, not in any one provider route, so these specs inject the
+ * transport instead of driving a real route: no network, no signing, and nothing for the fake
+ * clock to race.
+ */
+function flakyTransport(failures: number) {
+  const calls: number[] = [];
+  const transport = {
+    calls,
+    async *stream(): AsyncGenerator<ProviderTurnStreamEvent> {
+      calls.push(Date.now());
+      if (calls.length <= failures) throw new HttpError(503, "Bedrock 503: Service unavailable", 0);
+      yield { type: "text_delta", text: "Back again" };
+      yield { type: "stop_reason", reason: "end_turn" };
+    },
+  };
+  return transport;
+}
+
+function outageSession(transport: ModelTransport, outageMs: () => number) {
   return new AgentSession({
     apiKey: "unused-on-bedrock",
     model: "anthropic.claude-sonnet-4-6-v1:0",
@@ -223,6 +242,7 @@ function bedrockSession(outageMs: () => number) {
     context: context() as never,
     provider: "bedrock",
     bedrock: { region: "us-east-1", accessKeyId: "AKIA_TEST", secretAccessKey: "secret" },
+    modelTransport: transport,
     maxIterations: 5,
     checkpointingEnabled: false,
     retryPolicy: { maxAttempts: 2, baseDelayMs: 1, maxDelayMs: 2 },
@@ -240,27 +260,17 @@ async function runClockUntil<T>(promise: Promise<T>, stepMs = 5_000, maxSteps = 
   return promise;
 }
 
-function unavailable(): Response {
-  return new Response(JSON.stringify({ message: "Service unavailable" }), { status: 503, headers: { "retry-after": "0" } });
-}
-
 describe("waiting out a provider outage", () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
   it("keeps trying on a slow schedule and finishes the turn when the provider comes back", async () => {
-    const fetchMock = vi.fn()
-      .mockImplementationOnce(async () => unavailable())
-      .mockImplementationOnce(async () => unavailable())
-      .mockImplementationOnce(async () => unavailable())
-      .mockImplementationOnce(async () => unavailable())
-      .mockImplementation(async () => ({ ok: true, body: successStream("Back again") }));
-    vi.stubGlobal("fetch", fetchMock);
-    const session = bedrockSession(() => 10 * 60_000);
+    const transport = flakyTransport(4);
+    const session = outageSession(transport, () => 10 * 60_000);
     const startedAt = Date.now();
     const events = await runClockUntil(drain(session.send("hello")));
 
-    expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(5);
+    expect(transport.calls.length).toBeGreaterThanOrEqual(5);
     const outage = events.find((event) => event.type === "provider_activity" && (event as { outage?: boolean }).outage);
     expect(outage).toBeDefined();
     // The first slow wait is half a minute away.
@@ -271,28 +281,21 @@ describe("waiting out a provider outage", () => {
   });
 
   it("gives up once the allowed wait is spent, so a long outage cannot hold a run forever", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => unavailable()));
-    const session = bedrockSession(() => 20_000);
+    const session = outageSession(flakyTransport(Infinity), () => 20_000);
     const events = await runClockUntil(drain(session.send("hello")));
     expect(events.some((event) => event.type === "provider_activity" && (event as { outage?: boolean }).outage)).toBe(true);
     expect(events.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "error" });
   });
 
   it("does not wait at all unless a run asked it to", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => unavailable()));
-    const session = bedrockSession(() => 0);
+    const session = outageSession(flakyTransport(Infinity), () => 0);
     const events = await runClockUntil(drain(session.send("hello")));
     expect(events.some((event) => event.type === "provider_activity" && (event as { outage?: boolean }).outage)).toBe(false);
     expect(events.at(-1)).toMatchObject({ type: "turn_complete", stopReason: "error" });
   });
 
   it("tries again at once when told to, instead of finishing the wait", async () => {
-    const fetchMock = vi.fn()
-      .mockImplementationOnce(async () => unavailable())
-      .mockImplementationOnce(async () => unavailable())
-      .mockImplementation(async () => ({ ok: true, body: successStream("Back again") }));
-    vi.stubGlobal("fetch", fetchMock);
-    const session = bedrockSession(() => 10 * 60_000);
+    const session = outageSession(flakyTransport(2), () => 10 * 60_000);
     const startedAt = Date.now();
     const collected = drain(session.send("hello"));
     // Let the failures happen and the wait begin, without letting anything like 30 seconds pass.

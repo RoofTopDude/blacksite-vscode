@@ -210,7 +210,7 @@ describe("isBedrockCacheValidationError", () => {
  * not an HTTP error.
  *
  * This is the single biggest reason Bedrock ran less reliably than every other provider: the
- * other providers surface a throttle as a pre-stream 429 that `_fetchWithRetry` absorbs, while
+ * other providers surface a throttle as a pre-stream 429 that `fetchWithRetry` absorbs, while
  * AWS delivers it *inside* an already-200 stream, past that retry window. The frame is now
  * classified into a ProviderStreamError carrying a `retryable` flag, so a throttle re-enters the
  * same backoff cycle as any other transient failure instead of ending the run.
@@ -265,7 +265,7 @@ describe("bedrockStreamFrameError", () => {
 
 /**
  * The identical defect class on the Anthropic-direct / Bedrock-Mantle SSE path (both share
- * _parseAnthropicSSE): a mid-stream `{"type":"error","error":{...}}` event. `overloaded_error` is
+ * parseAnthropicSSE): a mid-stream `{"type":"error","error":{...}}` event. `overloaded_error` is
  * Anthropic's 529 — the exact failure the retry layer exists for, and it was fatal here.
  */
 describe("anthropicStreamError", () => {

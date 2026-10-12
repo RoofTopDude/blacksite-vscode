@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { parseEventHeaders, readEventFrame, streamBedrockConverse } from "../../src/bedrock-client.js";
+import { parseEventHeaders, readEventFrame, streamBedrockConverse } from "@blacksite-agent/llm";
 
 // A provider stream decoder runs on the extension host's event loop with no `await` between
 // decode steps. If a step ever fails to consume bytes, the loop spins, the host stops

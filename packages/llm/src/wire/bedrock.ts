@@ -143,7 +143,7 @@ export function isBedrockCacheValidationError(err: unknown): boolean {
  * this operation). Each arrives via the `:exception-type` header rather than an HTTP error,
  * so a mid-stream throttle/overload/validation failure looks exactly like a normal frame
  * unless the eventType is checked against this set — see the `default` case in
- * `_streamTurnBedrock`'s switch.
+ * `streamBedrockConverseTurn`'s switch.
  */
 const BEDROCK_STREAM_EXCEPTION_TYPES = new Set([
   "internalServerException",
@@ -161,7 +161,7 @@ const BEDROCK_STREAM_EXCEPTION_TYPES = new Set([
  * The subset of the above that is transient. This is the crux of why Bedrock ran so much less
  * reliably than the other providers: AWS delivers throttles and capacity failures *in-band*, as
  * frames inside an already-200 stream, where the other providers deliver them as a pre-stream
- * 429/5xx that `_fetchWithRetry` absorbs. Classified as retryable, they now re-enter the same
+ * 429/5xx that `fetchWithRetry` absorbs. Classified as retryable, they now re-enter the same
  * backoff cycle as every other transient provider failure instead of ending the run.
  *
  * Deliberately excludes validation/resourceNotFound/accessDenied: those mean the *request* is
@@ -180,7 +180,7 @@ const BEDROCK_RETRYABLE_STREAM_EXCEPTIONS = new Set([
  * Classify a decoded Bedrock ConverseStream frame: returns a {@link ProviderStreamError} when
  * `eventType` is one of `BEDROCK_STREAM_EXCEPTION_TYPES`, `null` for a normal content frame.
  * Exported pure function, same pattern as `isBedrockCacheValidationError` — testable directly
- * without driving the private `_streamTurnBedrock` streaming method.
+ * without driving the `streamBedrockConverseTurn` route.
  */
 export function bedrockStreamFrameError(eventType: string, data: Record<string, unknown>): ProviderStreamError | null {
   if (!BEDROCK_STREAM_EXCEPTION_TYPES.has(eventType)) return null;

@@ -3,7 +3,7 @@
  * answer. Both live in the shared loop; Bedrock is simply the provider that reaches them.
  *
  *  1. A transient failure reported *inside* a 200 stream (Bedrock's in-band `throttlingException`
- *     and friends) bypassed the entire retry layer — `_fetchWithRetry` only covers the pre-stream
+ *     and friends) bypassed the entire retry layer — `fetchWithRetry` only covers the pre-stream
  *     phase — and was thrown straight to the turn's terminal handler. One throttle ended the run.
  *
  *  2. That throw then rejected `turnPromise`, which nothing ever awaited on the error path (the

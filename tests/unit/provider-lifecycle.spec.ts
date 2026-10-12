@@ -124,6 +124,9 @@ describe.each(transports)("$name lifecycle", (transport) => {
     vi.stubGlobal("fetch", fetch);
     const { session } = sessionFor(transport);
     const pending = collect(session);
+    // Bedrock signs on Web Crypto, so its request goes out a few real ticks later: start the
+    // clock only once it has, or the idle timer would be armed after the advance.
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
     await vi.advanceTimersByTimeAsync(300_001);
     const events = await pending;
     expect(cancel).toHaveBeenCalledOnce();

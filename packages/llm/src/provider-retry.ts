@@ -14,7 +14,7 @@
  * timers or sockets. The actual await-loop lives in {@link retryAsync} for
  * non-streaming callers (compressor, Bedrock Converse first-frame); the streaming
  * provider paths run an equivalent loop inline so they can *yield* a live "retrying…"
- * notice to the UI between attempts (see AgentSession._fetchWithRetry).
+ * notice to the UI between attempts (see fetchWithRetry).
  */
 
 export interface RetryPolicy {
