@@ -7,8 +7,8 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
-import type { ContentBlock } from "../../src/agent-loop-contract.js";
-import { responsesMidStreamErrorTurn, responsesReasoningToolCallTurn, responsesTextTurn } from "./helpers/responses-api-sse.js";
+import type { ContentBlock } from "@blacksite-agent/llm";
+import { responsesMidStreamErrorTurn, responsesReasoningToolCallTurn, responsesTextTurn } from "@blacksite-agent/llm/testing";
 
 function createFakeContext() {
   const store = new Map<string, unknown>();

@@ -13,9 +13,9 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
-import type { AgentMessage } from "../../src/agent-loop-contract.js";
-import { mergeAdjacentUserMessages, normalizeForProvider } from "../../src/agent/transcript-hygiene.js";
-import { eventFrame, streamFromChunks, successStream } from "./helpers/bedrock-frames.js";
+import type { AgentMessage } from "@blacksite-agent/llm";
+import { mergeAdjacentUserMessages, normalizeForProvider } from "@blacksite-agent/llm";
+import { eventFrame, streamFromChunks, successStream } from "@blacksite-agent/llm/testing";
 
 function createFakeContext() {
   const store = new Map<string, unknown>();

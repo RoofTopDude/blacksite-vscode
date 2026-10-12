@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { signBedrockRequest, streamBedrockConverse, mantleMessage, buildRequestBody } from "../../src/bedrock-client.js";
-import type { BedrockConverseStreamEvent } from "../../src/bedrock-types.js";
-import { HttpError } from "../../src/provider-retry.js";
+import type { BedrockConverseStreamEvent } from "@blacksite-agent/llm";
+import { HttpError } from "@blacksite-agent/llm";
 
 const CREDS = {
   region: "us-east-1",

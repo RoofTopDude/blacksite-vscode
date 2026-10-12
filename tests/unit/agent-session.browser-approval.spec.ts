@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
-import type { ToolUseBlock } from "../../src/agent-loop-contract.js";
+import type { ToolUseBlock } from "@blacksite-agent/llm";
 import { ScriptedProviderSession } from "./helpers/scripted-provider-session.js";
 
 const usage = { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 };

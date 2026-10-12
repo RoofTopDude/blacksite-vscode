@@ -13,7 +13,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
-import type { OpenAIServiceTier } from "../../src/agent-session.js";
+import type { OpenAIServiceTier } from "@blacksite-agent/llm";
 
 function createFakeContext() {
   const store = new Map<string, unknown>();

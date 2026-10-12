@@ -20,9 +20,9 @@ import {
   normalizeOpenAIStopReason,
   toBedrockMessages,
   toOpenAIMessages,
-} from "../../src/agent-session.js";
-import { isRetryableError, ProviderStreamError, StreamIdleTimeoutError } from "../../src/provider-retry.js";
-import type { AgentMessage } from "../../src/agent-loop-contract.js";
+} from "@blacksite-agent/llm";
+import { isRetryableError, ProviderStreamError, StreamIdleTimeoutError } from "@blacksite-agent/llm";
+import type { AgentMessage } from "@blacksite-agent/llm";
 
 // ── Class 1: a contentless assistant turn must never reach the wire ───────────────────────────
 

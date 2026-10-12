@@ -4,7 +4,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent, type ApprovalBatchCandidate, type ApprovalReviewRequest, type ApprovalReviewVerdict } from "../../src/agent-session.js";
-import type { ToolUseBlock } from "../../src/agent-loop-contract.js";
+import type { ToolUseBlock } from "@blacksite-agent/llm";
 import {
   createAutoModeEditProvider,
   createAutoModeLspProvider,

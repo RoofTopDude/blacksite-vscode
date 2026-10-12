@@ -3,7 +3,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent, type AgentSessionOptions } from "../../src/agent-session.js";
-import type { ToolUseBlock } from "../../src/agent-loop-contract.js";
+import type { ToolUseBlock } from "@blacksite-agent/llm";
 import { ScriptedProviderSession, type ScriptedTurnFactory } from "./helpers/scripted-provider-session.js";
 
 /* A scratch script the agent wrote to check something and then removed used to stay on the

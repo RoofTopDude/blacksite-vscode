@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent, type AgentSessionOptions } from "../../src/agent-session.js";
-import type { ImageBlock, ToolUseBlock } from "../../src/agent-loop-contract.js";
+import type { ImageBlock, ToolUseBlock } from "@blacksite-agent/llm";
 import { ScriptedProviderSession, type ScriptedTurnFactory } from "./helpers/scripted-provider-session.js";
 
 /* Images reach the model from attachments and from tools (file_read, screenshots, previews). When

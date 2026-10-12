@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveOutputCeiling } from "../../src/agent-session.js";
+import { resolveOutputCeiling } from "@blacksite-agent/llm";
 
 // Regression guard for the execution-log failure:
 //   "Bedrock 400: The maximum tokens you requested exceeds the model limit of 64000"

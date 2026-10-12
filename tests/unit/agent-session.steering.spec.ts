@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, STEER_PREFIX, type AgentEvent } from "../../src/agent-session.js";
-import { eventFrame, streamFromChunks, successStream } from "./helpers/bedrock-frames.js";
+import { eventFrame, streamFromChunks, successStream } from "@blacksite-agent/llm/testing";
 
 function createFakeContext() {
   const store = new Map<string, unknown>();

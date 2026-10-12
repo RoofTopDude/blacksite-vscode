@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OpenAIToolCallAccumulator } from "../../src/agent-session.js";
+import { OpenAIToolCallAccumulator } from "@blacksite-agent/llm";
 
 function feed(fragments: Array<Record<string, unknown>>) {
   const acc = new OpenAIToolCallAccumulator();

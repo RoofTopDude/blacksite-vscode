@@ -4,7 +4,7 @@ import {
   restorePersistedImages,
   stripImagesForPersistence,
 } from "../../src/agent/transcript-hygiene.js";
-import type { AgentMessage, ImageBlock } from "../../src/agent-loop-contract.js";
+import type { AgentMessage, ImageBlock } from "@blacksite-agent/llm";
 
 const IMAGE: ImageBlock = { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } };
 const OTHER: ImageBlock = { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "BBBB" } };

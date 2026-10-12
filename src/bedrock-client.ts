@@ -18,6 +18,7 @@ import type {
   BedrockMessage,
   BedrockToolDef,
 } from "./bedrock-types.js";
+import type { BedrockThinkingConfig } from "@blacksite-agent/llm";
 import { buildBedrockEmbeddingBody, parseBedrockEmbeddingResponse } from "./embedding-models.js";
 import { HttpError, parseRetryAfter, ProviderStreamError, STREAM_IDLE_TIMEOUT_MS, StreamIdleTimeoutError } from "./provider-retry.js";
 
@@ -117,19 +118,7 @@ export function signBedrockRequest(
 
 // ── Converse request building ───────────────────────────────────────────────
 
-/**
- * The `thinking` object exactly as Anthropic's native API expects it — Converse forwards
- * `additionalModelRequestFields` straight through to the model, so this is the Messages-API shape
- * (snake_case `budget_tokens`), not a Converse-shaped one.
- *
- * Which variant a model accepts is not a caller preference — it's a hard per-model constraint
- * (adaptive-era models 400 on `budget_tokens`, budget-era models 400 on `adaptive`). The caller
- * resolves it via `planThinking` in agent-session; this type just carries the decision.
- */
-export type BedrockThinkingConfig =
-  | { type: "adaptive"; display?: "summarized" }
-  | { type: "enabled"; budget_tokens: number }
-  | { type: "disabled" };
+export type { BedrockThinkingConfig } from "@blacksite-agent/llm";
 
 export interface ConverseOptions {
   /** Disable all cache markers after a model rejects prompt caching. */

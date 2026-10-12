@@ -5,7 +5,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
-import type { ToolUseBlock } from "../../src/agent-loop-contract.js";
+import type { ToolUseBlock } from "@blacksite-agent/llm";
 import { isReadOnlyCommand } from "../../packages/local-runtime/src/security.js";
 import { planModeRefusal, planModeWithholds } from "../../src/plan-mode-policy.js";
 import { laneRequestMode } from "../../src/chat/subagent-lanes.js";

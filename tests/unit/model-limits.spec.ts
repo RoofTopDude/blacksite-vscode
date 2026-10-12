@@ -7,7 +7,7 @@
  * Bedrock, so an "Unlimited" run on the Anthropic path could request 200K and take a hard 400.
  */
 import { describe, expect, it } from "vitest";
-import { resolveClaudeLimits, resolveContextWindow, resolveOutputCeiling, isOpenAIReasoningModel } from "../../src/model-limits.js";
+import { resolveClaudeLimits, resolveContextWindow, resolveOutputCeiling, isOpenAIReasoningModel } from "@blacksite-agent/llm";
 import { getContextLength } from "../../src/model-fetcher.js";
 
 describe("context windows", () => {

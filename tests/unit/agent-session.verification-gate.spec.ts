@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
-import type { ToolUseBlock } from "../../src/agent-loop-contract.js";
+import type { ToolUseBlock } from "@blacksite-agent/llm";
 import type { EditProvider, EditResult } from "../../src/diff-edit-service.js";
 import { ScriptedProviderSession, type ScriptedTurnFactory } from "./helpers/scripted-provider-session.js";
 

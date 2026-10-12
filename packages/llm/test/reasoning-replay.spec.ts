@@ -13,8 +13,8 @@
  * `tool_use`, and took a 400 on the next request.
  */
 import { describe, expect, it } from "vitest";
-import { normalizeForProvider, toBedrockMessages } from "../../src/agent-session.js";
-import type { AgentMessage, ContentBlock } from "../../src/agent-loop-contract.js";
+import { normalizeForProvider, toBedrockMessages } from "@blacksite-agent/llm";
+import type { AgentMessage, ContentBlock } from "@blacksite-agent/llm";
 
 const turnWithRedactedReasoning: AgentMessage[] = [
   { role: "user", content: "do the thing" },

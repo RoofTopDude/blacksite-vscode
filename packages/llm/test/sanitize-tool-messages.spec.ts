@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { sanitizeToolMessages } from "../../src/agent-session.js";
-import type { AgentMessage } from "../../src/agent-loop-contract.js";
+import { sanitizeToolMessages } from "@blacksite-agent/llm";
+import type { AgentMessage } from "@blacksite-agent/llm";
 
 describe("sanitizeToolMessages", () => {
   it("passes well-formed tool_use/tool_result pairs through unchanged", () => {

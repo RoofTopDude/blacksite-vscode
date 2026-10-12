@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultBedrockModel } from "../../src/bedrock-config.js";
+import { defaultBedrockModel } from "@blacksite-agent/llm";
 import { currentProviderSettings } from "../../src/webview/react/components/settings/helpers.js";
 import type { ExtendedSettings } from "../../src/webview/react/lib/protocol.js";
 

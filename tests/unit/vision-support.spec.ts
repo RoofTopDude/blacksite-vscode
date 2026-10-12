@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { getVisionSupport, modelFamilySupportsVision, mapOpenRouterModelEntry } from "../../src/model-fetcher.js";
 import { bedrockModelsToModelInfo, type BedrockAvailableModel } from "../../src/bedrock-models.js";
-import type { ProviderName } from "../../src/agent-session.js";
+import type { ProviderName } from "@blacksite-agent/llm";
 
 /* Vision support used to come from the static model table, matched on the exact id, whenever no
    model picker had loaded the live catalog — which is every session after a window reload. A model

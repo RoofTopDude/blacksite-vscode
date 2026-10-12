@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { resolveReasoningEffort, supportedReasoningEfforts, toOpenRouterReasoningEffort } from "../../src/agent-session.js";
-import type { OpenAIReasoningEffort } from "../../src/agent-session.js";
+import { resolveReasoningEffort, supportedReasoningEfforts, toOpenRouterReasoningEffort } from "@blacksite-agent/llm";
+import type { OpenAIReasoningEffort } from "@blacksite-agent/llm";
 import {
   effectiveOpenRouterEffort,
   effectiveReasoningEffort,

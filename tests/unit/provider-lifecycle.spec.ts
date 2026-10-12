@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent, type AgentSessionOptions } from "../../src/agent-session.js";
-import { eventFrame, streamFromChunks } from "./helpers/bedrock-frames.js";
-import { responsesSseStream } from "./helpers/responses-api-sse.js";
+import { eventFrame, streamFromChunks } from "@blacksite-agent/llm/testing";
+import { responsesSseStream } from "@blacksite-agent/llm/testing";
 
 // Exercise every advertised transport through the real session and mocked wire.
 const transports = [

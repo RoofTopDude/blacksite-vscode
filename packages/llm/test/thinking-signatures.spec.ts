@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { stripUnsignedThinking } from "../../src/agent-session.js";
-import type { AgentMessage, ContentBlock } from "../../src/agent-loop-contract.js";
+import { stripUnsignedThinking } from "@blacksite-agent/llm";
+import type { AgentMessage, ContentBlock } from "@blacksite-agent/llm";
 
 function blocks(msg: AgentMessage): ContentBlock[] {
   return msg.content as ContentBlock[];

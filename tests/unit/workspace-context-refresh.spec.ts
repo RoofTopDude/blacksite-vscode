@@ -13,7 +13,7 @@ import {
   buildSystemPrompt,
   type WorkspaceSnapshot,
 } from "../../src/workspace-context.js";
-import type { AgentMessage, ContentBlock } from "../../src/agent-loop-contract.js";
+import type { AgentMessage, ContentBlock } from "@blacksite-agent/llm";
 import { ATTACHED_CONTEXT_TAG, wrapAttachedContext } from "../../src/agent/transcript-hygiene.js";
 
 function snapshot(overrides: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SAMPLING_PARAMETERS, buildSamplingBody, normalizeSamplingValue, supportedSamplingParameters,
-} from "../../src/sampling-parameters.js";
+} from "@blacksite-agent/llm";
 
 /* A representative OpenRouter `supported_parameters` row for a model that exposes the full
    sampling surface — the case that motivated this: the panel previously offered only

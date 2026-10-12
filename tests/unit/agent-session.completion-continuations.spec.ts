@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
 import type { EditProvider, EditResult } from "../../src/diff-edit-service.js";
 import type { GraphAnnotationProvider } from "../../src/graph-annotation-store.js";
-import { eventFrame, streamFromChunks, successStream } from "./helpers/bedrock-frames.js";
+import { eventFrame, streamFromChunks, successStream } from "@blacksite-agent/llm/testing";
 
 function createFakeContext() {
   const store = new Map<string, unknown>();

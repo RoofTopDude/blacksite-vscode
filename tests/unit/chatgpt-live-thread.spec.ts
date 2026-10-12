@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ChatGptService, type ChatGptOptions, type SubscriptionRequest } from "../../src/chatgpt-service.js";
 import type { CodexAppServer, CodexMessage } from "../../src/codex-app-server.js";
-import type { AgentMessage, ContentBlock, ProviderTurnStreamEvent } from "../../src/agent-loop-contract.js";
+import type { AgentMessage, ContentBlock, ProviderTurnStreamEvent } from "@blacksite-agent/llm";
 
 vi.mock("node:fs/promises", () => ({ mkdir: vi.fn(async () => {}) }));
 

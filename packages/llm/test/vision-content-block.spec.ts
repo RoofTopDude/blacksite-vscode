@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { toOpenAIMessages, toBedrockMessages } from "../../src/agent-session.js";
-import type { AgentMessage, ImageBlock } from "../../src/agent-loop-contract.js";
+import { toOpenAIMessages, toBedrockMessages } from "@blacksite-agent/llm";
+import type { AgentMessage, ImageBlock } from "@blacksite-agent/llm";
 
 const IMAGE: ImageBlock = {
   type: "image",

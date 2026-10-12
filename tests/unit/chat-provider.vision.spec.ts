@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ChatProvider } from "../../src/chat-provider.js";
-import type { AgentMessage, ImageBlock } from "../../src/agent-loop-contract.js";
+import type { AgentMessage, ImageBlock } from "@blacksite-agent/llm";
 import type { ModelInfo } from "../../src/model-fetcher.js";
 import { PERSISTED_IMAGE_STUB, stripImagesForPersistence } from "../../src/agent/transcript-hygiene.js";
 

@@ -10,8 +10,8 @@ import {
   type AgentEvent,
   type AgentSessionOptions,
 } from "../../src/agent-session.js";
-import type { AgentMessage } from "../../src/agent-loop-contract.js";
-import { responsesSseStream } from "./helpers/responses-api-sse.js";
+import type { AgentMessage } from "@blacksite-agent/llm";
+import { responsesSseStream } from "@blacksite-agent/llm/testing";
 
 type Part = { type: string; text?: string; cache_control?: { type: string } };
 

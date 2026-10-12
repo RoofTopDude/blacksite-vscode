@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import * as path from "path";
 import { AgentSession, resolveAnthropicBetaExtras, UNSHEDDABLE_TOOL_NAMES, type AgentEvent } from "../../src/agent-session.js";
-import type { ToolResultBlock, ToolUseBlock } from "../../src/agent-loop-contract.js";
+import type { ToolResultBlock, ToolUseBlock } from "@blacksite-agent/llm";
 import { ScriptedProviderSession, type ScriptedTurnFactory } from "./helpers/scripted-provider-session.js";
 
 /**

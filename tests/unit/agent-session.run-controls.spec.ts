@@ -7,10 +7,10 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, continuesRequest, type AgentEvent } from "../../src/agent-session.js";
-import type { ToolUseBlock } from "../../src/agent-loop-contract.js";
+import type { ToolUseBlock } from "@blacksite-agent/llm";
 import type { ApprovalDecision } from "../../src/approval-gate.js";
-import { outageDelayMs, OUTAGE_RETRY_SCHEDULE_MS } from "../../src/provider-retry.js";
-import { successStream } from "./helpers/bedrock-frames.js";
+import { outageDelayMs, OUTAGE_RETRY_SCHEDULE_MS } from "@blacksite-agent/llm";
+import { successStream } from "@blacksite-agent/llm/testing";
 import { ScriptedProviderSession } from "./helpers/scripted-provider-session.js";
 
 const usage = { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 };

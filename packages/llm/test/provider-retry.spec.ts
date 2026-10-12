@@ -13,7 +13,7 @@ import {
   extractOutputTokenLimit,
   parseRetryAfter,
   retryAsync,
-} from "../../src/provider-retry.js";
+} from "@blacksite-agent/llm";
 
 describe("isRetryableStatus", () => {
   it("retries rate limits, overload (529), request timeout, and transient 5xx", () => {

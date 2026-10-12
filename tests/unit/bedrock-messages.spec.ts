@@ -9,9 +9,9 @@ import {
   anthropicStreamError,
   openAIStreamError,
   responsesStreamError,
-} from "../../src/agent-session.js";
-import { isRetryableError } from "../../src/provider-retry.js";
-import type { AgentMessage } from "../../src/agent-loop-contract.js";
+} from "@blacksite-agent/llm";
+import { isRetryableError } from "@blacksite-agent/llm";
+import type { AgentMessage } from "@blacksite-agent/llm";
 import type { ToolDefinition } from "../../src/tools/definitions.js";
 
 describe("toBedrockMessages", () => {

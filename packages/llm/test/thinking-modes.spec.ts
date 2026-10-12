@@ -21,7 +21,7 @@ import {
   supportsFastMode,
   supportsTaskBudget,
   supportsThinking,
-} from "../../src/thinking-modes.js";
+} from "@blacksite-agent/llm";
 
 describe("model id normalization", () => {
   it("recognises the same model across every provider's spelling", () => {

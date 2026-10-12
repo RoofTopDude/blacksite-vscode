@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toStrictToolSchema, withAnthropicStrictTools } from "../../src/agent-session.js";
+import { toStrictToolSchema, withAnthropicStrictTools } from "@blacksite-agent/llm";
 
 // Strict tool use (Anthropic Messages / Bedrock Mantle): schemas inside the documented strict
 // subset are marked `strict: true` so the API guarantees schema-valid tool_use.input — the

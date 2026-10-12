@@ -11,8 +11,8 @@ import {
   appendResponsesWorkspaceContextTail,
   applyOpenAICacheParams,
   stripOpenAICacheParams,
-} from "../../src/agent-session.js";
-import type { AgentMessage, ContentBlock } from "../../src/agent-loop-contract.js";
+} from "@blacksite-agent/llm";
+import type { AgentMessage, ContentBlock } from "@blacksite-agent/llm";
 
 describe("toOpenAIMessages — tool-pair integrity (prevents the run-ending 400)", () => {
   it("never emits a tool message whose call_id has no matching assistant tool_call", () => {

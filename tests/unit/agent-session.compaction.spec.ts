@@ -10,8 +10,8 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
-import type { ContentBlock } from "../../src/agent-loop-contract.js";
-import { anthropicCompactionTurn, anthropicTextTurn } from "./helpers/anthropic-sse.js";
+import type { ContentBlock } from "@blacksite-agent/llm";
+import { anthropicCompactionTurn, anthropicTextTurn } from "@blacksite-agent/llm/testing";
 
 function createFakeContext() {
   const store = new Map<string, unknown>();

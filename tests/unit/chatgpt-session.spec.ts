@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentSessionOptions } from "../../src/agent-session.js";
-import type { ProviderTurnStreamEvent } from "../../src/agent-loop-contract.js";
+import type { ProviderTurnStreamEvent } from "@blacksite-agent/llm";
 import type { SubscriptionRequest } from "../../src/chatgpt-service.js";
 import { currentProviderSettings, effectiveReasoningEffort, subscriptionReasoningEffort, supportedReasoningEfforts } from "../../src/webview/react/components/settings/helpers.js";
 import { ChatProvider } from "../../src/chat-provider.js";

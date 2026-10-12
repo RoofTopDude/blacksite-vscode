@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   appendResponsesWorkspaceContextTail, normalizeResponsesStopReason, toResponsesInputItems, toResponsesTools,
-} from "../../src/agent-session.js";
-import type { AgentMessage } from "../../src/agent-loop-contract.js";
+} from "@blacksite-agent/llm";
+import type { AgentMessage } from "@blacksite-agent/llm";
 
 describe("toResponsesTools", () => {
   it("uses the flat {type,name,description,parameters} shape, not Chat Completions' nested function wrapper", () => {

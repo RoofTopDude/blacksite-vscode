@@ -13,11 +13,11 @@ import {
   BEDROCK_CONVERSE_LEGACY_DEFAULT_MODEL,
   BEDROCK_MANTLE_DEFAULT_MODEL,
   defaultBedrockModel,
-} from "../../src/bedrock-config.js";
-import { bedrockSupportsCacheTtl1h, resolveClaudeLimits } from "../../src/model-limits.js";
+} from "@blacksite-agent/llm";
+import { bedrockSupportsCacheTtl1h, resolveClaudeLimits } from "@blacksite-agent/llm";
 import { normalizeModelIdForFallbackLookup } from "../../src/model-fetcher.js";
-import { parseClaudeVersion, resolveThinkingMode } from "../../src/thinking-modes.js";
-import { eventFrame, streamFromChunks } from "./helpers/bedrock-frames.js";
+import { parseClaudeVersion, resolveThinkingMode } from "@blacksite-agent/llm";
+import { eventFrame, streamFromChunks } from "@blacksite-agent/llm/testing";
 
 /* Fix 1. Only us./eu./apac./us-gov. were stripped, so the global profile AWS's own samples use —
    and the jp./au. geos — were not recognised as Claude: thinking, effort, context limits and

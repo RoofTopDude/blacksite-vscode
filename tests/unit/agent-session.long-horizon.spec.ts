@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
 import { loadCheckpoint } from "../../src/checkpoint.js";
 import type { ApprovalDecision } from "../../src/approval-gate.js";
-import type { ContentBlock, ToolUseBlock } from "../../src/agent-loop-contract.js";
+import type { ContentBlock, ToolUseBlock } from "@blacksite-agent/llm";
 import { ScriptedProviderSession } from "./helpers/scripted-provider-session.js";
 
 function createFakeContext() {

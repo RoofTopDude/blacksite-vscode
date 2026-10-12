@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent, type AgentSessionOptions } from "../../src/agent-session.js";
-import type { AgentMessage, ProviderTurnStreamEvent } from "../../src/agent-loop-contract.js";
+import type { AgentMessage, ProviderTurnStreamEvent } from "@blacksite-agent/llm";
 import {
   anthropicSearchResults,
   anthropicWebSearchTool,
@@ -10,17 +10,17 @@ import {
   openRouterCitations,
   openRouterServerToolCall,
   openRouterWebSearchTool,
-} from "../../src/agent/hosted-search.js";
-import { resolveAnthropicNativeBlocks } from "../../src/agent/transcript-hygiene.js";
-import { toResponsesInputItems } from "../../src/agent/wire/openai.js";
+} from "@blacksite-agent/llm";
+import { resolveAnthropicNativeBlocks } from "@blacksite-agent/llm";
+import { toResponsesInputItems } from "@blacksite-agent/llm";
 import { ChatGptService, toCodexInputItems, type SubscriptionRequest } from "../../src/chatgpt-service.js";
 import type { CodexAppServer, CodexMessage } from "../../src/codex-app-server.js";
 import { BrowserApprovalCoordinator } from "../../src/browser/approval-coordinator.js";
 import type { BrowserProposal, HostedSearchPolicy } from "../../src/browser/approval-types.js";
 import { DomainPolicy, normalizePolicy } from "../../src/browser/domain-policy.js";
 import { hostedSearchPurpose, ResearchService } from "../../src/browser/research-service.js";
-import { anthropicSseStream } from "./helpers/anthropic-sse.js";
-import { responsesSseStream } from "./helpers/responses-api-sse.js";
+import { anthropicSseStream } from "@blacksite-agent/llm/testing";
+import { responsesSseStream } from "@blacksite-agent/llm/testing";
 
 vi.mock("node:fs/promises", async (original) => ({ ...(await original<typeof import("node:fs/promises")>()), mkdir: vi.fn(async () => {}) }));
 

@@ -4,7 +4,7 @@ import {
   BEDROCK_CONVERSE_DEFAULT_MODEL,
   BEDROCK_MANTLE_DEFAULT_MODEL,
   defaultBedrockModel,
-} from "../../src/bedrock-config.js";
+} from "@blacksite-agent/llm";
 
 // A wrong model id costs a whole session: it is only discovered when a turn 400s, and every
 // retry fails the same way. Two shipped ids were wrong in exactly this way —
