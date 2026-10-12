@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  complete,
   createModelClient,
   hostedSearchRouteFor,
   modelRouteFor,
@@ -100,5 +101,17 @@ describe("subscriptionTransport", () => {
       reasoningEffort: "high",
       serviceTier: "priority",
     });
+  });
+});
+
+describe("complete", () => {
+  it("returns one finished turn from any transport", async () => {
+    const result = await complete({
+      async *stream() {
+        yield { type: "text_delta", text: "Hi" } as const;
+        yield { type: "stop_reason", reason: "end_turn" } as const;
+      },
+    }, request());
+    expect(result).toMatchObject({ text: "Hi", stopReason: "end_turn", toolCalls: [], empty: false });
   });
 });

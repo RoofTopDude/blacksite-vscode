@@ -105,7 +105,7 @@ import { clearCheckpoint, loadCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
 import { fetchModels, getFallbackModels, getContextLength, getMaxOutputTokens, getModelPricing, getVisionSupport, estimateUsageCostUsd, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
 import { restorePersistedImages } from "./agent/transcript-hygiene.js";
-import { bedrockSupportsCacheTtl1h, isOpenAIReasoningModel } from "./model-limits.js";
+import { bedrockSupportsCacheTtl1h } from "./model-limits.js";
 import { findSubagentProfile, mergeBuiltinSubagentProfiles } from "./builtin-subagent-profiles.js";
 import { SkillStore, buildSkillRoster } from "./skills/skill-store.js";
 import { SkillToolProvider as SkillToolService } from "./skills/skill-tools.js";
@@ -116,7 +116,7 @@ import { ChatGptService, DEFAULT_CHATGPT_OPTIONS } from "./chatgpt-service.js";
 import type { AgentMessage } from "./agent-loop-contract.js";
 import { CodexAppServer } from "./codex-app-server.js";
 import { listAvailableBedrockModels, bedrockModelsToModelInfo } from "./bedrock-models.js";
-import { converseBedrock, mantleMessage } from "./bedrock-client.js";
+import { completeText } from "@blacksite-agent/llm";
 import { BEDROCK_CONVERSE_DEFAULT_MODEL, defaultBedrockModel, normalizeBedrockApi } from "./bedrock-config.js";
 import { CLAUDE_EFFORT_LADDER, type ClaudeEffort } from "./thinking-modes.js";
 import { PlanningStore } from "./planning-store.js";
@@ -490,41 +490,8 @@ interface RunSummary {
 
 // ── ChatProvider ───────────────────────────────────────────────────────────────
 
-/** Request shape shared by no-tools helpers such as continuation review and plan continuation. */
-export function buildAssistantTextRequestBody(input: {
-  provider: ProviderName;
-  model: string;
-  maxTokens: number;
-  systemPrompt: string;
-  userPrompt: string;
-  image?: { mediaType: string; data: string };
-  reasoningEffort?: OpenAIReasoningEffort;
-}): Record<string, unknown> {
-  const { provider, model, maxTokens, systemPrompt, userPrompt, image, reasoningEffort } = input;
-  const reasoning = provider === "openai" && isOpenAIReasoningModel(model);
-  const body: Record<string, unknown> = {
-    model,
-    messages: [
-      { role: "system", content: systemPrompt },
-      {
-        role: "user",
-        content: image
-          ? [
-              { type: "image_url", image_url: { url: `data:${image.mediaType};base64,${image.data}` } },
-              { type: "text", text: userPrompt },
-            ]
-          : userPrompt,
-      },
-    ],
-  };
-  if (reasoning) {
-    body["max_completion_tokens"] = maxTokens;
-    if (reasoningEffort) body["reasoning_effort"] = reasoningEffort;
-  } else {
-    body["max_tokens"] = maxTokens;
-  }
-  return body;
-}
+// Re-exported: the one-shot request shape now lives with the other provider requests.
+export { buildAssistantTextRequestBody } from "@blacksite-agent/llm";
 
 export class ChatProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;
@@ -1819,110 +1786,21 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     }
     const apiKey = await this._modelCredential(provider);
     if (!apiKey) throw new Error(`No API key configured for ${provider}.`);
-    const image = opts?.image;
-
-    if (provider === "bedrock") {
-      const config = await this._secrets.getBedrockConfig();
-      if (!config) throw new Error("No AWS credentials configured for Bedrock.");
-      if (settings.bedrockApi === "mantle") {
-        const content: string | Array<Record<string, unknown>> = image
-          ? [
-              { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } },
-              { type: "text", text: userPrompt },
-            ]
-          : userPrompt;
-        const response = await mantleMessage({
-          credentials: config,
-          model,
-          system: systemPrompt,
-          maxTokens,
-          messages: [{ role: "user", content }],
-        });
-        return response.content.find((b) => b.type === "text")?.text?.trim() ?? "";
-      }
-      const bedrockFormat = (image?.mediaType.split("/")[1] ?? "png") as "png" | "jpeg" | "gif" | "webp";
-      const response = await converseBedrock({
-        credentials: config,
-        modelId: model,
-        systemPrompt,
-        maxTokens,
-        messages: [{
-          role: "user",
-          content: image
-            ? [{ image: { format: bedrockFormat, source: { bytes: image.data } } }, { text: userPrompt }]
-            : [{ text: userPrompt }],
-        }],
-      });
-      return response.output.message.content
-        .filter((block): block is { text: string } => "text" in block)
-        .map((block) => block.text)
-        .join("\n\n")
-        .trim();
-    }
-
-    if (provider === "anthropic") {
-      const response = await fetch(pSettings.baseUrl?.trim() || "https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "anthropic-version": "2023-06-01",
-          "x-api-key": apiKey,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: maxTokens,
-          system: systemPrompt,
-          messages: [{
-            role: "user",
-            content: image
-              ? [
-                  { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } },
-                  { type: "text", text: userPrompt },
-                ]
-              : userPrompt,
-          }],
-        }),
-      });
-      if (!response.ok) {
-        const text = await response.text().catch(() => "");
-        throw new Error(`Anthropic error ${response.status}: ${text.slice(0, 300)}`);
-      }
-      const data = await response.json() as { content?: Array<{ type: string; text?: string }> };
-      return data.content?.find((block) => block.type === "text")?.text?.trim() ?? "";
-    }
-
-    const baseUrl = pSettings.baseUrl?.trim() || (provider === "openrouter"
-      ? "https://openrouter.ai/api/v1/chat/completions"
-      : "https://api.openai.com/v1/chat/completions");
-    // The reviewer and plan-conductor use this compact completion path rather than AgentSession.
-    // Its request body shares the same direct-OpenAI dialect rules as the main turn path.
-    const body = buildAssistantTextRequestBody({
+    return completeText({
       provider,
       model,
       maxTokens,
       systemPrompt,
       userPrompt,
-      image,
+      image: opts?.image,
+      apiKey,
+      baseUrl: pSettings.baseUrl,
+      bedrock: provider === "bedrock" ? await this._secrets.getBedrockConfig() : undefined,
+      bedrockApi: settings.bedrockApi === "mantle" ? "mantle" : "converse",
       reasoningEffort: pSettings.reasoningEffort,
+      httpReferer: settings.openrouterConfig?.httpReferer,
+      xTitle: settings.openrouterConfig?.xTitle,
     });
-    const response = await fetch(baseUrl, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "content-type": "application/json",
-        ...(provider === "openrouter" ? {
-        "HTTP-Referer": settings.openrouterConfig?.httpReferer ?? "https://blacksite.dev",
-        "X-Title": settings.openrouterConfig?.xTitle ?? "Blacksite",
-      } : {}),
-      },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new Error(`${provider} error ${response.status}: ${text.slice(0, 300)}`);
-    }
-    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
-    return data.choices?.[0]?.message?.content?.trim() ?? "";
   }
 
   private _restoreSessionFromState(

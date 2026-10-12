@@ -29,5 +29,7 @@ export * from "./providers/bedrock-mantle.js";
 export * from "./providers/openai-chat.js";
 export * from "./providers/openai-responses.js";
 export * from "./client.js";
+export * from "./compressor.js";
+export * from "./complete-text.js";
 export * from "./subscription.js";
 export * from "./chatgpt-types.js";

@@ -23,7 +23,7 @@ import type {
   ReasoningBlock,
   ToolUseBlock,
 } from "../types.js";
-import { formatDelay, makeAbortError } from "./request.js";
+import { formatDelay, makeAbortError, type ModelRequest } from "./request.js";
 
 export interface ProviderTurnOptions {
   retryPolicy?: RetryPolicy;
@@ -260,4 +260,22 @@ export class ProviderTurnRunner {
     // Unreachable: the loop either returns a result or throws on the final attempt.
     throw new Error(`${options.label}: provider turn failed after ${policy.maxAttempts} attempts`);
   }
+}
+
+/**
+ * One finished turn through `transport`, with the same retries as a conversation turn: the
+ * simplest way to use a transport when there is no loop around it. Pass `onEvent` to watch it
+ * stream.
+ */
+export function complete(
+  transport: { stream(req: ModelRequest, signal?: AbortSignal): AsyncGenerator<ProviderTurnStreamEvent> },
+  req: ModelRequest,
+  options: Partial<ProviderTurnOptions> & { onEvent?: (event: ProviderTurnStreamEvent) => void } = {},
+): Promise<ProviderTurnResult> {
+  const { onEvent, ...turn } = options;
+  return new ProviderTurnRunner().run(() => transport.stream(req, turn.signal), { emit: onEvent ?? (() => {}) }, {
+    label: req.model,
+    model: req.model,
+    ...turn,
+  });
 }

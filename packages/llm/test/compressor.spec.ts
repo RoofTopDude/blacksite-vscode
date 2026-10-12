@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { compressHistory, type CompressorOptions } from "../../src/compressor.js";
-import * as bedrockClient from "../../src/bedrock-client.js";
+import { compressHistory, type CompressorOptions } from "@blacksite-agent/llm";
+import * as bedrockClient from "../src/bedrock-client.js";
 
 const VALID_SUMMARY = JSON.stringify({
   compressionMeta: { messageCount: 2, version: 1 },
