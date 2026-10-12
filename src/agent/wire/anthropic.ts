@@ -11,7 +11,7 @@
 */
 import { toStrictToolSchema } from "./strict-schema.js";
 import type { AgentMessage, ContentBlock } from "../../agent-loop-contract.js";
-import type { CacheTtl } from "../../agent-session.js";
+import type { CacheTtl } from "@blacksite-agent/llm";
 
 export type AnthropicCacheControl = { type: "ephemeral"; ttl?: "1h" };
 

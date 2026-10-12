@@ -52,6 +52,8 @@ export interface QCardQuestion {
   preferenceKey?: string;
 }
 
+/** A tool's model-facing schema (structurally @blacksite-agent/llm's `ToolSchema`) plus where the
+ *  harness routes it. */
 export interface ToolDefinition {
   name: string;
   description: string;

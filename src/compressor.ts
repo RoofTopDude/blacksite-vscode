@@ -1,4 +1,4 @@
-import type { ProviderName } from "./agent-session.js";
+import type { ProviderName } from "@blacksite-agent/llm";
 import { converseBedrock, mantleMessage } from "./bedrock-client.js";
 import type { BedrockThinkingConfig } from "./bedrock-client.js";
 import type { BedrockCredentials } from "./bedrock-types.js";

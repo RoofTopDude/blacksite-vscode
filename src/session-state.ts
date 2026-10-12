@@ -1,37 +1,11 @@
 import type { QCardQuestion } from "./tools/definitions.js";
 import type { ActiveRequestMode, RequestMode } from "./request-modes.js";
+import type { ModelStopReason } from "@blacksite-agent/llm";
 
 export type CompressionTrigger = "auto" | "manual";
-export type AgentStopReason =
-  | "end_turn"
-  | "tool_use"
-  | "max_tokens"
-  | "max_iterations"
-  | "approval_pending"
-  | "question_pending"
-  | "cancelled"
-  /** A plan run was paused: the turn ended cleanly at a tool-round boundary, by request. */
-  | "paused"
-  | "error"
-  /**
-   * The provider declined to produce (or finished) the response on content grounds:
-   * Bedrock `guardrail_intervened`/`content_filtered`, Anthropic `refusal`, OpenAI
-   * `content_filter`. This is a *terminal, legitimate* outcome — distinct from
-   * "protocol_violation", which means the turn ended without a valid terminal event.
-   * Keeping them separate matters: the truncation-recovery path treats
-   * protocol_violation as a cut-off response and retries with a doubled output budget,
-   * which for a refusal just burns turns re-provoking the same refusal.
-   */
-  | "refusal"
-  /**
-   * The prompt exceeded the model's *context window* (Claude 4.5+ reports this as its own stop
-   * reason). Distinct from "max_tokens", which is the output cut-off: the fix here is to shrink the
-   * input, not to grant more output. Conflating the two is actively harmful — the truncation
-   * recovery path responds to max_tokens by doubling the output budget, which on a context overflow
-   * makes the request larger and re-provokes the same error.
-   */
-  | "context_window_exceeded"
-  | "protocol_violation";
+/** How an agent turn ended. One union shared with @blacksite-agent/llm, which documents which
+ *  values the loop assigns rather than the provider. */
+export type AgentStopReason = ModelStopReason;
 
 export interface PendingApprovalState {
   kind: "approval";

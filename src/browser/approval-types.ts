@@ -2,9 +2,8 @@
 /** "hosted" is the model provider's own web search (Claude, OpenRouter, ChatGPT), run on its
  *  servers inside the model's turn rather than by Blacksite. */
 export type SearchProvider = "none" | "hosted" | "brave";
-/** Where hosted search results may come from. "any" excludes denied domains where the provider
- *  can; "approved" limits results to the allowed and session-granted domains. */
-export type SearchScope = "any" | "approved";
+export type { SearchScope, HostedSearchPolicy, HostedSearchRoute } from "@blacksite-agent/llm";
+import type { SearchScope } from "@blacksite-agent/llm";
 export interface ResearchPolicy {
   allowedDomains: string[];
   deniedDomains: string[];
@@ -13,19 +12,7 @@ export interface ResearchPolicy {
   /** Absent in policies saved before hosted search existed; read as "any". */
   searchScope?: SearchScope;
 }
-/** What a session needs to declare a provider's hosted search tool. */
-export interface HostedSearchPolicy {
-  scope: SearchScope;
-  /** Allowed plus session-granted domains, registrable form. */
-  allowedDomains: string[];
-  deniedDomains: string[];
-}
-/** The provider route the agent is running on, when that route has a hosted search. */
-export interface HostedSearchRoute {
-  provider: "anthropic" | "openrouter" | "chatgpt";
-  /** What the consent card calls it: "Claude", "OpenRouter", "ChatGPT". */
-  label: string;
-}
+
 export interface ResearchUiState {
   policy: ResearchPolicy;
   configured: ResearchPolicy;

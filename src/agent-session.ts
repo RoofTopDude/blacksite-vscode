@@ -5,6 +5,7 @@ import type { HookInput, HookOutcome, HookProvider } from "./hooks.js";
 import { browserTool, redactBrowserPayload } from "./browser/privacy.js";
 import type { HostedSearchPolicy, HostedSearchRoute } from "./browser/approval-types.js";
 import type { LocalRuntime, McpServer } from "@blacksite/local-runtime";
+import type { CacheTtl, OpenAIServiceTier, OpenRouterProviderPreferences, ProviderName } from "@blacksite-agent/llm";
 import {
   WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, RESEARCH_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, DIAGRAM_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS, SKILL_TOOLS,
   resolveToolDispatch,
@@ -868,7 +869,7 @@ function duplicateToolRoundPrompt(rounds: number, tools: string): string {
 
 // ── Provider config ────────────────────────────────────────────────────────────
 
-export type ProviderName = "anthropic" | "openrouter" | "openai" | "bedrock";
+export type { ProviderName } from "@blacksite-agent/llm";
 
 const PROVIDER_DEFAULTS: Record<ProviderName, { baseUrl: string; authHeader: "x-api-key" | "Bearer" }> = {
   anthropic:  { baseUrl: "https://api.anthropic.com/v1/messages",          authHeader: "x-api-key" },
@@ -1336,37 +1337,11 @@ export interface ThinkingConfig {
 export type { OpenAIReasoningEffort } from "./model-limits.js";
 export { supportedReasoningEfforts, resolveReasoningEffort, toOpenRouterReasoningEffort } from "./model-limits.js";
 
-/**
- * OpenAI processing tier. "flex" trades latency (queued, capacity-dependent) for half-price
- * tokens (the Batch API rate) on supported flagship models; "fast" is the inverse — double
- * rates for up to 2.5x standard speed. "auto"/unset sends no service_tier field at all,
- * leaving the account default in charge.
- *
- * "priority" is the pre-2026-07-30 name for "fast". OpenAI kept it accepted on the wire for
- * backwards compatibility and routes it to Fast mode, so both spellings are valid here and
- * both are billed at the same 2x multiplier.
- */
-export type OpenAIServiceTier = "auto" | "default" | "flex" | "priority" | "fast";
+export type { OpenAIServiceTier } from "@blacksite-agent/llm";
 
-/**
- * OpenRouter's `provider` routing-preferences object, forwarded verbatim on the request.
- * All fields optional — an empty/all-undefined object sends nothing, leaving OpenRouter's
- * own defaults (try every provider of the routed model, no ZDR requirement) in charge.
- */
-export interface OpenRouterProviderPreferences {
-  /** Provider slugs to try, in order (e.g. ["anthropic", "google-vertex"]). */
-  order?: string[];
-  /** When false, only the ordered providers are tried — no silent fallback to others. */
-  allowFallbacks?: boolean;
-  /** "deny" restricts routing to providers with a zero-data-retention policy. */
-  dataCollection?: "allow" | "deny";
-  sort?: "price" | "throughput" | "latency";
-}
+export type { OpenRouterProviderPreferences } from "@blacksite-agent/llm";
 
-/** Prompt-cache breakpoint TTL. "5m" (the default — sends the bare `{type:"ephemeral"}`
- *  shape) or "1h" (adds `ttl:"1h"`, a 2x cache-write premium instead of 1.25x, but survives
- *  gaps in bursty traffic that would otherwise miss a 5-minute cache). */
-export type CacheTtl = "5m" | "1h";
+export type { CacheTtl } from "@blacksite-agent/llm";
 
 /** Outcome of turning a model-visible MCP server id into something the runtime can contact.
  *  The failure carries prose because the agent's best next move depends on which failure it

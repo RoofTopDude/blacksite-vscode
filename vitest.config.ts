@@ -35,6 +35,7 @@ export default defineConfig({
         // Type/contract-only modules: no runtime statements to cover, so including them
         // would only dilute the percentages.
         "src/agent-loop-contract.ts",
+        "packages/llm/src/types.ts",
         "src/bedrock-types.ts",
         "src/session-state.ts",
       ],

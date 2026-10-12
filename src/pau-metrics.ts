@@ -1,7 +1,7 @@
 import { analyzeTrace, normalizeTrace, getProfile, getContextHogs } from "pau-profiler";
 import type { CategorySummary, TokenAccountingGrade } from "pau-profiler";
 import type { ModelPricing } from "./model-fetcher.js";
-import type { CacheTtl } from "./agent-session.js";
+import type { CacheTtl } from "@blacksite-agent/llm";
 import { breakEvenReads, cacheEconomicsFor } from "./pau-cache-economics.js";
 import type { PauCacheObservation, PauCacheObserver } from "./pau-cache-observer.js";
 import { buildCacheAwarePlan, type PauPlan } from "./pau-planner.js";

@@ -1,6 +1,6 @@
 import https from "https";
 import http from "http";
-import type { ProviderName } from "./agent-session.js";
+import type { ProviderName } from "@blacksite-agent/llm";
 import { resolveContextWindow, resolveOutputCeiling } from "./model-limits.js";
 import { stripBedrockProfilePrefix, supportsThinking } from "./thinking-modes.js";
 

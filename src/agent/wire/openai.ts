@@ -19,7 +19,7 @@ import type {
   ToolResultBlock,
   ToolUseBlock,
 } from "../../agent-loop-contract.js";
-import type { CacheTtl } from "../../agent-session.js";
+import type { CacheTtl } from "@blacksite-agent/llm";
 
 export interface OAIToolCall { id: string; type: "function"; function: { name: string; arguments: string } }
 /** OpenAI's explicit prompt-cache marker (GPT-5.6+). Placed on a content block, it declares

@@ -4,7 +4,7 @@ import {
   CLAUDE_CACHE_WRITE_RATIO_1H,
   type ModelPricing,
 } from "./model-fetcher.js";
-import type { CacheTtl } from "./agent-session.js";
+import type { CacheTtl } from "@blacksite-agent/llm";
 
 /**
  * Cache economics — the third ledger.
