@@ -3,6 +3,22 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.33.0-pre.2
+
+Prerelease. The stable update channel remains on 1.32.0.
+
+Nothing should look different. This release moves all the code that talks to model providers
+(Claude, OpenAI, OpenRouter, Bedrock and ChatGPT) out of the extension into a separate package,
+`@blacksite-agent/llm`, so Blacksite's other apps can share it. Every request Blacksite sends is
+checked byte for byte against the previous version, so prompt caching and costs are unchanged. If
+a provider behaves differently for you in this build, please report it.
+
+### Changed
+
+- **Bedrock requests are signed with the platform's built-in cryptography** instead of Node's. The
+  signatures are identical (pinned in tests), so this is invisible unless something goes wrong. If
+  Bedrock starts rejecting requests that used to work, that is the first thing to suspect.
+
 ## 1.33.0-pre.1
 
 Prerelease. The stable update channel remains on 1.32.0.
