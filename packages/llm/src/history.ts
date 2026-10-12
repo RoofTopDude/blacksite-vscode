@@ -12,6 +12,7 @@ import type {
   ContentBlock,
   ThinkingBlock,
   ToolUseBlock,
+  ProviderTurnResult,
 } from "./types.js";
 
 
@@ -332,4 +333,32 @@ export function resolveAnthropicNativeBlocks(messages: AgentMessage[], expand: b
     }
     return { ...msg, content: out.length ? out : [{ type: "text", text: EMPTY_TURN_PLACEHOLDER }] };
   });
+}
+
+/**
+ * The assistant message a finished turn adds to history, in the order every provider replays.
+ *
+ * Compaction always leads, ahead of thinking — the one confirmed example orders it first, and it
+ * represents an earlier "iteration" (a separate summarization pass the API ran before generating
+ * the rest of the turn), so it belongs before whatever came out of that later generation. A turn
+ * holding provider-executed work keeps its arrival order: a hosted search sits between the
+ * reasoning and text around it, and replayed anywhere else the thinking it interleaves would be out
+ * of place. Otherwise reasoning comes first, then text, then tool calls.
+ *
+ * An empty turn (the model returned nothing at all) must still occupy a slot in the transcript: a
+ * caller that answers it with a continuation *user* message would otherwise leave two consecutive
+ * user messages, which Bedrock and Anthropic both reject. An assistant message with no content is
+ * equally invalid there, so a placeholder stands in its place.
+ */
+export function assistantMessageFromTurn(result: ProviderTurnResult): AgentMessage {
+  const blocks: ContentBlock[] = [];
+  if (result.compactionBlock) blocks.push(result.compactionBlock);
+  if (result.orderedBlocks) {
+    blocks.push(...result.orderedBlocks);
+  } else {
+    for (const thinking of result.thinkingBlocks) blocks.push(thinking);
+    if (result.text) blocks.push({ type: "text", text: result.text });
+    for (const toolCall of result.toolCalls) blocks.push(toolCall);
+  }
+  return { role: "assistant", content: nonEmptyAssistantContent(blocks) };
 }

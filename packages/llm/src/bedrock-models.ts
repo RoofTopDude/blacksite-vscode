@@ -36,7 +36,7 @@ export interface BedrockAvailableModelsData {
   warnings: string[];
 }
 
-type BedrockModelListResult =
+export type BedrockModelListResult =
   | { ok: true; data: BedrockAvailableModelsData }
   | { ok: false; error: string };
 

@@ -17,7 +17,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["tests/unit/**/*.spec.ts", "packages/llm/test/**/*.spec.ts"],
+    include: ["tests/unit/**/*.spec.ts", "packages/llm/test/**/*.spec.ts", "packages/llm-cli/test/**/*.spec.ts"],
     restoreMocks: true,
     clearMocks: true,
     coverage: {

@@ -21,6 +21,7 @@ export default tseslint.config(
     ignores: [
       "out/**",
       "dist/**",
+      "packages/*/dist/**",
       "node_modules/**",
       "*.vsix",
       "src/webview/react/dist/**",

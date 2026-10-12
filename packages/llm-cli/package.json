@@ -1,0 +1,23 @@
+{
+  "name": "@blacksite-agent/llm-cli",
+  "version": "0.1.0",
+  "description": "A terminal client for @blacksite-agent/llm: chat with any supported provider, probe a route live, list models.",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "blacksite-llm": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@blacksite-agent/llm": "^0.1.0"
+  }
+}

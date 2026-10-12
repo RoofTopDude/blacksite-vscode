@@ -17,7 +17,8 @@
   "license": "PolyForm-Noncommercial-1.0.0",
   "private": true,
   "workspaces": [
-    "packages/llm"
+    "packages/llm",
+    "packages/llm-cli"
   ],
   "engines": {
     "vscode": "^1.139.0"
@@ -1321,9 +1322,10 @@
     "watch": "node esbuild.mjs --watch",
     "watch:webview": "vite build --watch --config vite.webview.config.mjs",
     "compile": "tsc -p tsconfig.json --noEmit && npm run compile:llm",
-    "compile:llm": "tsc -p packages/llm/tsconfig.json && tsc -p packages/llm/tsconfig.node.json",
+    "compile:llm": "tsc -p packages/llm/tsconfig.json && tsc -p packages/llm/tsconfig.node.json && tsc -p packages/llm-cli/tsconfig.json",
+    "build:llm": "npm run build -w @blacksite-agent/llm && npm run build -w @blacksite-agent/llm-cli",
     "typecheck:webview": "tsc -p src/webview/react/tsconfig.json",
-    "lint:host": "eslint src tests scripts packages/llm --ignore-pattern src/webview/react/**",
+    "lint:host": "eslint src tests scripts packages/llm packages/llm-cli --ignore-pattern src/webview/react/**",
     "lint:webview": "eslint src/webview/react",
     "lint": "npm run lint:host && npm run lint:webview",
     "lint:fix": "npm run lint:host -- --fix && npm run lint:webview -- --fix",

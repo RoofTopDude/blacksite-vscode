@@ -30,6 +30,7 @@ import {
   type ModelRequest,
   type ModelTransport,
   subscriptionTransport,
+  assistantMessageFromTurn,
   type TransportContext,
 } from "@blacksite-agent/llm";
 // Re-exported: specs and older call sites import these from here.
@@ -2516,30 +2517,9 @@ export class AgentSession {
   }
 
   private _appendAssistantTurn(result: ProviderTurnResult): void {
-    const assistantBlocks: ContentBlock[] = [];
-    // Compaction always leads, ahead of thinking — the one confirmed example orders it first,
-    // and it represents an earlier "iteration" (a separate summarization pass the API ran
-    // before generating the rest of the turn), so it belongs before whatever came out of that
-    // later generation.
-    if (result.compactionBlock) assistantBlocks.push(result.compactionBlock);
-    if (result.orderedBlocks) {
-      // A hosted search sits between the reasoning and text around it; replayed anywhere else,
-      // the thinking it interleaves would be out of place.
-      assistantBlocks.push(...result.orderedBlocks);
-    } else {
-      for (const thinking of result.thinkingBlocks) assistantBlocks.push(thinking);
-      if (result.text) assistantBlocks.push({ type: "text", text: result.text });
-      for (const toolCall of result.toolCalls) assistantBlocks.push(toolCall);
-    }
-    // An empty turn (the model returned nothing at all) must still occupy a slot in the
-    // transcript: the empty-post-tool recovery below answers it with a continuation *user*
-    // message, and dropping the assistant turn would leave two consecutive user messages —
-    // which Bedrock and Anthropic both reject outright. But an assistant message with no
-    // content is equally invalid on those APIs, and it is never removed, so a single empty
-    // response used to poison every subsequent request in the session. Stand a placeholder in
-    // its place: alternation is preserved and the wire stays valid.
-    this.messages.push({ role: "assistant", content: nonEmptyAssistantContent(assistantBlocks) });
-    this._fullHistory.push({ role: "assistant", content: nonEmptyAssistantContent(assistantBlocks) });
+    const message = assistantMessageFromTurn(result);
+    this.messages.push(message);
+    this._fullHistory.push({ role: "assistant", content: message.content });
   }
 
   private _appendToolResults(results: ToolResultBlock[], images?: ImageBlock[]): void {
