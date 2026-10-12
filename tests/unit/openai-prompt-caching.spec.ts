@@ -10,7 +10,9 @@
  * ones that write (or, on older models, that stop a ZDR org silently getting a 5-minute cache).
  */
 import { describe, expect, it, vi } from "vitest";
+import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
 import {
+  type AgentMessage,
   appendOpenAIWorkspaceContextTail,
   applyOpenAICacheParams,
   hasOpenAICacheBreakpoint,
@@ -19,10 +21,7 @@ import {
   stripOpenAICacheParams,
   toOpenAIMessages,
   withOpenAICacheBreakpoints,
-  AgentSession,
-  type AgentEvent,
-} from "../../src/agent-session.js";
-import type { AgentMessage } from "@blacksite-agent/llm";
+} from "@blacksite-agent/llm";
 
 type Part = { type: string; text?: string; prompt_cache_breakpoint?: { mode: string } };
 const partsOf = (content: unknown): Part[] => content as Part[];

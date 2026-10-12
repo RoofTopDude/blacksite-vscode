@@ -8,20 +8,6 @@ import { sanitizeOversizedToolInputs, type AgentMessage, type ContentBlock } fro
 import { browserTool, redactBrowserPayload } from "../browser/privacy.js";
 import type { PendingGateState } from "../session-state.js";
 
-export {
-  appendWorkspaceContextTail,
-  safeRecentStart,
-  sanitizeToolMessages,
-  sanitizeOversizedToolInputs,
-  ensureLeadingUserMessage,
-  EMPTY_TURN_PLACEHOLDER,
-  nonEmptyAssistantContent,
-  fillEmptyMessageContent,
-  mergeAdjacentUserMessages,
-  normalizeForProvider,
-  stripUnsignedThinking,
-  resolveAnthropicNativeBlocks,
-} from "@blacksite-agent/llm";
 
 /**
  * Envelope for everything the harness attaches to a request (request profile, loaded skills,

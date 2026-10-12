@@ -148,4 +148,3 @@ export function searchTools(query: string, candidates: readonly ToolDefinition[]
     .map((entry) => entry.tool);
 }
 
-export { expandToolReferences, supportsNativeToolSearch } from "@blacksite-agent/llm";

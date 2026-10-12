@@ -1,7 +1,8 @@
 import * as vscode from "vscode";
 import { createHash } from "node:crypto";
 import { BrowserApprovalCoordinator } from "./approval-coordinator.js";
-import { BrowserPolicyError, type BrowserAnchor, type BrowserAudit, type BrowserDecision, type BrowserDelegation, type BrowserProposal, type HostedSearchPolicy, type ResearchUiState, type SearchProvider, type SearchScope } from "./approval-types.js";
+import { BrowserPolicyError, type BrowserAnchor, type BrowserAudit, type BrowserDecision, type BrowserDelegation, type BrowserProposal, type ResearchUiState, type SearchProvider } from "./approval-types.js";
+import { type HostedSearchPolicy, type SearchScope } from "@blacksite-agent/llm";
 import { DomainPolicy, EMPTY_POLICY, normalizeDomain, normalizePolicy, readPolicy, redactedUrl, type ResearchPolicy } from "./domain-policy.js";
 import { ResearchService, type ResearchContext } from "./research-service.js";
 import type { ContinuationModel } from "../continuation/continuation-model.js";

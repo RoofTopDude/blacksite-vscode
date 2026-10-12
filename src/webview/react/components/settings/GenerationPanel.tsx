@@ -5,7 +5,16 @@ import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
 import type { ServiceTier } from "@/lib/protocol";
-import { supportedSamplingParameters } from "../../../../sampling-parameters.js";
+import {
+  acceptsSamplingParams,
+  recommendsRefusalFallback,
+  resolveEffort,
+  resolveThinkingMode,
+  supportedEfforts,
+  supportedSamplingParameters,
+  supportsFastMode,
+  supportsTaskBudget,
+} from "@blacksite-agent/llm";
 import { Field, Note, Row, Section, Segmented } from "./common";
 import {
   EFFORT_LABELS, OPENROUTER_EFFORTS, currentProviderSettings, effectiveOpenRouterEffort,
@@ -13,10 +22,6 @@ import {
   selectedModelInfo, subscriptionReasoningEffort, supportedReasoningEfforts,
 } from "./helpers";
 import type { ReasoningEffort } from "@/lib/protocol";
-import {
-  acceptsSamplingParams, recommendsRefusalFallback, resolveEffort, resolveThinkingMode, supportedEfforts,
-  supportsFastMode, supportsTaskBudget,
-} from "../../../../thinking-modes.js";
 
 const CLAUDE_EFFORT_LABELS: Record<string, string> = {
   low: "Low", medium: "Medium", high: "High", xhigh: "X-High", max: "Max",

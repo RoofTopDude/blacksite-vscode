@@ -3,49 +3,69 @@ import * as fs from "fs";
 import * as path from "path";
 import type { HookInput, HookOutcome, HookProvider } from "./hooks.js";
 import { browserTool, redactBrowserPayload } from "./browser/privacy.js";
-import type { HostedSearchPolicy, HostedSearchRoute } from "./browser/approval-types.js";
-import type { LocalRuntime, McpServer } from "@blacksite/local-runtime";
 import {
-  planThinking,
-  resolveAnthropicBetaExtras as resolveAnthropicBetaExtrasFor,
+  type AgentMessage,
   type AnthropicBetaExtras,
   type AnthropicBetaOptions,
-  type CacheTtl,
-  type OpenAIServiceTier,
-  type OpenRouterProviderPreferences,
-  type ProviderName,
-  type ThinkingConfig,
-  type ThinkingPlan,
-  anthropicStreamError,
-  normalizeAnthropicStopReason,
-  normalizeOpenAIStopReason,
-  openAIStreamError,
-  responsesStreamError,
+  appendOpenAIWorkspaceContextTail,
+  appendWorkspaceContextTail,
+  assistantMessageFromTurn,
+  type BedrockCredentials,
+  buildAnthropicSystemBlocks,
   buildAnthropicWireTools,
+  type CacheTtl,
+  type ContentBlock,
   createModelClient,
-  openAIEffectiveSystem,
-  ProviderTurnEventQueue,
-  ProviderTurnRunner,
+  DEFAULT_RETRY_POLICY,
+  extractContextOverflowLimit,
+  extractOutputTokenLimit,
+  type HostedSearchPolicy,
+  type HostedSearchRoute,
+  hostedSearchSummary,
+  type ImageBlock,
+  isContextOverflowErrorMessage,
+  isOpenAIReasoningModel,
+  isOutputTokenLimitErrorMessage,
+  isRetryableError,
   type ModelClient,
+  type ModelPricing,
   type ModelRequest,
   type ModelTransport,
-  subscriptionTransport,
-  assistantMessageFromTurn,
-  type TransportContext,
-} from "@blacksite-agent/llm";
-// Re-exported: specs and older call sites import these from here.
-export { anthropicStreamError, normalizeAnthropicStopReason, normalizeOpenAIStopReason, openAIStreamError, responsesStreamError };
-export {
-  applyAnthropicThinking,
-  clampAnthropicTemperature,
+  normalizeForProvider,
+  openAIEffectiveSystem,
+  type OpenAIReasoningEffort,
+  type OpenAIServiceTier,
+  type OpenRouterProviderPreferences,
   planThinking,
-  toBedrockThinking,
-  type AnthropicBetaOptions,
-  type ResolvedThinking,
+  type ProviderActivityEvent,
+  type ProviderName,
+  ProviderTurnEventQueue,
+  type ProviderTurnResult,
+  ProviderTurnRunner,
+  type ProviderTurnSink,
+  type ProviderTurnStreamEvent,
+  resolveAnthropicBetaExtras as resolveAnthropicBetaExtrasFor,
+  resolveAnthropicNativeBlocks,
+  resolveOutputCeiling,
+  resolveReasoningEffort,
+  type RetryPolicy,
+  safeRecentStart,
+  type SamplingKey,
+  sanitizeOversizedToolInputs,
+  stripUnsignedThinking,
+  type SubscriptionStream,
+  subscriptionTransport,
+  supportsFastMode,
+  supportsNativeToolSearch,
+  supportsTaskBudget,
   type ThinkingConfig,
   type ThinkingPlan,
-  type ThinkingPlanInput,
+  type ToolResultBlock,
+  type ToolUseBlock,
+  toOpenAIMessages,
+  type TransportContext,
 } from "@blacksite-agent/llm";
+import type { LocalRuntime, McpServer } from "@blacksite/local-runtime";
 import {
   WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, RESEARCH_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, DIAGRAM_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS, SKILL_TOOLS,
   resolveToolDispatch,
@@ -67,14 +87,12 @@ import { outstandingFiles, recordCheck, recordMutation, withoutFiles, type Check
 import type { AgentMemoryIndex } from "./agent-memory-index.js";
 import { capturePauReceipt, pauTraceFormatFor, type PauReceipt } from "./pau-metrics.js";
 import { PauCacheObserver } from "./pau-cache-observer.js";
-import type { ModelPricing } from "./model-fetcher.js";
 import {
   NO_BROWSER_FOUND,
   validateBrowserActionUrls,
   type BrowserRunner,
 } from "./chromium-runner.js";
 import type { SequenceToolProvider } from "./sequences/sequence-service.js";
-import type { SubscriptionStream } from "./chatgpt-service.js";
 import type { LoopToolProvider } from "./loops/loop-tool-provider.js";
 import type { EditProvider } from "./diff-edit-service.js";
 import type { ToolDiffSummary } from "./edit-diff-stats.js";
@@ -115,171 +133,19 @@ import {
 } from "./approval-scope.js";
 import { planModeRefusal, planModeWithholds } from "./plan-mode-policy.js";
 import { isMcpTypedToolName, type McpTypedTool } from "./mcp-tool-catalog.js";
-import {
-  buildToolRoster,
-  firstSentence,
-  isCoreTool,
-  searchTools,
-  supportsNativeToolSearch,
-  toolSearchDescription,
-  TOOL_SEARCH_NAME,
-} from "./agent/tool-loading.js";
+import { buildToolRoster, firstSentence, isCoreTool, searchTools, toolSearchDescription, TOOL_SEARCH_NAME } from "./agent/tool-loading.js";
 import { saveCheckpoint, clearCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
-import {
-  DEFAULT_RETRY_POLICY,
-  isRetryableError,
-  isContextOverflowErrorMessage,
-  extractContextOverflowLimit,
-  isOutputTokenLimitErrorMessage,
-  extractOutputTokenLimit,
-} from "./provider-retry.js";
-import {
-  resolveOutputCeiling,
-  isOpenAIReasoningModel,
-  resolveReasoningEffort,
-  type OpenAIReasoningEffort,
-} from "./model-limits.js";
-import { type SamplingKey } from "./sampling-parameters.js";
 
 /* Provider wire-format and transcript-hygiene helpers were lifted out of this file; it
    re-exports them so the ~60 call sites and specs that import them from "agent-session.js"
    keep working, and so the split stays an internal file-layout change rather than an API
    break. Import them directly from their own modules in new code. */
-import {
-  appendWorkspaceContextTail,
-  ensureLeadingUserMessage,
-  fillEmptyMessageContent,
-  nonEmptyAssistantContent,
-  normalizeForProvider,
-  resolveAnthropicNativeBlocks,
-  safeRecentStart,
-  sanitizeOversizedToolInputs,
-  sanitizePendingGateForPersistence,
-  sanitizeToolMessages,
-  stripImagesForPersistence,
-  stripUnsignedThinking,
-  wrapAttachedContext,
-} from "./agent/transcript-hygiene.js";
-import {
-  appendBedrockWorkspaceContextTail,
-  bedrockStreamFrameError,
-  isBedrockCacheValidationError,
-  normalizeBedrockStopReason,
-  toBedrockMessages,
-  toBedrockTools,
-  withBedrockRollingCacheBreakpoint,
-  withBedrockToolsCacheBreakpoint,
-} from "./agent/wire/bedrock.js";
-import {
-  buildAnthropicSystemBlocks,
-  cacheControlFor,
-  withAnthropicStrictTools,
-  withRollingCacheBreakpoint,
-} from "./agent/wire/anthropic.js";
-import { toStrictToolSchema } from "./agent/wire/strict-schema.js";
-import {
-  OpenAIToolCallAccumulator,
-  appendOpenAIWorkspaceContextTail,
-  appendResponsesWorkspaceContextTail,
-  applyOpenAICacheParams,
-  hasOpenAICacheBreakpoint,
-  hasOpenRouterToolTailAnchor,
-  hasResponsesCacheBreakpoint,
-  looksLikePromptCacheRejection,
-  normalizeResponsesStopReason,
-  openAISupportsExplicitPromptCache,
-  openRouterAnchorsToolResults,
-  openRouterSupportsCacheControl,
-  stripOpenAICacheParams,
-  toOpenAIMessages,
-  toResponsesInputItems,
-  toResponsesTools,
-  withOpenAICacheBreakpoints,
-  withOpenRouterCacheControl,
-  withResponsesCacheBreakpoints,
-} from "./agent/wire/openai.js";
+import { sanitizePendingGateForPersistence, stripImagesForPersistence, wrapAttachedContext } from "./agent/transcript-hygiene.js";
 
-export {
-  buildAnthropicSystemBlocks,
-  cacheControlFor,
-  withAnthropicStrictTools,
-  withRollingCacheBreakpoint,
-};
-export { toStrictToolSchema };
-export {
-  OpenAIToolCallAccumulator,
-  appendOpenAIWorkspaceContextTail,
-  appendResponsesWorkspaceContextTail,
-  applyOpenAICacheParams,
-  hasOpenAICacheBreakpoint,
-  hasOpenRouterToolTailAnchor,
-  hasResponsesCacheBreakpoint,
-  looksLikePromptCacheRejection,
-  normalizeResponsesStopReason,
-  openAISupportsExplicitPromptCache,
-  openRouterAnchorsToolResults,
-  openRouterSupportsCacheControl,
-  stripOpenAICacheParams,
-  toOpenAIMessages,
-  toResponsesInputItems,
-  toResponsesTools,
-  withOpenAICacheBreakpoints,
-  withOpenRouterCacheControl,
-  withResponsesCacheBreakpoints,
-};
 
-export {
-  appendWorkspaceContextTail,
-  ensureLeadingUserMessage,
-  fillEmptyMessageContent,
-  nonEmptyAssistantContent,
-  normalizeForProvider,
-  safeRecentStart,
-  sanitizeOversizedToolInputs,
-  sanitizeToolMessages,
-  stripImagesForPersistence,
-  stripUnsignedThinking,
-};
-export {
-  appendBedrockWorkspaceContextTail,
-  bedrockStreamFrameError,
-  isBedrockCacheValidationError,
-  normalizeBedrockStopReason,
-  toBedrockMessages,
-  toBedrockTools,
-  withBedrockRollingCacheBreakpoint,
-  withBedrockToolsCacheBreakpoint,
-};
-
-// Re-exported: call sites and tests reach these through agent-session.
-export { resolveOutputCeiling, isOpenAIReasoningModel };
-import {
-  recommendsRefusalFallback,
-  supportsFastMode,
-  supportsTaskBudget,
-} from "./thinking-modes.js";
-// Re-exported: the webview UI gates the new beta-feature toggles on these.
-export { recommendsRefusalFallback, supportsFastMode, supportsTaskBudget };
-import type { RetryPolicy } from "./provider-retry.js";
-import {
-  hostedSearchSummary,
-} from "./agent/hosted-search.js";
-import type {
-  BedrockCredentials,
-} from "./bedrock-types.js";
-import type {
-  AgentMessage,
-  ContentBlock,
-  ImageBlock,
-  ProviderTurnResult,
-  ProviderTurnSession,
-  ProviderTurnSink,
-  ProviderTurnStreamEvent,
-  ProviderActivityEvent,
-  ToolResultBlock,
-  ToolUseBlock,
-} from "./agent-loop-contract.js";
+export { stripImagesForPersistence };
+import type { ProviderTurnSession } from "./agent-loop-contract.js";
 
 const DEFAULT_MAX_TOKENS = 32768;
 const DEFAULT_MAX_ITER   = 40;
@@ -630,7 +496,6 @@ function duplicateToolRoundPrompt(rounds: number, tools: string): string {
 
 // ── Provider config ────────────────────────────────────────────────────────────
 
-export type { ProviderName } from "@blacksite-agent/llm";
 
 // ── Public event types ─────────────────────────────────────────────────────────
 
@@ -908,20 +773,8 @@ export function withSequenceEvidenceGuidance(value: Record<string, unknown>): Re
   };
 }
 
-// ── Options ────────────────────────────────────────────────────────────────────
 
 
-/* The OpenAI reasoning-depth ladder and its per-family rules live in model-limits.js, the
-   pure module the background compaction summarizer also reads. Re-exported here because
-   this file was their original home and the call sites import them from it. */
-export type { OpenAIReasoningEffort } from "./model-limits.js";
-export { supportedReasoningEfforts, resolveReasoningEffort, toOpenRouterReasoningEffort } from "./model-limits.js";
-
-export type { OpenAIServiceTier } from "@blacksite-agent/llm";
-
-export type { OpenRouterProviderPreferences } from "@blacksite-agent/llm";
-
-export type { CacheTtl } from "@blacksite-agent/llm";
 
 /** Outcome of turning a model-visible MCP server id into something the runtime can contact.
  *  The failure carries prose because the agent's best next move depends on which failure it

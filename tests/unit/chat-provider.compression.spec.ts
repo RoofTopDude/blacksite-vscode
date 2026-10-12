@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatProvider, type ExtendedSettings, type ProviderSettings } from "../../src/chat-provider.js";
 import type { CompressionProvider } from "../../src/agent-session.js";
-import * as compressor from "../../src/compressor.js";
+import * as compressor from "@blacksite-agent/llm";
 
 // Exercise the real factory without constructing unrelated webviews, databases or runners.
 function factory(settings: ExtendedSettings, getApiKey = vi.fn(async () => "current-key")) {

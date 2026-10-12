@@ -6,37 +6,43 @@ import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
 import type { LocalRuntime, InstallHint } from "@blacksite/local-runtime";
-import { AgentSession, stripImagesForPersistence, type ProviderName, type SteerMessage, type TurnOrigin } from "./agent-session.js";
+import { AgentSession, stripImagesForPersistence, type SteerMessage, type TurnOrigin } from "./agent-session.js";
+import {
+  type AgentMessage,
+  BEDROCK_CONVERSE_DEFAULT_MODEL,
+  BEDROCK_MANTLE_MODELS,
+  bedrockModelsToModelInfo,
+  bedrockSupportsCacheTtl1h,
+  type CacheTtl,
+  CLAUDE_EFFORT_LADDER,
+  type ClaudeEffort,
+  completeText,
+  compressHistory,
+  defaultBedrockModel,
+  estimateUsageCostUsd,
+  fetchModels,
+  getContextLength,
+  getFallbackModels,
+  getMaxOutputTokens,
+  getModelPricing,
+  getVisionSupport,
+  type ImageBlock,
+  listAvailableBedrockModels,
+  type ModelInfo,
+  type ModelPricing,
+  normalizeBedrockApi,
+  normalizeSamplingValue,
+  type OpenAIReasoningEffort,
+  type OpenAIServiceTier,
+  type OpenRouterProviderPreferences,
+  type ProviderName,
+  type SamplingKey,
+  samplingParameter,
+  type ThinkingConfig,
+} from "@blacksite-agent/llm";
 import { resolvePreviewProjectCss } from "./preview-assets.js";
-import type {
-  AgentEvent,
-  ApprovalReviewRequest,
-  ApprovalReviewVerdict,
-  ApprovalBatchCandidate,
-  BaseAgentEvent,
-  ThinkingConfig,
-  OpenAIReasoningEffort,
-  OpenAIServiceTier,
-  OpenRouterProviderPreferences,
-  CacheTtl,
-  McpServerResolution,
-  QCardQuestion,
-  SubagentFollowUpRequest,
-  SubagentProvider,
-  SubagentProviderMessage,
-  SubagentSpawnRequest,
-  CompressionProvider,
-  TranscriptProvider,
-  TranscriptDocumentProvider,
-  DiagramProvider,
-  DataToolProvider,
-  ReferenceToolProvider,
-  SkillToolProvider,
-  VisionFallbackProvider,
-  ToolOutputEvent,
-} from "./agent-session.js";
+import type { AgentEvent, ApprovalReviewRequest, ApprovalReviewVerdict, ApprovalBatchCandidate, BaseAgentEvent, McpServerResolution, QCardQuestion, SubagentFollowUpRequest, SubagentProvider, SubagentProviderMessage, SubagentSpawnRequest, CompressionProvider, TranscriptProvider, TranscriptDocumentProvider, DiagramProvider, DataToolProvider, ReferenceToolProvider, SkillToolProvider, VisionFallbackProvider, ToolOutputEvent } from "./agent-session.js";
 import { BackgroundRunner } from "./background-runner.js";
-import type { ImageBlock } from "./agent-loop-contract.js";
 import { ChromiumRunner } from "./chromium-runner.js";
 import type { ContinuationModel } from "./continuation/continuation-model.js";
 import type { PlanContinuationService } from "./plans/plan-continuation-service.js";
@@ -103,22 +109,12 @@ import { buildMcpToolCatalog, type McpTypedTool } from "./mcp-tool-catalog.js";
 import { confirmProjectAutoApprove, normalizeCommandBinary, readCommandPolicy } from "./command-policy.js";
 import { clearCheckpoint, loadCheckpoint } from "./checkpoint.js";
 import type { Checkpoint } from "./checkpoint.js";
-import { fetchModels, getFallbackModels, getContextLength, getMaxOutputTokens, getModelPricing, getVisionSupport, estimateUsageCostUsd, BEDROCK_MANTLE_MODELS } from "./model-fetcher.js";
 import { restorePersistedImages } from "./agent/transcript-hygiene.js";
-import { bedrockSupportsCacheTtl1h } from "./model-limits.js";
 import { findSubagentProfile, mergeBuiltinSubagentProfiles } from "./builtin-subagent-profiles.js";
 import { SkillStore, buildSkillRoster } from "./skills/skill-store.js";
 import { SkillToolProvider as SkillToolService } from "./skills/skill-tools.js";
-import type { ModelInfo, ModelPricing } from "./model-fetcher.js";
-import { normalizeSamplingValue, samplingParameter, type SamplingKey } from "./sampling-parameters.js";
-import { compressHistory } from "./compressor.js";
-import { ChatGptService, DEFAULT_CHATGPT_OPTIONS } from "./chatgpt-service.js";
-import type { AgentMessage } from "./agent-loop-contract.js";
-import { CodexAppServer } from "./codex-app-server.js";
-import { listAvailableBedrockModels, bedrockModelsToModelInfo } from "./bedrock-models.js";
-import { completeText } from "@blacksite-agent/llm";
-import { BEDROCK_CONVERSE_DEFAULT_MODEL, defaultBedrockModel, normalizeBedrockApi } from "./bedrock-config.js";
-import { CLAUDE_EFFORT_LADDER, type ClaudeEffort } from "./thinking-modes.js";
+import { ChatGptService, DEFAULT_CHATGPT_OPTIONS } from "@blacksite-agent/llm/node";
+import { CodexAppServer } from "@blacksite-agent/llm/node";
 import { PlanningStore } from "./planning-store.js";
 import type { TicketToolProvider } from "./ticket-store.js";
 import { VectorStore } from "./vector-store.js";
@@ -487,11 +483,6 @@ interface RunSummary {
   /** Rounds the turn used, from its terminal event. */
   iterations: number;
 }
-
-// ── ChatProvider ───────────────────────────────────────────────────────────────
-
-// Re-exported: the one-shot request shape now lives with the other provider requests.
-export { buildAssistantTextRequestBody } from "@blacksite-agent/llm";
 
 export class ChatProvider implements vscode.WebviewViewProvider {
   private _view?: vscode.WebviewView;

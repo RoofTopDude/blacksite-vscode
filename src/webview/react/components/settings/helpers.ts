@@ -1,6 +1,8 @@
 import type { ExtendedSettings, ModelInfo, ProviderName, ProviderSettings, ReasoningEffort } from "@/lib/protocol";
-import { defaultBedrockModel } from "../../../../bedrock-config.js";
-import { resolveThinkingMode } from "../../../../thinking-modes.js";
+import {
+  defaultBedrockModel,
+  resolveThinkingMode,
+} from "@blacksite-agent/llm";
 
 export const PROVIDER_DEFAULTS: Record<ProviderName, ProviderSettings> = {
   anthropic: { model: "claude-sonnet-4-6", temperature: 1.0, maxTokens: 8192, thinking: { enabled: false, budgetTokens: 10000 } },

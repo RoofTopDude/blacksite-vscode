@@ -17,8 +17,10 @@ import { createHash } from "node:crypto";
 import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentSessionOptions } from "../../src/agent-session.js";
-import type { ImageBlock } from "@blacksite-agent/llm";
-import type { HostedSearchPolicy } from "@blacksite-agent/llm";
+import {
+  type HostedSearchPolicy,
+  type ImageBlock,
+} from "@blacksite-agent/llm";
 import { anthropicSseStream } from "@blacksite-agent/llm/testing";
 import { eventFrame, streamFromChunks } from "@blacksite-agent/llm/testing";
 import { responsesReasoningToolCallTurn, responsesTextTurn } from "@blacksite-agent/llm/testing";

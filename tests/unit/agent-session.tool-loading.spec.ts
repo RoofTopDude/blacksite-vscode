@@ -3,15 +3,19 @@
    (every tool sent, non-core deferred, loads expanded from tool_reference blocks) — plus the
    persistence and PAU accounting that make the saving real and measurable. */
 
-import { anthropicWireMessages, type ModelRequest, type TransportContext } from "@blacksite-agent/llm";
+import {
+  anthropicWireMessages,
+  expandToolReferences,
+  type ModelRequest,
+  supportsNativeToolSearch,
+  type ToolUseBlock,
+  type TransportContext,
+} from "@blacksite-agent/llm";
 import { describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
-import type { ToolUseBlock } from "@blacksite-agent/llm";
 import type { ToolDefinition } from "../../src/tools/definitions.js";
 import { ALL_TOOLS, PLANNING_TOOLS } from "../../src/tools/definitions.js";
-import {
-  buildToolRoster, CORE_TOOL_NAMES, expandToolReferences, firstSentence, searchTools, supportsNativeToolSearch,
-} from "../../src/agent/tool-loading.js";
+import { buildToolRoster, CORE_TOOL_NAMES, firstSentence, searchTools } from "../../src/agent/tool-loading.js";
 import { capturePauReceipt } from "../../src/pau-metrics.js";
 import { ScriptedProviderSession } from "./helpers/scripted-provider-session.js";
 

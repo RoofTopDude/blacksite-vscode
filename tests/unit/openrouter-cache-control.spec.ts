@@ -1,16 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AgentSession, type AgentEvent, type AgentSessionOptions } from "../../src/agent-session.js";
 import {
-  AgentSession,
+  type AgentMessage,
   appendOpenAIWorkspaceContextTail,
   hasOpenRouterToolTailAnchor,
   openRouterAnchorsToolResults,
   openRouterSupportsCacheControl,
-  withOpenRouterCacheControl,
   toOpenAIMessages,
-  type AgentEvent,
-  type AgentSessionOptions,
-} from "../../src/agent-session.js";
-import type { AgentMessage } from "@blacksite-agent/llm";
+  withOpenRouterCacheControl,
+} from "@blacksite-agent/llm";
 import { responsesSseStream } from "@blacksite-agent/llm/testing";
 
 type Part = { type: string; text?: string; cache_control?: { type: string } };

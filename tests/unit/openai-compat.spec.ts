@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { resolveReasoningEffort, supportedReasoningEfforts, toOpenRouterReasoningEffort } from "@blacksite-agent/llm";
-import type { OpenAIReasoningEffort } from "@blacksite-agent/llm";
+import {
+  type OpenAIReasoningEffort,
+  resolveReasoningEffort,
+  supportedReasoningEfforts,
+  toOpenRouterReasoningEffort,
+} from "@blacksite-agent/llm";
+
 import {
   effectiveOpenRouterEffort,
   effectiveReasoningEffort,

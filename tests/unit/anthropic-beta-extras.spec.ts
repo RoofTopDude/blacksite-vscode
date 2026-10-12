@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildAnthropicSystemBlocks, resolveAnthropicBetaExtras, withOpenRouterCacheControl,
-  withRollingCacheBreakpoint,
-} from "../../src/agent-session.js";
+import { resolveAnthropicBetaExtras } from "../../src/agent-session.js";
+import { buildAnthropicSystemBlocks, withOpenRouterCacheControl, withRollingCacheBreakpoint } from "@blacksite-agent/llm";
 
 // Beta-feature wiring: fast mode, task budgets, context editing, and Fable's refusal fallback
 // are each a beta header + a body field, gated per model family and per surface (Anthropic-direct

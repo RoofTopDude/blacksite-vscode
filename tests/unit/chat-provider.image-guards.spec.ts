@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildAssistantTextRequestBody, classifyAttachment, probePngDimensions } from "../../src/chat-provider.js";
+import { buildAssistantTextRequestBody } from "@blacksite-agent/llm";
+import { classifyAttachment, probePngDimensions } from "../../src/chat-provider.js";
 
 // Regression coverage for a decompression-bomb guard: a tiny PNG can declare enormous pixel
 // dimensions, and decoding it with Jimp allocates a bitmap sized to those dimensions — large

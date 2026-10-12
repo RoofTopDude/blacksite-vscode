@@ -7,7 +7,8 @@ import { Label } from "@/components/ui/label";
 import { Section, Field, Note } from "./common";
 import { useResearch } from "@/lib/research-store";
 import { post } from "@/lib/bridge";
-import type { ResearchPolicy, SearchProvider, SearchScope } from "../../../../browser/approval-types";
+import type { ResearchPolicy, SearchProvider } from "../../../../browser/approval-types";
+import type { SearchScope } from "@blacksite-agent/llm";
 
 const PROVIDER_OPTIONS: Array<{ value: SearchProvider; label: string }> = [
   { value: "none", label: "Ask on the agent's first search" },

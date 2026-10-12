@@ -21,7 +21,7 @@ import {
   subscriptionReasoningEffort,
   supportedReasoningEfforts,
 } from "@/components/settings/helpers";
-import { resolveThinkingMode } from "../../../../thinking-modes.js";
+import { resolveThinkingMode } from "@blacksite-agent/llm";
 
 // ── Chip ───────────────────────────────────────────────────────────────────────
 

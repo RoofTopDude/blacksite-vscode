@@ -13,8 +13,11 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
-import type { AgentMessage } from "@blacksite-agent/llm";
-import { mergeAdjacentUserMessages, normalizeForProvider } from "@blacksite-agent/llm";
+import {
+  type AgentMessage,
+  mergeAdjacentUserMessages,
+  normalizeForProvider,
+} from "@blacksite-agent/llm";
 import { eventFrame, streamFromChunks, successStream } from "@blacksite-agent/llm/testing";
 
 function createFakeContext() {

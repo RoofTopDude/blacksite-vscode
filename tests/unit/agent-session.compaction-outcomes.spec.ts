@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentSession, type AgentEvent } from "../../src/agent-session.js";
 import { loadCheckpoint } from "../../src/checkpoint.js";
-import type { ToolUseBlock } from "@blacksite-agent/llm";
+import {
+  HttpError,
+  type ToolUseBlock,
+} from "@blacksite-agent/llm";
 import { ScriptedProviderSession } from "./helpers/scripted-provider-session.js";
-import { HttpError } from "@blacksite-agent/llm";
 
 function createFakeContext() {
   const store = new Map<string, unknown>();

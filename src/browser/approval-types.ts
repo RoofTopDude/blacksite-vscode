@@ -2,7 +2,6 @@
 /** "hosted" is the model provider's own web search (Claude, OpenRouter, ChatGPT), run on its
  *  servers inside the model's turn rather than by Blacksite. */
 export type SearchProvider = "none" | "hosted" | "brave";
-export type { SearchScope, HostedSearchPolicy, HostedSearchRoute } from "@blacksite-agent/llm";
 import type { SearchScope } from "@blacksite-agent/llm";
 export interface ResearchPolicy {
   allowedDomains: string[];

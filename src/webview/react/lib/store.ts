@@ -7,8 +7,10 @@
 import { useRef, useSyncExternalStore } from "react";
 import { post as rawPost, onMessage } from "./bridge";
 import { countLabel, readNum, readStr } from "./format";
-import { defaultBedrockModel } from "../../../bedrock-config.js";
-import type { ChatGptState } from "../../../chatgpt-types.js";
+import {
+  type ChatGptState,
+  defaultBedrockModel,
+} from "@blacksite-agent/llm";
 import type {
   ApprovalDecision, ClaudeEffort, ExtendedSettings, HistorySession, IncomingMessage, KeyStatus, LogStats,
   MemoryStats, ModelInfo, OpenRouterConfig, OutgoingMessage, ProviderName, QCardOption, ReasoningEffort,

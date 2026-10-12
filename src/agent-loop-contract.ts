@@ -1,28 +1,6 @@
-/* The provider-neutral types live in @blacksite-agent/llm. This module re-exports them for the
-   extension's existing imports and keeps the one contract that belongs to the agent loop: how
-   the loop drives a provider turn. */
+/* How the agent loop drives a provider turn. The message, block and event types it uses live in
+   @blacksite-agent/llm. */
 import type { ImageBlock, ProviderTurnResult, ProviderTurnSink, ToolResultBlock } from "@blacksite-agent/llm";
-
-export type {
-  TextBlock,
-  ThinkingBlock,
-  RedactedThinkingBlock,
-  ToolUseBlock,
-  ToolResultBlock,
-  ImageBlock,
-  CompactionBlock,
-  ProviderNativeBlock,
-  ContentBlock,
-  HostedSearchResult,
-  ReasoningBlock,
-  AgentMessage,
-  ProviderTurnUsage,
-  ProviderTurnStreamEvent,
-  ProviderActivityEvent,
-  ProviderTurnUsageEvent,
-  ProviderTurnSink,
-  ProviderTurnResult,
-} from "@blacksite-agent/llm";
 
 export interface ProviderTurnSession {
   runTurn(sink: ProviderTurnSink): Promise<ProviderTurnResult>;

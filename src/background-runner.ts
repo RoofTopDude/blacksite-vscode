@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import type { AgentSession, AgentEvent, TurnOrigin } from "./agent-session.js";
 import type { PlanRunView } from "./plans/plan-run-model.js";
 import { presentRun } from "./plans/run-status-text.js";
-import type { ImageBlock } from "./agent-loop-contract.js";
+import type { ImageBlock } from "@blacksite-agent/llm";
 import type { RequestMode } from "./request-modes.js";
 
 export interface RunOptions {

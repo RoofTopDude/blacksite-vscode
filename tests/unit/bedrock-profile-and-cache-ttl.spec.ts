@@ -1,22 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  AgentSession,
-  normalizeBedrockStopReason,
-  withBedrockRollingCacheBreakpoint,
-  withBedrockToolsCacheBreakpoint,
-  type AgentEvent,
-  type AgentSessionOptions,
-} from "../../src/agent-session.js";
-import { buildRequestBody } from "@blacksite-agent/llm";
+import { AgentSession, type AgentEvent, type AgentSessionOptions } from "../../src/agent-session.js";
 import {
   BEDROCK_CONVERSE_DEFAULT_MODEL,
   BEDROCK_CONVERSE_LEGACY_DEFAULT_MODEL,
   BEDROCK_MANTLE_DEFAULT_MODEL,
+  bedrockSupportsCacheTtl1h,
+  buildRequestBody,
   defaultBedrockModel,
+  normalizeBedrockStopReason,
+  normalizeModelIdForFallbackLookup,
+  parseClaudeVersion,
+  resolveClaudeLimits,
+  resolveThinkingMode,
+  withBedrockRollingCacheBreakpoint,
+  withBedrockToolsCacheBreakpoint,
 } from "@blacksite-agent/llm";
-import { bedrockSupportsCacheTtl1h, resolveClaudeLimits } from "@blacksite-agent/llm";
-import { normalizeModelIdForFallbackLookup } from "@blacksite-agent/llm";
-import { parseClaudeVersion, resolveThinkingMode } from "@blacksite-agent/llm";
 import { eventFrame, streamFromChunks } from "@blacksite-agent/llm/testing";
 
 /* Fix 1. Only us./eu./apac./us-gov. were stripped, so the global profile AWS's own samples use —

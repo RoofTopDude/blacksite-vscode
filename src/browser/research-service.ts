@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { parseHTML } from "linkedom";
 import type { BrowserApprovalCoordinator } from "./approval-coordinator.js";
-import { BrowserPolicyError, cancelled, withSignals, type BrowserAnchor, type BrowserField, type HostedSearchRoute, type SearchScope } from "./approval-types.js";
+import { BrowserPolicyError, cancelled, withSignals, type BrowserAnchor, type BrowserField } from "./approval-types.js";
+import { type HostedSearchRoute, type SearchScope } from "@blacksite-agent/llm";
 import { matchesDomain, redactedUrl, researchUrl } from "./domain-policy.js";
 import { PinnedResearchTransport, type ResearchTransport } from "./research-transport.js";
 

@@ -4,10 +4,12 @@ import type { BrowserDecision, BrowserDelegation, ResearchPolicy, ResearchUiStat
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import type { ClaudeEffort } from "../../../thinking-modes.js";
+import {
+  type ChatGptState,
+  type ClaudeEffort,
+  type SamplingKey,
+} from "@blacksite-agent/llm";
 import type { ActiveRequestMode, RequestMode } from "../../../request-modes.js";
-import type { SamplingKey } from "../../../sampling-parameters.js";
-import type { ChatGptState } from "../../../chatgpt-types.js";
 
 /** Re-exported so UI code has one import site for the settings types. thinking-modes is a pure
  *  module — the settings panel and the request builder read the same ladder from it. */

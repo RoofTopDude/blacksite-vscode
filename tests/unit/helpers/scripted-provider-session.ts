@@ -1,12 +1,5 @@
-import type {
-  ImageBlock,
-  ProviderTurnResult,
-  ProviderTurnSession,
-  ProviderTurnSink,
-  ProviderTurnUsage,
-  ToolResultBlock,
-  ToolUseBlock,
-} from "../../../src/agent-loop-contract.js";
+import type { ProviderTurnSession } from "../../../src/agent-loop-contract.js";
+import type { ImageBlock, ProviderTurnResult, ProviderTurnSink, ProviderTurnUsage, ToolResultBlock, ToolUseBlock } from "@blacksite-agent/llm";
 import type { AgentStopReason } from "../../../src/session-state.js";
 
 export interface ScriptedTurn {

@@ -1,4 +1,4 @@
-import type { BedrockCredentials } from "./bedrock-types.js";
+import type { BedrockCredentials } from "@blacksite-agent/llm";
 import { invokeBedrockEmbedding } from "./bedrock-embedding.js";
 import { defaultEmbeddingForProvider, voyageSupportsOutputDimension, type EmbeddingModelSpec } from "./embedding-models.js";
 

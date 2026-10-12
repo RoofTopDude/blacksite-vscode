@@ -36,7 +36,8 @@ export default defineConfig({
         // would only dilute the percentages.
         "src/agent-loop-contract.ts",
         "packages/llm/src/types.ts",
-        "src/bedrock-types.ts",
+        "packages/llm/src/bedrock-types.ts",
+        "packages/llm/src/chatgpt-types.ts",
         "src/session-state.ts",
       ],
       reporter: ["text-summary", "lcov"],

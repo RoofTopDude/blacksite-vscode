@@ -7,9 +7,15 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentSession, continuesRequest, type AgentEvent } from "../../src/agent-session.js";
-import type { ToolUseBlock } from "@blacksite-agent/llm";
+import {
+  HttpError,
+  type ModelTransport,
+  OUTAGE_RETRY_SCHEDULE_MS,
+  outageDelayMs,
+  type ProviderTurnStreamEvent,
+  type ToolUseBlock,
+} from "@blacksite-agent/llm";
 import type { ApprovalDecision } from "../../src/approval-gate.js";
-import { HttpError, outageDelayMs, OUTAGE_RETRY_SCHEDULE_MS, type ModelTransport, type ProviderTurnStreamEvent } from "@blacksite-agent/llm";
 import { ScriptedProviderSession } from "./helpers/scripted-provider-session.js";
 
 const usage = { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 };

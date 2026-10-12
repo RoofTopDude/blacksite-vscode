@@ -1,19 +1,21 @@
 import { describe, expect, it } from "vitest";
+import { filterConfiguredServiceTools } from "../../src/agent-session.js";
 import {
+  type AgentMessage,
   appendBedrockWorkspaceContextTail,
   appendWorkspaceContextTail,
-  filterConfiguredServiceTools,
+  type ContentBlock,
   toBedrockMessages,
   withBedrockRollingCacheBreakpoint,
   withRollingCacheBreakpoint,
-} from "../../src/agent-session.js";
+} from "@blacksite-agent/llm";
 import {
   buildStaticSystemPrompt,
   buildWorkspaceContextBlock,
   buildSystemPrompt,
   type WorkspaceSnapshot,
 } from "../../src/workspace-context.js";
-import type { AgentMessage, ContentBlock } from "@blacksite-agent/llm";
+
 import { ATTACHED_CONTEXT_TAG, wrapAttachedContext } from "../../src/agent/transcript-hygiene.js";
 
 function snapshot(overrides: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot {

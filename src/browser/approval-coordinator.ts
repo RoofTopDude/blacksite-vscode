@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ContinuationModel } from "../continuation/continuation-model.js";
-import { BrowserPolicyError, cancelled, type BrowserAnchor, type BrowserAudit, type BrowserDecision, type BrowserDelegation, type BrowserField, type BrowserProposal, type HostedSearchRoute } from "./approval-types.js";
+import { BrowserPolicyError, cancelled, type BrowserAnchor, type BrowserAudit, type BrowserDecision, type BrowserDelegation, type BrowserField, type BrowserProposal } from "./approval-types.js";
+import { type HostedSearchRoute } from "@blacksite-agent/llm";
 import { baseDomain, DomainPolicy, redactedUrl, researchUrl } from "./domain-policy.js";
 import { reviewInput, withinDelegation } from "./input-reviewer.js";
 
