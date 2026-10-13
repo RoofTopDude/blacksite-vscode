@@ -125,6 +125,7 @@ import {
   type RequestMode,
 } from "./request-modes.js";
 import { requestApprovalWithDetails, type ApprovalDecision } from "./approval-gate.js";
+import { isGateDeferred } from "./gate-deferral.js";
 import {
   commandApprovalScope,
   TurnApprovalGrants,
@@ -525,7 +526,7 @@ export type BaseAgentEvent =
    *  behind — absent is the normal state for every read-only tool. */
   | { type: "tool_call_result"; toolCallId: string; toolName: string; ok: boolean; summary: string; result: unknown; elapsedMs: number; diffs?: ToolDiffSummary[] }
   | { type: "approval_pending"; toolCallId: string; description: string; tier: string; unrecognizedCommand?: boolean }
-  | { type: "approval_result"; toolCallId: string; granted: boolean; decision: ApprovalDecision }
+  | { type: "approval_result"; toolCallId: string; granted: boolean; decision: ApprovalDecision; deferred?: boolean }
   /** Auto mode's decision on a gated call, before (or instead of) asking the user. "allowed" runs
    *  the call once; "escalated" means the user is asked next, with this reason. */
   | { type: "approval_review"; toolCallId: string; verdict: "allowed" | "escalated"; reason: string }
@@ -701,6 +702,13 @@ export interface ApprovalReviewRequest {
   unrecognizedCommand?: boolean;
   /** The call's arguments, for rules that depend on them (which file an edit targets). */
   input: Record<string, unknown>;
+  /** Kinds of untrusted outside content this session has read: "web", "browser", "mcp", "service". */
+  untrustedSources?: string[];
+}
+
+/** What the batch reviewer is told about the session the calls come from. */
+export interface ApprovalBatchContext {
+  untrustedSources: string[];
 }
 
 export type ApprovalReviewVerdict = { action: "allow" | "escalate"; reason: string };
@@ -858,7 +866,7 @@ export interface AgentSessionOptions {
    *  mode) leaves the ordinary path in charge. Never consulted for a covered "Allow all" grant. */
   approvalReviewer?: (request: ApprovalReviewRequest) => Promise<ApprovalReviewVerdict | null>;
   /** Provisional, per-call decisions for one model tool batch. The runtime gate still checks each call. */
-  approvalReviewerBatch?: (calls: ApprovalBatchCandidate[]) => Promise<Record<string, ApprovalReviewVerdict>>;
+  approvalReviewerBatch?: (calls: ApprovalBatchCandidate[], context?: ApprovalBatchContext) => Promise<Record<string, ApprovalReviewVerdict>>;
   approvalReviewerBatchEnabled?: () => boolean;
   signal?: AbortSignal;
   maxIterations?: number;
@@ -1295,6 +1303,13 @@ export class AgentSession {
   private _loadedTools = new Set<string>();
   /** The user's own words, one entry per user message, oldest first. See send(). */
   private _userPrompts: string[] = [];
+  /**
+   * Kinds of untrusted outside content this conversation has read (web, browser, mcp, service).
+   * It stays for the life of the session: compaction summarizes such content, it does not remove
+   * its influence. The approval reviewers read it, and an unattended run stops letting a model
+   * approve network operations once it is set.
+   */
+  private _untrustedSources = new Set<string>();
   /** A plan run asked for the turn to end at its next tool-round boundary. See requestPause. */
   private _pauseRequested = false;
   /** The harness's note about where the previous request stopped, waiting for the next turn. */
@@ -1523,6 +1538,19 @@ export class AgentSession {
    *  before prompts were recorded; callers fall back to reading the history. */
   get userPrompts(): string[] { return [...this._userPrompts]; }
 
+  /** Kinds of untrusted outside content this conversation has read. See _untrustedSources. */
+  get untrustedContentSources(): string[] { return [...this._untrustedSources]; }
+
+  /** Results from these runtimes are written by someone other than the user or the agent. */
+  private _noteUntrustedContent(runtimeType: string): void {
+    const source = runtimeType.startsWith("research.") && runtimeType !== "research.request_access" ? "web"
+      : runtimeType.startsWith("browser.") ? "browser"
+        : runtimeType.startsWith("mcp.") ? "mcp"
+          : runtimeType.startsWith("service.") ? "service"
+            : undefined;
+    if (source) this._untrustedSources.add(source);
+  }
+
   /**
    * Everything needed to put the conversation back to this moment (see rewindTo). Taken at the
    * start of a turn. Cheap: message objects are shared — the full history already keeps every one
@@ -1706,6 +1734,7 @@ export class AgentSession {
         : undefined,
       loadedTools: this._loadedTools.size ? [...this._loadedTools] : undefined,
       userPrompts: this._userPrompts.length ? [...this._userPrompts] : undefined,
+      untrustedSources: this._untrustedSources.size ? [...this._untrustedSources] : undefined,
       toolReferenceResults: this._toolReferenceResults.size
         ? [...this._toolReferenceResults.entries()].map(([toolUseId, names]) => ({ toolUseId, names: [...names] }))
         : undefined,
@@ -1749,6 +1778,7 @@ export class AgentSession {
     );
     this._loadedTools = new Set((state.loadedTools ?? []).filter((name) => typeof name === "string"));
     this._userPrompts = (state.userPrompts ?? []).filter((prompt) => typeof prompt === "string");
+    this._untrustedSources = new Set((state.untrustedSources ?? []).filter((source) => typeof source === "string"));
     this._toolReferenceResults = new Map(
       (state.toolReferenceResults ?? [])
         .filter((entry) => entry && typeof entry.toolUseId === "string" && Array.isArray(entry.names))
@@ -3315,10 +3345,11 @@ export class AgentSession {
     unrecognizedCommand: boolean | undefined,
     input: Record<string, unknown>,
     batchReviews?: Readonly<Record<string, ApprovalReviewVerdict>>,
-  ): AsyncGenerator<AgentEvent, { granted: boolean; decision: ApprovalDecision; deniedByPolicy: boolean }> {
+  ): AsyncGenerator<AgentEvent, { granted: boolean; decision: ApprovalDecision; deniedByPolicy: boolean; deferredMessage?: string }> {
     const tier = scope.tier;
     let decision: ApprovalDecision;
     let deniedByPolicy = false;
+    let deferredMessage: string | undefined;
     // Batch review has the proposed input, but only the runtime knows whether a command
     // reaches outside the workspace. Let the per-call reviewer see that added context.
     // Unknown executables and unexpected tiers also need their full runtime description.
@@ -3337,6 +3368,7 @@ export class AgentSession {
         description,
         unrecognizedCommand,
         input,
+        ...(this._untrustedSources.size ? { untrustedSources: [...this._untrustedSources] } : {}),
       });
     if (review) {
       yield { type: "approval_review", toolCallId: tc.id, verdict: review.action === "allow" ? "allowed" : "escalated", reason: review.reason };
@@ -3365,6 +3397,12 @@ export class AgentSession {
           decision = this.opts.approvalProvider
             ? await this.opts.approvalProvider(tc.id, tc.name, description, tier)
             : await requestApprovalWithDetails(tc.name, description, tier);
+        } catch (error) {
+          // Nobody answered within the run's grace period: the host queued it for the user. Not
+          // granted, and not a denial either — the agent is told to work around it for now.
+          if (!isGateDeferred(error)) throw error;
+          decision = "deny";
+          deferredMessage = error.message;
         } finally {
           this._pendingGate = undefined;
           yield { type: "runtime_state", state: this.runtimeState };
@@ -3373,9 +3411,9 @@ export class AgentSession {
       }
       if (decision === "allow_all") this._approvalGrants.grant(scope);
     }
-    const granted = decision !== "deny";
-    yield { type: "approval_result", toolCallId: tc.id, granted, decision };
-    return { granted, decision, deniedByPolicy };
+    const granted = !deferredMessage && decision !== "deny";
+    yield { type: "approval_result", toolCallId: tc.id, granted, decision, ...(deferredMessage ? { deferred: true } : {}) };
+    return { granted, decision, deniedByPolicy, ...(deferredMessage ? { deferredMessage } : {}) };
   }
 
   private _capToolResult(toolCallId: string, stringified: string): string {
@@ -4050,6 +4088,7 @@ export class AgentSession {
           } else if (ev.type === "hosted_search") {
             const label = this._hostedSearchRoute()?.label ?? this.provider;
             const input = { query: ev.query };
+            if (!ev.error && ev.results.length) this._untrustedSources.add("web");
             yield { type: "tool_call_start", toolCallId: ev.id, toolName: "web_search", inputPreview: JSON.stringify(input).slice(0, 120), input };
             yield {
               type: "tool_call_result",
@@ -4517,7 +4556,7 @@ export class AgentSession {
           batchCandidates.push(candidate);
         }
         if (batchCandidates.length > 1) {
-          try { batchReviews = await this.opts.approvalReviewerBatch(batchCandidates); }
+          try { batchReviews = await this.opts.approvalReviewerBatch(batchCandidates, { untrustedSources: [...this._untrustedSources] }); }
           catch { /* A failed batch falls back to the ordinary per-call reviewer at each gate. */ }
         }
       }
@@ -4802,8 +4841,10 @@ export class AgentSession {
                           selectedLabels: (answers[i] ?? []).map((key) => q.options.find((o) => o.key === key)?.label ?? key),
                         })),
                       };
-                    } catch {
-                      result = { ok: false, error: this._signal?.aborted ? "Cancelled." : "Question was cancelled." };
+                    } catch (error) {
+                      result = isGateDeferred(error)
+                        ? { ok: false, deferred: true, error: error.message }
+                        : { ok: false, error: this._signal?.aborted ? "Cancelled." : "Question was cancelled." };
                     } finally {
                       this._pendingGate = undefined;
                       yield { type: "runtime_state", state: this.runtimeState };
@@ -5171,7 +5212,7 @@ export class AgentSession {
                       description: string;
                       unrecognizedCommand?: boolean;
                     };
-                    const { granted, deniedByPolicy } = yield* this._approvalGate(
+                    const { granted, deniedByPolicy, deferredMessage } = yield* this._approvalGate(
                       tc,
                       { category: "sequence", tier },
                       description,
@@ -5179,9 +5220,9 @@ export class AgentSession {
                       payload,
                     );
                     if (!granted) {
-                      const denial = deniedByPolicy
+                      const denial = deferredMessage ?? (deniedByPolicy
                         ? `This ${tier} operation requires approval, but this run has no interactive approver to grant it — it was automatically denied.`
-                        : "User denied the operation.";
+                        : "User denied the operation.");
                       this.opts.sequenceProvider.rejectPendingApproval?.(
                         payload,
                         { sessionId: this.sessionId },
@@ -5223,11 +5264,12 @@ export class AgentSession {
                 } else {
                   let granted = true;
                   let deniedByPolicy = false;
+                  let deferredMessage: string | undefined;
                   const mutating = isMutatingServiceTool(tc.name);
                   const destination = String(enriched["host"] ?? enriched["instanceUrl"] ?? "the configured service");
                   const description = `${tc.name.replace(/_/g, " ")} on ${destination}`;
                   if (mutating) {
-                    ({ granted, deniedByPolicy } = yield* this._approvalGate(
+                    ({ granted, deniedByPolicy, deferredMessage } = yield* this._approvalGate(
                       tc,
                       { category: "service", tier: "network" },
                       description,
@@ -5236,9 +5278,11 @@ export class AgentSession {
                     ));
                   }
                   if (!granted) {
-                    result = deniedByPolicy
-                      ? { ok: false, error: "This external mutation requires approval, but this run has no interactive approver, so it was denied." }
-                      : { ok: false, error: "User denied the external service mutation." };
+                    result = deferredMessage
+                      ? { ok: false, deferred: true, error: deferredMessage }
+                      : deniedByPolicy
+                        ? { ok: false, error: "This external mutation requires approval, but this run has no interactive approver, so it was denied." }
+                        : { ok: false, error: "User denied the external service mutation." };
                   } else {
                     const resp = await this.opts.runtime.handleMessage({ type: runtimeType, payload: enriched }, this._signal);
                     result = runtimeResultOrError(resp, tc.name, () => this._getTools().map((t) => t.name));
@@ -5260,7 +5304,7 @@ export class AgentSession {
                   const description = mcpDestructive
                     ? `${confirmation.description}. The server marks this tool as destructive.`
                     : confirmation.description;
-                  const { granted, deniedByPolicy } = yield* this._approvalGate(
+                  const { granted, deniedByPolicy, deferredMessage } = yield* this._approvalGate(
                     tc,
                     commandApprovalScope(tc.name, runtimeType, tier, payload, unrecognizedCommand),
                     description,
@@ -5270,9 +5314,11 @@ export class AgentSession {
                       ? undefined : batchReviews,
                   );
                   if (!granted) {
-                    result = deniedByPolicy
-                      ? { ok: false, error: `This ${tier} operation requires approval, but this run has no interactive approver to grant it — it was automatically denied. Continue without it, or take a read-only / non-${tier} approach.` }
-                      : { ok: false, error: "User denied the operation." };
+                    result = deferredMessage
+                      ? { ok: false, deferred: true, error: deferredMessage }
+                      : deniedByPolicy
+                        ? { ok: false, error: `This ${tier} operation requires approval, but this run has no interactive approver to grant it — it was automatically denied. Continue without it, or take a read-only / non-${tier} approach.` }
+                        : { ok: false, error: "User denied the operation." };
                   } else {
                     const confirmed = await this.opts.runtime.handleMessage(
                       { type: runtimeType, payload: { ...payload, confirmed: true } },
@@ -5415,6 +5461,7 @@ export class AgentSession {
               elapsedMs: Math.max(Date.now() - toolStartedAt, 0),
               ...(diffs.length ? { diffs } : {}),
             };
+            if (ok) this._noteUntrustedContent(runtimeType);
 
             // Remember a missing executable so later calls are refused without spawning, and
             // say so once in the transcript — the user has to install it for the run to make

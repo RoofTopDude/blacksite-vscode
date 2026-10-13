@@ -21,12 +21,27 @@ import {
   formatDuration,
   isTerminalRunStatus,
   normalizeCharter,
+  openDecisions,
+  type AutoAllowedBy,
+  type DeferredDecision,
   type PlanRun,
   type PlanRunEvent,
+  type PlanRunIsolation,
   type PlanRunStatus,
   type PlanRunTurnOrigin,
   type PlanRunView,
 } from "./plan-run-model.js";
+import {
+  checkRegression,
+  checkRepeatedFailure,
+  checkSpendPace,
+  checkStepChanges,
+  failureSignature,
+  TRIPWIRE_TITLES,
+  type SpendSample,
+  type StepChange,
+  type TripwireHit,
+} from "./run-tripwires.js";
 import type { PlanRunStore } from "./plan-run-store.js";
 import {
   buildHandoff,
@@ -67,7 +82,22 @@ export interface PlanRunHost {
   captureSnapshot?(context: { label: string; plan: TaskPlan }): Promise<SnapshotOutcome | undefined>;
   /** Write the end-of-run report somewhere the user can open it. Returns the document id. */
   saveReport?(run: PlanRun, plan: TaskPlan | undefined): string | undefined | Promise<string | undefined>;
+  /** What changed on disk between two captured states, as workspace-relative paths. */
+  compareSnapshots?(from: Record<string, string>, to: Record<string, string>): Promise<StepChange[]>;
+  /** The check that is failing right now, when the last one failed. */
+  failingCheck?(): string | undefined;
   publish(view: PlanRunView | null): void;
+}
+
+/** What the host knows about a gate it is about to queue. */
+export interface DeferRequest {
+  kind: DeferredDecision["kind"];
+  toolCallId: string;
+  toolName?: string;
+  description: string;
+  tier?: string;
+  fingerprint?: string;
+  questions?: DeferredDecision["questions"];
 }
 
 export interface PlanRunServiceOptions {
@@ -115,6 +145,17 @@ export class PlanRunService {
   private _publishTimer: ReturnType<typeof setTimeout> | undefined;
   private _tick: ReturnType<typeof setInterval> | undefined;
   private _snapshotQueue: Promise<void> = Promise.resolve();
+  /** The last captured state of each project: the baseline, then each finished step. */
+  private _lastTrees: Record<string, string> | undefined;
+  private _spendSamples: SpendSample[] = [];
+  /** Failures seen during the current step, by signature. */
+  private readonly _failureCounts = new Map<string, number>();
+  /** Checks that have passed at some point during this run. */
+  private readonly _passedChecks = new Set<string>();
+  /** A tripwire has fired and the run has not been resumed since. One alarm at a time. */
+  private _tripped = false;
+  /** Why the pause that is pending was asked for, when it was not the user. */
+  private _pendingPauseReason: { text: string; handoff: HandoffReason } | undefined;
   private readonly _now: () => number;
   private readonly _newId: () => string;
 
@@ -160,6 +201,30 @@ export class PlanRunService {
     return run.charter.providerWaitMinutes * 60_000;
   }
 
+  /**
+   * How long a gate may wait for an answer before it is queued, or undefined when this run does
+   * not queue (no run, a run set to wait or pause, or one that is not working right now).
+   */
+  deferralGraceMs(): number | undefined {
+    const run = this.active;
+    if (!run || run.charter.whenBlocked !== "defer" || this._pauseRequested) return undefined;
+    if (run.status !== "running" && run.status !== "waiting_user") return undefined;
+    return Math.max(0, (run.charter.deferAfterMinutes ?? 0) * 60_000);
+  }
+
+  /** The run's own branch, when it works in an isolated copy. */
+  runBranch(): string | undefined {
+    return this.active?.isolation?.branch;
+  }
+
+  decision(id: string): DeferredDecision | undefined {
+    return this._run?.decisions?.find((entry) => entry.id === id);
+  }
+
+  openDecisions(): DeferredDecision[] {
+    return this._run ? openDecisions(this._run) : [];
+  }
+
   view(): PlanRunView | null {
     const run = this._run;
     if (!run) return null;
@@ -180,6 +245,7 @@ export class PlanRunService {
     if (!run) return undefined;
     this._run = run;
     this._lastPlan = this._planOf(run);
+    this._resetWatchers(run);
     if (run.status === "running" || run.status === "waiting_user" || run.status === "waiting_provider") {
       this._apply({ type: "status", at: this._now(), status: "interrupted", reason: "VS Code closed or reloaded while this run was working." });
       this._save();
@@ -196,7 +262,7 @@ export class PlanRunService {
     return run;
   }
 
-  start(input: { planId: string; charter?: unknown }): { ok: true; run: PlanRun } | { ok: false; error: string } {
+  start(input: { planId: string; charter?: unknown; isolation?: PlanRunIsolation }): { ok: true; run: PlanRun } | { ok: false; error: string } {
     if (this.active) return { ok: false, error: "A plan run is already open. Resume or stop it first." };
     const plan = this._planning.read().plans.find((entry) => entry.id === input.planId);
     if (!plan) return { ok: false, error: "That plan no longer exists." };
@@ -219,9 +285,11 @@ export class PlanRunService {
       charter,
       now,
       startMessageCount: session.messageCount,
+      isolation: input.isolation,
     });
     this._run = run;
     this._lastPlan = plan;
+    this._resetWatchers(run);
     this._pauseRequested = false;
     this._providerRetryAt = undefined;
     this._providerWaitReason = undefined;
@@ -275,6 +343,9 @@ export class PlanRunService {
     }
     const wasInterrupted = run.status === "interrupted";
     this._pauseRequested = false;
+    this._pendingPauseReason = undefined;
+    this._tripped = false;
+    this._failureCounts.clear();
     this._blockedSince = undefined;
     this._resolveRunAttention(run);
     this._apply({ type: "status", at: this._now(), status: "running" });
@@ -284,10 +355,14 @@ export class PlanRunService {
     this._startTicking();
     this._publishNow();
     if (!this._host.isTurnLive()) {
+      const waiting = openDecisions(run);
       const message = [
         "[Plan run resumed]",
         buildResumeBrief(plan),
         run.lastHandoff ? `\nWhere the run stopped:\n${run.lastHandoff}` : "",
+        waiting.length
+          ? `\nStill waiting for the user (do not attempt these; work around them): ${waiting.map((decision) => `${decision.id} ${decision.description.split("\n")[0]!.slice(0, 120)}`).join("; ")}`
+          : "",
         "\nPick the plan up from the current step. Anything already finished is on disk; check before redoing it.",
       ].filter(Boolean).join("\n");
       this._host.launchTurn(message, { origin: "resume", userText: `Resume the plan "${plan.title}".`, label: "plan run" });
@@ -351,10 +426,14 @@ export class PlanRunService {
 
     switch (end.stopReason) {
       case "paused": {
-        const text = buildHandoff({ ...handoffBase, reason: "paused" });
+        // A pause the harness asked for (a tripwire) says why; one the user asked for does not need to.
+        const asked = this._pendingPauseReason;
+        this._pendingPauseReason = undefined;
+        const reason: HandoffReason = asked?.handoff ?? "paused";
+        const text = buildHandoff({ ...handoffBase, reason, ...(asked ? { detail: asked.text } : {}) });
         handoffText = text;
-        this._event({ type: "handoff", at: now, reason: "paused", text });
-        this._settleAsPaused("Paused at the end of a step.", "paused");
+        this._event({ type: "handoff", at: now, reason, text });
+        this._settleAsPaused(asked?.text ?? "Paused at the end of a step.", reason);
         break;
       }
       case "cancelled": {
@@ -383,6 +462,18 @@ export class PlanRunService {
       }
       default:
         break;
+    }
+    // The turn ended on its own before it reached the pause that was asked for (by the user or a
+    // tripwire). The pause still stands; without this the run sat at "Pausing…" with nothing to end it.
+    const still = this.active;
+    if (this._pauseRequested && still && (still.status === "running" || still.status === "waiting_user")) {
+      const asked = this._pendingPauseReason;
+      this._pendingPauseReason = undefined;
+      if (asked) {
+        handoffText = buildHandoff({ ...handoffBase, reason: asked.handoff, detail: asked.text });
+        this._event({ type: "handoff", at: now, reason: asked.handoff, text: handoffText });
+      }
+      this._settleAsPaused(asked?.text ?? "Paused at the end of a step.", asked?.handoff ?? "paused");
     }
     this._save();
     this._publishSoon();
@@ -501,7 +592,178 @@ export class PlanRunService {
       this._finish("budget_exhausted", text, "budget");
       return;
     }
+    if (usd !== undefined && usd > 0) {
+      this._spendSamples.push({ at: now, usd });
+      if (this._spendSamples.length > 5000) this._spendSamples.splice(0, this._spendSamples.length - 5000);
+      const spike = checkSpendPace(this._spendSamples, now, run.startedAt, run.activeMs + (run.clock === "active" ? Math.max(0, now - run.clockSince) : 0));
+      if (spike) {
+        this._trip(spike);
+        // One alarm per pace change: start measuring again from here.
+        this._spendSamples = [{ at: run.startedAt, usd: run.spentUsd }];
+      }
+    }
     this._publishSoon();
+  }
+
+  // ── Decisions queued while the user was away ─────────────────────────────
+
+  /**
+   * Queue a gate nobody answered. Returns the decision, or undefined when this run does not queue
+   * (the caller then keeps waiting, as before).
+   */
+  deferDecision(request: DeferRequest): DeferredDecision | undefined {
+    const run = this.active;
+    if (!run || this.deferralGraceMs() === undefined) return undefined;
+    const now = this._now();
+    const stepTitle = this.view()?.currentStep?.title;
+    const decision: DeferredDecision = {
+      id: `D${(run.decisions?.length ?? 0) + 1}`,
+      kind: request.kind,
+      toolCallId: request.toolCallId,
+      ...(request.toolName ? { toolName: request.toolName } : {}),
+      description: request.description.slice(0, 4000),
+      ...(request.tier ? { tier: request.tier } : {}),
+      ...(request.fingerprint ? { fingerprint: request.fingerprint } : {}),
+      ...(request.questions ? { questions: request.questions } : {}),
+      ...(stepTitle ? { stepTitle } : {}),
+      at: now,
+      status: "open",
+    };
+    this._event({ type: "decision_deferred", at: now, decision });
+    this._raiseDecisionAttention(run);
+    this._save();
+    this._publishSoon();
+    return decision;
+  }
+
+  /** The user answered a queued decision. Returns it, or undefined when it was not open. */
+  resolveDecision(id: string, status: "approved" | "declined" | "answered", answer?: string): DeferredDecision | undefined {
+    const run = this._run;
+    const decision = run?.decisions?.find((entry) => entry.id === id);
+    if (!run || !decision || decision.status !== "open") return undefined;
+    this._event({ type: "decision_resolved", at: this._now(), id, status, ...(answer !== undefined ? { answer } : {}) });
+    this._raiseDecisionAttention(run);
+    this._save();
+    this._publishSoon();
+    return decision;
+  }
+
+  /** Something ran without the user being asked: recorded, so the report can list it. */
+  noteAutoAllowed(record: { by: AutoAllowedBy; toolName: string; description: string; reason: string }): void {
+    const run = this.active;
+    if (!run) return;
+    this._event({
+      type: "auto_allowed",
+      at: this._now(),
+      by: record.by,
+      toolName: record.toolName,
+      description: record.description.slice(0, 600),
+      reason: record.reason.slice(0, 300),
+    });
+    this._dirty = true;
+    this._scheduleSave();
+  }
+
+  private _raiseDecisionAttention(run: PlanRun): void {
+    const open = openDecisions(run);
+    const id = `run:${run.id}:decisions`;
+    if (open.length === 0) {
+      this.attention.resolve(id);
+      return;
+    }
+    this._raise({
+      id,
+      kind: "run_decisions",
+      severity: "needs_you",
+      source: "run",
+      title: `${open.length} decision${open.length === 1 ? " is" : "s are"} waiting for you`,
+      detail: `The run carried on without ${open.length === 1 ? "it" : "them"}. Open Decisions on the run bar to answer.`,
+    });
+  }
+
+  // ── Tripwires ────────────────────────────────────────────────────────────
+
+  /** A tool call failed. The same failure over and over in one step is a run going in circles. */
+  noteToolFailure(toolName: string, message: string): void {
+    const run = this.active;
+    if (!run || run.status !== "running") return;
+    const key = failureSignature(toolName, message);
+    const count = (this._failureCounts.get(key) ?? 0) + 1;
+    this._failureCounts.set(key, count);
+    const hit = checkRepeatedFailure(count, toolName, message);
+    if (hit) {
+      this._failureCounts.delete(key);
+      this._trip(hit);
+    }
+  }
+
+  /** A check passed. A later step marked done while it fails is a regression. */
+  notePassedCheck(label: string): void {
+    if (this.active && label) this._passedChecks.add(label);
+  }
+
+  /**
+   * Pause the run because the harness saw something wrong. Never undoes anything: the user looks,
+   * then resumes or restores.
+   */
+  private _trip(hit: TripwireHit): void {
+    const run = this.active;
+    if (!run || !run.charter.tripwires || this._tripped) return;
+    if (run.status === "paused" || run.status === "interrupted" || run.status === "failed") return;
+    this._tripped = true;
+    const now = this._now();
+    this._event({ type: "tripwire", at: now, kind: hit.kind, detail: hit.detail, ...(hit.examples ? { examples: hit.examples } : {}) });
+    const title = TRIPWIRE_TITLES[hit.kind];
+    this._raise({
+      id: `run:${run.id}:tripwire`,
+      kind: "run_tripwire",
+      severity: "needs_you",
+      source: "run",
+      title: `Paused: ${title.toLowerCase()}`,
+      detail: `${hit.detail}${hit.examples?.length ? ` For example: ${hit.examples.slice(0, 3).join(", ")}.` : ""} Look, then resume or restore from the step list.`,
+    });
+    const text = `${title}. ${hit.detail}`;
+    if (this._host.isTurnLive()) {
+      this._pauseRequested = true;
+      this._pendingPauseReason = { text, handoff: "tripwire" };
+      this._host.requestPause();
+      this._save();
+      this._publishSoon();
+      return;
+    }
+    this._event({ type: "handoff", at: now, reason: "tripwire", text: this._handoffText("tripwire", { detail: text }) });
+    this._settleAsPaused(text, "tripwire");
+  }
+
+  private _resetWatchers(run: PlanRun): void {
+    this._failureCounts.clear();
+    this._passedChecks.clear();
+    this._tripped = false;
+    this._pendingPauseReason = undefined;
+    // Spend from before this host knew about the run counts as the earlier pace, not the recent one.
+    this._spendSamples = run.spentUsd > 0 ? [{ at: run.startedAt, usd: run.spentUsd }] : [];
+    const finished = run.steps
+      .filter((step) => step.snapshots && Object.keys(step.snapshots).length && step.endedAt !== undefined)
+      .sort((a, b) => (a.endedAt ?? 0) - (b.endedAt ?? 0));
+    this._lastTrees = finished.at(-1)?.snapshots ?? run.baseline;
+  }
+
+  /** Compare what a finished step left on disk with the state before it. */
+  private async _checkStepOnDisk(projects: Record<string, string>): Promise<void> {
+    const before = this._lastTrees;
+    this._lastTrees = projects;
+    const run = this.active;
+    const compare = this._host.compareSnapshots;
+    if (!run || !run.charter.tripwires || !before || !compare || Object.keys(projects).length === 0) return;
+    let changes: StepChange[];
+    try {
+      changes = await compare.call(this._host, before, projects);
+    } catch {
+      return; // a comparison that cannot be made is not evidence of anything
+    }
+    const plan = this._planOf(run);
+    const declared = (plan?.phases ?? []).flatMap((phase) => phase.files ?? []);
+    for (const hit of checkStepChanges(changes, declared)) this._trip(hit);
   }
 
   /** The plan store changed. Turn step transitions into ledger events and notice a finished plan. */
@@ -516,6 +778,8 @@ export class PlanRunService {
     const now = this._now();
     const events = diffPlanSteps(this._lastPlan, plan, now);
     this._lastPlan = plan;
+    // A new step is a fresh start for "the same failure again".
+    if (events.length) this._failureCounts.clear();
     for (const event of events) {
       if (event.type === "step_completed") {
         const step = run.steps.find((entry) => entry.phaseId === event.phaseId && entry.stepId === event.stepId);
@@ -525,6 +789,10 @@ export class PlanRunService {
           try { this._planning.setStepEvidence(run.planId, event.phaseId, event.stepId, evidence); } catch { /* evidence is a label, never a reason to fail */ }
         }
         this._queueSnapshot(`After "${event.title}"`, { phaseId: event.phaseId, stepId: event.stepId });
+        if (run.charter.tripwires) {
+          const regression = checkRegression(this._passedChecks, this._host.failingCheck?.(), event.title);
+          if (regression) this._trip(regression);
+        }
       } else {
         this._event(event);
       }
@@ -611,6 +879,15 @@ export class PlanRunService {
         .slice(-MAX_PRIOR_DECISIONS)
         .map((entry) => `${entry.decision === "ask" ? "Asked the user" : "Continued"} (${entry.trigger}): ${entry.rationale}`),
       ledgerAttempts: () => new Map((this._run?.steps ?? []).map((step) => [`${step.phaseId}/${step.stepId}`, step.attempts] as const)),
+      waitingOnUserOnly: () => {
+        const run = this.active;
+        const open = run ? openDecisions(run) : [];
+        const plan = run ? this._planOf(run) : undefined;
+        if (!run || open.length === 0 || !plan) return undefined;
+        const remaining = plan.phases.flatMap((phase) => phase.steps).filter((step) => step.status !== "completed");
+        if (remaining.length === 0 || remaining.some((step) => step.status !== "blocked")) return undefined;
+        return `Everything left in the plan is waiting on you: ${open.length} decision${open.length === 1 ? " is" : "s are"} queued (${open.map((decision) => decision.id).join(", ")}). Answer them from Decisions on the run bar and the run picks up from there.`;
+      },
       triggerHint: () => {
         if (this._resumeHint) {
           const hint = this._resumeHint;
@@ -849,7 +1126,10 @@ export class PlanRunService {
   }
 
   private _resolveRunAttention(run: PlanRun): void {
-    this.attention.resolveWhere((item) => item.source === "run" && item.id.startsWith(`run:${run.id}:`) && item.kind !== "run_done");
+    // Queued decisions outlive a resume: they are still the user's to answer while the run works.
+    const keepDecisions = !isTerminalRunStatus(run.status) && openDecisions(run).length > 0;
+    this.attention.resolveWhere((item) => item.source === "run" && item.id.startsWith(`run:${run.id}:`) && item.kind !== "run_done"
+      && !(keepDecisions && item.kind === "run_decisions"));
   }
 
   private _raise(item: Omit<AttentionItem, "at">): void {
@@ -867,6 +1147,10 @@ export class PlanRunService {
       try {
         const outcome = await capture.call(this._host, { label, plan });
         this._recordSnapshot(outcome, target);
+        if (outcome && Object.keys(outcome.projects).length) {
+          if (target) await this._checkStepOnDisk(outcome.projects);
+          else this._lastTrees = outcome.projects;
+        }
       } catch (error) {
         this._recordSnapshot({ projects: {}, skipped: error instanceof Error ? error.message : String(error) }, target);
       }

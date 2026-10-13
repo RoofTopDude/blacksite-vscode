@@ -4,6 +4,7 @@ import { ResearchHost, type BrowserGateEvent } from "./browser/research-host.js"
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 import * as crypto from "crypto";
 import type { LocalRuntime, InstallHint } from "@blacksite/local-runtime";
 import { AgentSession, stripImagesForPersistence, type SteerMessage, type TurnOrigin } from "./agent-session.js";
@@ -41,17 +42,40 @@ import {
   type ThinkingConfig,
 } from "@blacksite-agent/llm";
 import { resolvePreviewProjectCss } from "./preview-assets.js";
-import type { AgentEvent, ApprovalReviewRequest, ApprovalReviewVerdict, ApprovalBatchCandidate, BaseAgentEvent, McpServerResolution, QCardQuestion, SubagentFollowUpRequest, SubagentProvider, SubagentProviderMessage, SubagentSpawnRequest, CompressionProvider, TranscriptProvider, TranscriptDocumentProvider, DiagramProvider, DataToolProvider, ReferenceToolProvider, SkillToolProvider, VisionFallbackProvider, ToolOutputEvent } from "./agent-session.js";
+import type { AgentEvent, ApprovalReviewRequest, ApprovalReviewVerdict, ApprovalBatchCandidate, ApprovalBatchContext, BaseAgentEvent, McpServerResolution, QCardQuestion, SubagentFollowUpRequest, SubagentProvider, SubagentProviderMessage, SubagentSpawnRequest, CompressionProvider, TranscriptProvider, TranscriptDocumentProvider, DiagramProvider, DataToolProvider, ReferenceToolProvider, SkillToolProvider, VisionFallbackProvider, ToolOutputEvent } from "./agent-session.js";
 import { BackgroundRunner } from "./background-runner.js";
 import { ChromiumRunner } from "./chromium-runner.js";
 import type { ContinuationModel } from "./continuation/continuation-model.js";
 import type { PlanContinuationService } from "./plans/plan-continuation-service.js";
 import type { PlanRunHost, PlanRunService, SnapshotOutcome } from "./plans/plan-run-service.js";
 import type { DiffPreview } from "./diff-preview.js";
-import type { PlanRunTurnOrigin, PlanRunView } from "./plans/plan-run-model.js";
-import { buildPreflight, type PreflightProject } from "./plans/run-preflight.js";
+import type { PlanRunCharter, PlanRunIsolation, PlanRunTurnOrigin, PlanRunView } from "./plans/plan-run-model.js";
+import { settleRunGate, untrustedNetworkFloor } from "./plans/run-gate.js";
+import type { StepChange } from "./plans/run-tripwires.js";
+import {
+  copyDirtyFiles,
+  createIsolatedCopy,
+  listRunCopies,
+  probeIsolation,
+  removeRunCopy,
+  seedIsolatedCopy,
+  takeRunHandoff,
+  writeRunHandoff,
+  type IsolatedRunHandoff,
+} from "./plans/run-isolation.js";
+import {
+  approvalFingerprint,
+  armGateDeferral,
+  deferredApprovalMessage,
+  deferredEditMessage,
+  deferredQuestionMessage,
+  GateDeferredError,
+  isGateDeferred,
+  queuedGateNotice,
+} from "./gate-deferral.js";
+import { buildPreflight, type PreflightIsolation, type PreflightProject } from "./plans/run-preflight.js";
 import { buildRunReport, runReportTitle } from "./plans/run-report.js";
-import { StepSnapshotter, type RestorePlan } from "./plans/step-snapshots.js";
+import { defaultGitRun, StepSnapshotter, type RestorePlan } from "./plans/step-snapshots.js";
 import type { PlanRun } from "./plans/plan-run-model.js";
 import type { PlanningProvider } from "./planning-store.js";
 import { buildSanitizedProcessEnv } from "@blacksite/local-runtime";
@@ -74,7 +98,7 @@ import {
   triageAutoApproval,
   type ApprovalMode,
 } from "./auto-approval-policy.js";
-import { reviewChatApproval, reviewChatApprovalGroups } from "./continuation/approval-review.js";
+import { reviewChatApproval, reviewChatApprovalGroups, type RunApprovalContext } from "./continuation/approval-review.js";
 import { describeRewind, RewindRegistry, rewindNote, untrackedEffect, type RewindScope } from "./rewind.js";
 import { EditDiffJournal } from "./edit-diff-journal.js";
 import type { ToolDiffSummary } from "./edit-diff-stats.js";
@@ -392,6 +416,8 @@ function normalizeCostGuardrails(value: CostGuardrailSettings | undefined): Cost
 }
 
 const SETTINGS_KEY = "blacksite.settings.v2";
+/** Set in a window opened on an isolated run copy: where the copy came from. Workspace state. */
+const RUN_COPY_STATE_KEY = "blacksite.planRuns.isolatedCopy";
 
 /** How long shell output is held before it is posted, so one message carries many pipe reads. */
 const TOOL_OUTPUT_FLUSH_MS = 80;
@@ -421,7 +447,7 @@ const PROVIDER_DEFAULTS: Record<ProviderName, ProviderSettings> = {
 
 /** User-role messages the harness writes itself. None of them is something the user said. */
 const HARNESS_MESSAGE_PREFIXES = [
-  "[tool_result", "[Automatic plan continuation]", "[Internal", "[Resumed from checkpoint]", "[Plan run",
+  "[tool_result", "[Automatic plan continuation]", "[Internal", "[Resumed from checkpoint]", "[Plan run", "[Decision ",
   "Your last response was cut off",
 ];
 
@@ -997,24 +1023,85 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    */
   private _approvalReviewer(): (request: ApprovalReviewRequest) => Promise<ApprovalReviewVerdict | null> {
     return async (request) => {
+      // A working plan run settles some gates before the approval mode is even read: an answer
+      // the user already gave to the same queued call, then the permissions they ticked when they
+      // started it. Both are the user's own decisions, made where they could see them.
+      const run = this._runGateContext();
+      if (run) {
+        const settled = settleRunGate(request, { allow: run.charter.allow, runBranch: run.runBranch, takePreapproval: (fingerprint) => this._takePreapproval(fingerprint) });
+        if (settled) {
+          this._planRuns?.noteAutoAllowed({ by: settled.by, toolName: request.toolName, description: request.description, reason: settled.record });
+          return { action: "allow", reason: settled.reason };
+        }
+      }
       if (this._approvalMode() !== "auto") return null;
       const triage = triageAutoApproval(request);
       if (triage.action !== "review") return triage;
-      return reviewChatApproval(this.createContinuationModel(), {
+      const untrusted = request.untrustedSources ?? [];
+      // Unattended, after reading content someone else wrote: a model does not get to approve
+      // anything that reaches the network. Only the user's own charter (above) or the user can.
+      const floor = run ? untrustedNetworkFloor(request) : undefined;
+      if (floor) return floor;
+      const verdict = await reviewChatApproval(this.createContinuationModel(), {
         userPrompts: this.userPromptsThisSession(),
         toolName: request.toolName,
         tier: request.tier,
         description: request.description,
         unrecognizedCommand: request.unrecognizedCommand,
+        ...(run ? { run: run.review() } : {}),
+        ...(untrusted.length ? { untrustedSources: untrusted } : {}),
+      });
+      if (run && verdict.action === "allow") {
+        this._planRuns?.noteAutoAllowed({ by: "reviewer", toolName: request.toolName, description: request.description, reason: verdict.reason });
+      }
+      return verdict;
+    };
+  }
+
+  private _approvalReviewerBatch(): (calls: ApprovalBatchCandidate[], context?: ApprovalBatchContext) => Promise<Record<string, ApprovalReviewVerdict>> {
+    return async (calls, context) => {
+      if (this._approvalMode() !== "auto" || this._runGateContext()) return {};
+      return reviewChatApprovalGroups(() => this.createContinuationModel(), this.userPromptsThisSession(), calls, {
+        untrustedSources: context?.untrustedSources ?? [],
       });
     };
   }
 
-  private _approvalReviewerBatch(): (calls: ApprovalBatchCandidate[]) => Promise<Record<string, ApprovalReviewVerdict>> {
-    return async (calls) => {
-      if (this._approvalMode() !== "auto") return {};
-      return reviewChatApprovalGroups(() => this.createContinuationModel(), this.userPromptsThisSession(), calls);
+  /**
+   * The plan run a gate belongs to while it is working, with what its reviewer should know.
+   * Undefined when no run is working (none, paused, interrupted, ended).
+   */
+  private _runGateContext(): { charter: PlanRunCharter; runBranch?: string; review: () => RunApprovalContext } | undefined {
+    const runs = this._planRuns;
+    const run = runs?.active;
+    if (!runs || !run || (run.status !== "running" && run.status !== "waiting_user")) return undefined;
+    return {
+      charter: run.charter,
+      runBranch: runs.runBranch(),
+      review: () => {
+        let plan: TaskPlan | undefined;
+        try { plan = this._planning.read().plans.find((entry) => entry.id === run.planId); } catch { /* reviewed without the plan */ }
+        const current = runs.view()?.currentStep;
+        const phase = plan?.phases.find((entry) => entry.id === current?.phaseId);
+        const step = phase?.steps.find((entry) => entry.id === current?.stepId);
+        return {
+          planTitle: plan?.title ?? run.planTitle,
+          phaseTitle: phase?.title,
+          stepTitle: step?.title,
+          acceptanceCriteria: [...(step?.acceptanceCriteria ? [step.acceptanceCriteria] : []), ...(phase?.acceptanceCriteria ?? [])],
+          territory: [...new Set((plan?.phases ?? []).flatMap((entry) => entry.files ?? []))],
+        };
+      },
     };
+  }
+
+  /** One-shot approvals the user gave to queued decisions, by the call they cover. Run-scoped. */
+  private readonly _runPreapprovals = new Map<string, string>();
+
+  private _takePreapproval(fingerprint: string): string | undefined {
+    const id = this._runPreapprovals.get(fingerprint);
+    if (id) this._runPreapprovals.delete(fingerprint);
+    return id;
   }
 
   /**
@@ -1130,7 +1217,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       this._planRuns?.conductorContext().stopped("budget", blocked);
       return;
     }
-    const continuationMessage = `[Automatic plan continuation]\n${message}`;
+    const continuationMessage = `${this._takeDecisionNotes()}[Automatic plan continuation]\n${message}`;
     await this._continueSend(
       continuationMessage,
       {
@@ -1490,7 +1577,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       lspProvider: this._autoLspService,
       approvalReviewer: this._approvalReviewer(),
       approvalReviewerBatch: this._approvalReviewerBatch(),
-      approvalReviewerBatchEnabled: () => this._approvalMode() === "auto",
+      // A plan run reviews each call on its own, with the plan in front of the reviewer and its
+      // charter and untrusted-content rules applied first; the batch shortcut would skip both.
+      approvalReviewerBatchEnabled: () => this._approvalMode() === "auto" && !this._runGateContext(),
       mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
       staleDiagnosticFiles: () => staleDiagnosticFiles(this._workspaceRoot),
       workspaceRoots: workspaceFolderPaths,
@@ -2617,7 +2706,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         // A loop lane is reviewed by its own policy; a chat lane follows the chat's approval mode.
         approvalReviewer: laneApprovalPolicy ? undefined : this._approvalReviewer(),
         approvalReviewerBatch: laneApprovalPolicy ? undefined : this._approvalReviewerBatch(),
-        approvalReviewerBatchEnabled: () => this._approvalMode() === "auto",
+        approvalReviewerBatchEnabled: () => this._approvalMode() === "auto" && !this._runGateContext(),
         mutationDiagnosticsProvider: (paths) => this._collectMutationDiagnostics(paths),
         staleDiagnosticFiles: () => staleDiagnosticFiles(this._workspaceRoot),
         workspaceRoots: workspaceFolderPaths,
@@ -2985,6 +3074,18 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
       case "plan_run_review_changes":
         await this._handleReviewChanges(msg.scope === "run" ? "run" : "conversation");
+        break;
+
+      case "plan_run_decision":
+        await this._handleRunDecision(
+          typeof msg.id === "string" ? msg.id : "",
+          msg.outcome === "approve" || msg.outcome === "decline" || msg.outcome === "answer" ? msg.outcome : undefined,
+          Array.isArray(msg.answers) ? msg.answers : [],
+        );
+        break;
+
+      case "plan_run_open_copy":
+        await this.openRunCopy();
         break;
 
       case "compact_conversation":
@@ -4915,6 +5016,8 @@ ${this._pendingRewindNote}`;
       }
       case "approval_result":
         this._liveGates.delete(event.toolCallId);
+        // A queued gate's card was already closed with the reason; a "denied" on top would be false.
+        if (event.deferred) break;
         this._post({
           type: "stream_approval_result",
           id: turnId,
@@ -5464,12 +5567,37 @@ ${this._pendingRewindNote}`;
       requestPause: () => { this._session?.requestPause(); },
       cancelTurn: () => { this._runner.cancel(); },
       retryProviderNow: () => { this._session?.retryProviderNow(); },
-      endGrants: () => { this._session?.clearApprovalGrants(); },
+      endGrants: () => {
+        this._session?.clearApprovalGrants();
+        // An approval given to a queued decision belongs to the run it was queued in.
+        this._runPreapprovals.clear();
+        this._pendingDecisionNotes.length = 0;
+      },
       collectEvidence: (context) => this._collectStepEvidence(context),
       captureSnapshot: ({ label, plan }) => this._captureRunSnapshot(label, plan),
       saveReport: (run, plan) => this._saveRunReport(run, plan),
+      compareSnapshots: (from, to) => this._compareRunSnapshots(from, to),
+      failingCheck: () => {
+        const verification = this._session?.runtimeState.verification;
+        return verification?.status === "failed" ? verification.method ?? "a check" : undefined;
+      },
       publish: (view) => this._publishPlanRun(view),
     };
+  }
+
+  /** What changed on disk between two captured states, across every project, workspace-relative. */
+  private async _compareRunSnapshots(from: Record<string, string>, to: Record<string, string>): Promise<StepChange[]> {
+    const base = this._workspaceRoots()[0] ?? this._workspaceRoot;
+    const changes: StepChange[] = [];
+    for (const [root, tree] of Object.entries(to)) {
+      const before = from[root];
+      if (!before || before === tree) continue;
+      for (const change of await this._snapshots.changedFiles(root, before, tree)) {
+        const relative = path.relative(base, path.join(root, change.path)).replace(/\\/g, "/");
+        changes.push({ status: change.status, path: relative });
+      }
+    }
+    return changes;
   }
 
   private _publishPlanRun(view: PlanRunView | null): void {
@@ -5533,6 +5661,7 @@ ${this._pendingRewindNote}`;
         return;
       }
       const starting = options.origin === "run";
+      message = `${this._takeDecisionNotes()}${message}`;
       await this._continueSend(
         message,
         { inputChars: message.length, promptPreview: options.userText, mentionCount: 0, contextLabel: options.label },
@@ -5596,6 +5725,10 @@ ${this._pendingRewindNote}`;
         this._runFileLog.push({ at: Date.now(), path: diff.path, additions: diff.additions, deletions: diff.deletions });
       }
       if (this._runFileLog.length > 5000) this._runFileLog.splice(0, this._runFileLog.length - 5000);
+    } else if (inner.type === "tool_call_result" && !inner.ok && this._planRuns?.active) {
+      // A queued gate is not a failure; the same real failure over and over is a tripwire.
+      const result = inner.result as { deferred?: unknown; error?: unknown } | undefined;
+      if (result?.deferred !== true) this._planRuns.noteToolFailure(inner.toolName, typeof result?.error === "string" ? result.error : inner.summary);
     } else if (inner.type === "tool_call_start") {
       this._planRuns?.noteProgress();
     } else if (inner.type === "runtime_state" && !laneId) {
@@ -5604,6 +5737,7 @@ ${this._pendingRewindNote}`;
         this._lastCheckStamp = verification.updatedAt;
         this._runCheckLog.push({ at: verification.updatedAt, label: verification.method ?? "a check" });
         if (this._runCheckLog.length > 500) this._runCheckLog.splice(0, this._runCheckLog.length - 500);
+        this._planRuns?.notePassedCheck(verification.method ?? "a check");
       }
     }
 
@@ -5722,10 +5856,10 @@ ${this._pendingRewindNote}`;
       this._post({ type: "plan_run_notice", level: "error", message: "That plan no longer exists." });
       return;
     }
-    const projects = await this._preflightProjects(plan);
+    const [projects, isolation] = await Promise.all([this._preflightProjects(plan), this._probeRunIsolation()]);
     this._post({
       type: "plan_run_preflight",
-      report: buildPreflight({ plan, projects, approvalMode: this._approvalMode(), runOpen: !!this._planRuns?.active }),
+      report: buildPreflight({ plan, projects, approvalMode: this._approvalMode(), runOpen: !!this._planRuns?.active, isolation }),
     });
   }
 
@@ -5765,9 +5899,14 @@ ${this._pendingRewindNote}`;
     }
   }
 
-  private async _handlePlanRunStart(planId: string, charter: unknown): Promise<void> {
+  private async _handlePlanRunStart(planId: string, charter: unknown, isolation?: PlanRunIsolation): Promise<void> {
     const runs = this._planRuns;
     if (!runs) return;
+    const record = charter && typeof charter === "object" && !Array.isArray(charter) ? charter as Record<string, unknown> : {};
+    if (record.isolated === true && !isolation) {
+      await this._startIsolatedRun(planId, record);
+      return;
+    }
     const session = await this._ensureSession();
     if (!session) return;
     const blocked = this._spendCeilingMessage();
@@ -5778,8 +5917,222 @@ ${this._pendingRewindNote}`;
     this._runFileLog.length = 0;
     this._runCheckLog.length = 0;
     this._runStartSeq = this._editDiffs.sequence;
-    const result = runs.start({ planId, charter });
+    this._runPreapprovals.clear();
+    this._pendingDecisionNotes.length = 0;
+    // A run started in a window that is itself an isolated copy is that copy's run, however it was started.
+    const copy = isolation ?? this._context.workspaceState.get<PlanRunIsolation>(RUN_COPY_STATE_KEY);
+    const result = runs.start({ planId, charter: record, ...(copy ? { isolation: copy } : {}) });
     if (!result.ok) this._post({ type: "plan_run_notice", level: "error", message: result.error });
+  }
+
+  // ── Plan run: isolated copies ───────────────────────────────────────────────
+
+  private _runGitCache?: ReturnType<typeof defaultGitRun>;
+
+  private get _runGit(): ReturnType<typeof defaultGitRun> {
+    this._runGitCache ??= defaultGitRun(buildSanitizedProcessEnv());
+    return this._runGitCache;
+  }
+
+  /**
+   * A user-level blacksite.workspaceRoot applies to every window as written, the copy's included,
+   * so the run there would work on that folder instead of the copy. Isolation is refused rather
+   * than quietly not isolated.
+   */
+  private _globalRootOverride(): string | undefined {
+    return vscode.workspace.getConfiguration("blacksite").inspect<string>("workspaceRoot")?.globalValue?.trim() || undefined;
+  }
+
+  private async _probeRunIsolation(): Promise<PreflightIsolation> {
+    const copy = this._context.workspaceState.get<PlanRunIsolation>(RUN_COPY_STATE_KEY);
+    if (copy) return { available: false, reason: `This window is already an isolated copy, on branch ${copy.branch}.`, dirtyFiles: 0, notes: [] };
+    const fixedRoot = this._globalRootOverride();
+    if (fixedRoot) {
+      return { available: false, reason: `Your user setting blacksite.workspaceRoot (${fixedRoot}) fixes every window to one folder, so a copy would not be isolated.`, dirtyFiles: 0, notes: [] };
+    }
+    try {
+      const probe = await probeIsolation(this._workspaceRoot, this._runGit);
+      return { available: probe.available, reason: probe.reason, branch: probe.branch, head: probe.head, dirtyFiles: probe.dirtyFiles, notes: probe.notes };
+    } catch (error) {
+      return { available: false, reason: `Could not check for git: ${error instanceof Error ? error.message : String(error)}`, dirtyFiles: 0, notes: [] };
+    }
+  }
+
+  /**
+   * Make the copy, put the plan in it, and open it in its own window, which starts the run.
+   * Nothing in this window changes: no files, no branch, no run.
+   */
+  private async _startIsolatedRun(planId: string, charter: Record<string, unknown>): Promise<void> {
+    const notice = (message: string, level: "info" | "error" = "error"): void => { this._post({ type: "plan_run_notice", level, message }); };
+    if (this._planRuns?.active) return notice("A plan run is already open. Resume or stop it first.");
+    const plan = this._planning.read().plans.find((entry) => entry.id === planId);
+    if (!plan) return notice("That plan no longer exists.");
+    if (this._globalRootOverride()) return notice("Your user setting blacksite.workspaceRoot fixes every window to one folder, so a copy would not be isolated. Clear it, or run here.");
+    const probe = await probeIsolation(this._workspaceRoot, this._runGit);
+    if (!probe.available) return notice(probe.reason ?? "An isolated copy cannot be made here.");
+    notice("Making an isolated copy…", "info");
+    const made = await createIsolatedCopy({ probe, planTitle: plan.title, home: os.homedir(), suffix: crypto.randomUUID().replace(/-/g, "").slice(0, 6), git: this._runGit });
+    if (!made.ok) return notice(`The isolated copy could not be made: ${made.error}`);
+    const { copy } = made;
+    seedIsolatedCopy(this._workspaceRoot, copy.copyRoot);
+    const { isolated: _isolated, ...rest } = charter;
+    const handoff: IsolatedRunHandoff = {
+      schema: 1,
+      planId,
+      charter: rest,
+      createdAt: Date.now(),
+      branch: copy.branch,
+      base: { root: this._workspaceRoot, branch: copy.baseBranch, head: copy.head },
+      worktreePath: copy.worktreePath,
+    };
+    try {
+      writeRunHandoff(copy.copyRoot, handoff);
+    } catch (error) {
+      return notice(`The copy was made at ${copy.worktreePath}, but the run could not be handed to it: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    notice(`Opening the copy on branch ${copy.branch} in a new window. The run starts there; nothing here changes.`, "info");
+    await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(copy.copyRoot), { forceNewWindow: true });
+  }
+
+  /**
+   * In a window opened on an isolated copy: start the run the other window handed over. The
+   * handoff is read once and deleted, so a reload does not start it twice.
+   */
+  async startHandedOffRun(): Promise<void> {
+    const handoff = takeRunHandoff(this._workspaceRoot, Date.now());
+    if (!handoff) return;
+    // The whole point is that the run cannot touch the original. If this window's tools are rooted
+    // anywhere but inside the copy, starting it would quietly break that promise.
+    const relative = path.relative(path.resolve(handoff.worktreePath), path.resolve(this._workspaceRoot));
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      void vscode.window.showErrorMessage(`Blacksite: this window works in ${this._workspaceRoot}, not in the copy at ${handoff.worktreePath} (check the blacksite.workspaceRoot setting), so the isolated run was not started.`);
+      return;
+    }
+    const isolation: PlanRunIsolation = {
+      branch: handoff.branch,
+      ...(handoff.base.branch ? { baseBranch: handoff.base.branch } : {}),
+      baseHead: handoff.base.head,
+      sourceRoot: handoff.base.root,
+      worktreePath: handoff.worktreePath,
+    };
+    await this._context.workspaceState.update(RUN_COPY_STATE_KEY, isolation);
+    await vscode.commands.executeCommand("blacksite.chat.focus");
+    if (this._planRuns?.active) {
+      void vscode.window.showWarningMessage("Blacksite: this copy already has an open plan run, so the handed-over run was not started.");
+      return;
+    }
+    await this._handlePlanRunStart(handoff.planId, handoff.charter, isolation);
+    if (!this._planRuns?.active) {
+      // Most often a missing API key in this window. The preflight lets the user start it by hand.
+      void vscode.window.showWarningMessage(
+        `Blacksite: the run could not start in this copy by itself. Start it from the plan when you are ready; it will run on branch ${handoff.branch}.`,
+      );
+      await this.openRunPreflight(handoff.planId);
+    }
+  }
+
+  /** The isolated copies of this repository: open one, or remove it. */
+  async openRunCopy(): Promise<void> {
+    const copies = await listRunCopies(this._workspaceRoot, this._runGit);
+    if (copies.length === 0) {
+      void vscode.window.showInformationMessage("Blacksite: this repository has no isolated run copies.");
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(
+      copies.map((copy) => ({ label: copy.branch, description: copy.head, detail: copy.path, copy })),
+      { title: "Isolated run copies", placeHolder: "Pick a copy to open or remove" },
+    );
+    if (!picked) return;
+    const action = await vscode.window.showQuickPick(
+      [
+        { label: "Open in a new window", value: "open" as const },
+        { label: "Remove the copy", description: "Its branch is kept", value: "remove" as const },
+      ],
+      { title: picked.copy.branch },
+    );
+    if (action?.value === "open") {
+      await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(picked.copy.path), { forceNewWindow: true });
+      return;
+    }
+    if (action?.value !== "remove") return;
+    const dirty = await copyDirtyFiles(picked.copy.path, this._runGit);
+    const warning = dirty
+      ? `The copy has ${dirty} uncommitted change${dirty === 1 ? "" : "s"}, and they will be lost. Commits on ${picked.copy.branch} are kept.`
+      : `Commits on ${picked.copy.branch} are kept; the folder is deleted.`;
+    const choice = await vscode.window.showWarningMessage(`Remove the isolated copy at ${picked.copy.path}?`, { modal: true, detail: warning }, "Remove");
+    if (choice !== "Remove") return;
+    const removed = await removeRunCopy(this._workspaceRoot, picked.copy.path, this._runGit, !!dirty);
+    if (removed.ok) void vscode.window.showInformationMessage(`Blacksite: removed the copy. Branch ${picked.copy.branch} is still there.`);
+    else void vscode.window.showErrorMessage(`Blacksite: ${removed.error}`);
+  }
+
+  // ── Plan run: decisions queued while the user was away ──────────────────────
+
+  /** Answers to queued decisions that have not reached the agent yet. */
+  private readonly _pendingDecisionNotes: string[] = [];
+
+  private _takeDecisionNotes(): string {
+    if (this._pendingDecisionNotes.length === 0) return "";
+    return `${this._pendingDecisionNotes.splice(0).join("\n\n")}\n\n`;
+  }
+
+  private async _handleRunDecision(id: string, outcome: "approve" | "decline" | "answer" | undefined, answers: unknown[]): Promise<void> {
+    const runs = this._planRuns;
+    const decision = runs?.decision(id);
+    const notice = (message: string): void => { this._post({ type: "plan_run_notice", level: "error", message }); };
+    if (!runs || !decision || !outcome) return notice("That decision is no longer waiting.");
+    if (decision.status !== "open") return notice(`${id} has already been answered.`);
+    const summary = (decision.description.split("\n").find((line) => line.trim()) ?? decision.description).trim().slice(0, 240);
+    let note: string;
+    if (decision.kind === "question") {
+      if (outcome !== "answer") {
+        runs.resolveDecision(id, "declined", "Left for the agent to decide");
+        note = `[Decision ${id} answered] The user left your question to you ("${summary}"). Choose what is easiest to change later, say what you chose in the step's notes, and carry on.`;
+      } else {
+        const chosen = (decision.questions ?? []).map((question, index) => {
+          const keys = Array.isArray(answers[index]) ? (answers[index] as unknown[]).map(String) : [];
+          return { question: question.question, labels: keys.map((key) => question.options.find((option) => option.key === key)?.label).filter((label): label is string => !!label) };
+        });
+        if (chosen.length === 0 || chosen.some((entry) => entry.labels.length === 0)) return notice("Choose an answer for every question first.");
+        const answerText = chosen.map((entry) => `${entry.question} → ${entry.labels.join(", ")}`).join("; ");
+        runs.resolveDecision(id, "answered", answerText);
+        note = `[Decision ${id} answered] The user answered your question: ${answerText}. Carry on with the step that was waiting on it (mark it in_progress again).`;
+      }
+    } else if (outcome === "approve") {
+      if (decision.fingerprint) this._runPreapprovals.set(decision.fingerprint, id);
+      runs.resolveDecision(id, "approved", "Approved");
+      note = decision.kind === "edit"
+        ? `[Decision ${id} answered] The user approved the edit you queued (${summary}). Make the same edit again; it will apply without asking this once. Then carry on with the step that was waiting on it.`
+        : `[Decision ${id} answered] The user approved: ${summary}. Run it again exactly as before; it will go through without asking this once. Then carry on with the step that was waiting on it.`;
+    } else {
+      runs.resolveDecision(id, "declined", "Declined");
+      note = `[Decision ${id} answered] The user declined: ${summary}. Do not run it or reach the same result another way. Change the approach, or leave the step blocked with a note saying what it needs.`;
+    }
+    this._deliverDecisionNote(note);
+  }
+
+  /**
+   * Get an answer to the agent: into the turn that is running, or into the next turn the run
+   * starts. A run that stopped because everything left was waiting on the user starts that turn now.
+   */
+  private _deliverDecisionNote(note: string): void {
+    const session = this._session;
+    if (session && this._liveTurnId) {
+      const steerId = `decision_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+      this._steerLog.set(steerId, note);
+      // No userText: the reviewers read typed requests as intent, and this is the harness relaying an answer.
+      session.enqueueSteer({ id: steerId, text: note, userText: "" });
+      return;
+    }
+    this._pendingDecisionNotes.push(note);
+    const run = this._planRuns?.active;
+    if (run && run.status === "waiting_user" && !this._runner.busy) {
+      void this._launchRunTurn("[Plan run] You have answers to decisions the run was waiting on (above). Carry on with the plan.", {
+        origin: "steer",
+        userText: "Answered queued decisions.",
+        label: "plan run",
+      });
+    }
   }
 
   // ── Plan run: restore points, report, review ────────────────────────────────
@@ -6052,7 +6405,9 @@ ${this._pendingRewindNote}`;
     signal: AbortSignal | undefined = this._runner.signal,
   ): Promise<string[][]> {
     return new Promise<string[][]>((resolve, reject) => {
+      let stopClock = (): void => undefined;
       const onAbort = (): void => {
+        stopClock();
         this._pendingQuestionCards.delete(toolCallId);
         // Close the card in the UI too. Without this the cancelled run leaves a live-looking
         // question in the action bar, and answering it posts into a gate that no longer exists.
@@ -6063,6 +6418,7 @@ ${this._pendingRewindNote}`;
       // removes the abort listener; the promise only settles once every slot is filled.
       this._pendingQuestionCards.set(toolCallId, {
         resolve: (answers) => {
+          stopClock();
           signal?.removeEventListener("abort", onAbort);
           resolve(answers);
         },
@@ -6074,9 +6430,30 @@ ${this._pendingRewindNote}`;
       // the user answers every question and question_card_answer messages arrive in _onMessage.
       if (signal?.aborted) {
         onAbort();
-      } else {
-        signal?.addEventListener("abort", onAbort, { once: true });
+        return;
       }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      const grace = this._planRuns?.deferralGraceMs();
+      stopClock = armGateDeferral(grace, {
+        stillOpen: () => this._pendingQuestionCards.has(toolCallId),
+        queue: () => this._planRuns?.deferDecision({
+          kind: "question",
+          toolCallId,
+          toolName: "question_card",
+          description: questions.map((question) => question.question).join("\n"),
+          questions: questions.map((question) => ({
+            question: question.question,
+            options: question.options.map((option) => ({ key: option.key, label: option.label, ...(option.description ? { description: option.description } : {}) })),
+            ...(question.multiSelect ? { multiSelect: true } : {}),
+          })),
+        }),
+        deferred: (id) => {
+          this._pendingQuestionCards.delete(toolCallId);
+          signal?.removeEventListener("abort", onAbort);
+          this._expireGate(toolCallId, "question", queuedGateNotice(id, grace ?? 0));
+          reject(new GateDeferredError(id, deferredQuestionMessage(id)));
+        },
+      });
     });
   }
 
@@ -6092,16 +6469,30 @@ ${this._pendingRewindNote}`;
     if (!turnId) return null; // no live turn — let the applier fall back to the modal
     const approvalId = `edit_approval_${++this._editApprovalSeq}`;
     const description = `Apply changes to ${req.fileCount} file(s)\n\n${req.summary}`;
+    // The same edit the user approved from the run's queue goes through once without a card.
+    if (this._runGateContext()) {
+      const earlier = this._takePreapproval(approvalFingerprint("file_edit", description));
+      if (earlier) {
+        this._planRuns?.noteAutoAllowed({ by: "earlier_answer", toolName: "file_edit", description, reason: `You approved this as ${earlier}.` });
+        return "apply";
+      }
+    }
     this._post({ type: "stream_approval_pending", id: turnId, toolCallId: approvalId, description, tier: "write", rationale: req.rationale, ...(req.previews?.length ? { previews: req.previews } : {}) });
+    // An edit card holds the run up exactly as a command card does, so the run is told about it.
+    this._observeRunEvent({ type: "approval_pending", toolCallId: approvalId, description, tier: "write" });
 
     let decision: ApprovalDecision;
     try {
       decision = await this._createApprovalPromise(approvalId, "file_edit", description, "write");
-    } catch {
+    } catch (error) {
+      this._observeRunEvent({ type: "approval_result", toolCallId: approvalId, granted: false, decision: "deny", ...(isGateDeferred(error) ? { deferred: true } : {}) });
+      // Queued for the user: the error carries what the agent should do, so let it reach the tool result.
+      if (isGateDeferred(error)) throw error;
       return "reject"; // run cancelled while waiting
     }
     const granted = decision !== "deny";
     this._post({ type: "stream_approval_result", id: turnId, toolCallId: approvalId, granted, decision });
+    this._observeRunEvent({ type: "approval_result", toolCallId: approvalId, granted, decision });
     return !granted ? "reject" : decision === "allow_all" ? "all" : "apply";
   }
 
@@ -6147,27 +6538,51 @@ ${this._pendingRewindNote}`;
 
   private _createApprovalPromise(
     toolCallId: string,
-    _toolName: string,
-    _description: string,
-    _tier: string,
+    toolName: string,
+    description: string,
+    tier: string,
     signal: AbortSignal | undefined = this._runner.signal,
   ): Promise<ApprovalDecision> {
     return new Promise<ApprovalDecision>((resolve, reject) => {
+      let stopClock = (): void => undefined;
       const onAbort = (): void => {
+        stopClock();
         this._pendingApprovals.delete(toolCallId);
         this._expireGate(toolCallId, "approval", "The run was cancelled before this was approved.");
         reject(new Error("Cancelled."));
       };
       // Store a wrapper so that approving/denying normally also removes the abort listener.
       this._pendingApprovals.set(toolCallId, (decision: ApprovalDecision) => {
+        stopClock();
         signal?.removeEventListener("abort", onAbort);
         resolve(decision);
       });
       if (signal?.aborted) {
         onAbort();
-      } else {
-        signal?.addEventListener("abort", onAbort, { once: true });
+        return;
       }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      // A plan run set to "queue it and keep going": the card waits the run's grace period, and
+      // then the decision moves to the run's queue so the rest of the plan is not held up by it.
+      const grace = this._planRuns?.deferralGraceMs();
+      const edit = toolName === "file_edit";
+      stopClock = armGateDeferral(grace, {
+        stillOpen: () => this._pendingApprovals.has(toolCallId),
+        queue: () => this._planRuns?.deferDecision({
+          kind: edit ? "edit" : "approval",
+          toolCallId,
+          toolName,
+          description,
+          tier,
+          fingerprint: approvalFingerprint(toolName, description),
+        }),
+        deferred: (id) => {
+          this._pendingApprovals.delete(toolCallId);
+          signal?.removeEventListener("abort", onAbort);
+          this._expireGate(toolCallId, "approval", queuedGateNotice(id, grace ?? 0));
+          reject(new GateDeferredError(id, edit ? deferredEditMessage(id) : deferredApprovalMessage(id)));
+        },
+      });
     });
   }
 

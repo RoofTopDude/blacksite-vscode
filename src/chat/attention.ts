@@ -19,6 +19,8 @@ export type AttentionKind =
   | "run_stalled"
   | "run_paused"
   | "run_interrupted"
+  | "run_decisions"
+  | "run_tripwire"
   | "provider_wait"
   | "budget"
   | "loop_parked"

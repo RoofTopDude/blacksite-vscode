@@ -11,6 +11,7 @@
 
 import type { TaskPlan } from "../planning-store.js";
 import { formatDuration, type PlanRun } from "./plan-run-model.js";
+import { RUN_PERMISSION_LABELS } from "./plan-run-view.js";
 
 export interface RunReportFile {
   path: string;
@@ -26,6 +27,13 @@ export interface RunReportExtras {
 }
 
 const MAX_FILES_LISTED = 40;
+const MAX_ALLOWED_LISTED = 30;
+
+const AUTO_ALLOWED_BY: Record<string, string> = {
+  charter: "your permission",
+  reviewer: "reviewer",
+  earlier_answer: "your earlier answer",
+};
 
 function when(ms: number | undefined): string {
   if (!ms) return "—";
@@ -69,7 +77,69 @@ export function buildRunReport(run: PlanRun, plan: TaskPlan | undefined, extras:
   lines.push(`- Spend: $${run.spentUsd.toFixed(2)}${run.spendPartial ? " (some usage could not be priced, so this is a lower bound)" : ""}${run.charter.maxUsd ? ` of a $${run.charter.maxUsd.toFixed(2)} ceiling` : ""}`);
   lines.push(`- ${run.turns.length} turns, ${run.gatesAnswered} approvals or questions answered, ${run.retries} provider retries, ${run.compactions} context compactions`);
   if (run.model) lines.push(`- Model: ${run.model}`);
+  if (run.charter.allow?.length) lines.push(`- Allowed without asking: ${run.charter.allow.map((permission) => RUN_PERMISSION_LABELS[permission] ?? permission).join("; ")}`);
+  if (run.charter.whenBlocked === "defer") lines.push(`- When it needed you: queued the decision after ${run.charter.deferAfterMinutes ?? 0} min and carried on`);
   lines.push("");
+
+  if (run.isolation) {
+    lines.push("## Where the work is");
+    lines.push("");
+    lines.push(`This run worked in an isolated copy at \`${run.isolation.worktreePath}\`, on branch \`${run.isolation.branch}\`, made from ${run.isolation.baseBranch ? `\`${run.isolation.baseBranch}\` at ` : ""}\`${run.isolation.baseHead}\`. The original folder (\`${run.isolation.sourceRoot}\`) was not touched.`);
+    lines.push("");
+    lines.push("To bring the work back: commit it in this window, then merge the branch from the original:");
+    lines.push("");
+    lines.push("```");
+    lines.push(`git merge ${run.isolation.branch}`);
+    lines.push("```");
+    lines.push("");
+    lines.push(`To see everything it changed first: \`git diff ${run.isolation.baseHead}...${run.isolation.branch}\` (after committing). To throw it away, remove the copy with **Blacksite: Isolated Run Copies…**; the branch is kept until you delete it.`);
+    lines.push("");
+  }
+
+  const waiting = (run.decisions ?? []).filter((decision) => decision.status === "open");
+  if (waiting.length) {
+    lines.push("## Still waiting for you");
+    lines.push("");
+    lines.push("The run queued these instead of stopping for them. Answer them from Decisions on the run bar.");
+    lines.push("");
+    for (const decision of waiting) lines.push(`- **${decision.id}** (${decision.kind}${decision.stepTitle ? `, during "${cell(decision.stepTitle)}"` : ""}) — ${cell(decision.description.split("\n")[0] ?? "").slice(0, 240)}`);
+    lines.push("");
+  }
+
+  const answered = (run.decisions ?? []).filter((decision) => decision.status !== "open");
+  if (answered.length) {
+    lines.push("## Decisions you answered later");
+    lines.push("");
+    for (const decision of answered.slice(-20)) {
+      // An answered question's answer already restates the question.
+      const what = decision.status === "answered" && decision.answer ? decision.answer : decision.description.split("\n")[0] ?? "";
+      lines.push(`- **${decision.id}** ${decision.status} — ${cell(what).slice(0, 240)}`);
+    }
+    lines.push("");
+  }
+
+  const allowed = run.autoAllowed ?? [];
+  if (allowed.length) {
+    const by = (kind: string): number => allowed.filter((entry) => entry.by === kind).length;
+    lines.push("## Approved without asking you");
+    lines.push("");
+    lines.push(`${allowed.length} operation${allowed.length === 1 ? "" : "s"}: ${by("charter")} under the permissions you gave the run, ${by("reviewer")} by the approval reviewer, ${by("earlier_answer")} you had approved from the queue. Check these if anything looks off.`);
+    lines.push("");
+    for (const entry of allowed.slice(-MAX_ALLOWED_LISTED)) {
+      lines.push(`- ${when(entry.at)} — ${AUTO_ALLOWED_BY[entry.by] ?? entry.by}: ${cell(entry.description.split("\n")[0] ?? "").slice(0, 180)} (${cell(entry.reason).slice(0, 160)})`);
+    }
+    if (allowed.length > MAX_ALLOWED_LISTED) lines.push(`- … and ${allowed.length - MAX_ALLOWED_LISTED} earlier, in the run's event log`);
+    lines.push("");
+  }
+
+  if (run.tripwireHits?.length) {
+    lines.push("## Tripwires");
+    lines.push("");
+    lines.push("The harness paused the run when it saw these.");
+    lines.push("");
+    for (const hit of run.tripwireHits) lines.push(`- ${when(hit.at)} — ${cell(hit.detail)}${hit.examples?.length ? ` (e.g. ${hit.examples.slice(0, 3).map(cell).join(", ")})` : ""}`);
+    lines.push("");
+  }
 
   lines.push("## Steps");
   lines.push("");

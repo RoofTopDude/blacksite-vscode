@@ -63,6 +63,32 @@ Example-only domains such as `example.com` and `.internal` are ignored.
 - Model-authored remote images are rendered as blocked placeholders. This prevents chat content
   from creating tracking-beacon requests under the user's IP.
 
+## Unattended plan runs
+
+A plan run can work for hours without the user. Its boundaries are enforced by the host, not by
+instructions to the model:
+
+- **Nothing is approved by default for being unanswered.** A gate nobody answers is queued as a
+  decision (`src/gate-deferral.ts`) and reported to the agent as not run; no caller can mistake a
+  deferral for permission, because it travels as an error rather than an approval answer.
+- **Run permissions are exact matches** (`src/plans/run-envelope.ts`): manifest-only dependency
+  installs, named test/build/lint scripts, local commits without amend or hook skipping, and a push
+  of the run's own branch to `origin` without force. Destructive tiers, service mutations, sequences,
+  MCP calls, edits, unrecognized executables, inline code, shell wrappers, operator characters and
+  outside-workspace paths are never covered. Permissions come from the user's preflight, live in
+  the run's charter, and end with the run. The repository cannot set them.
+- **Untrusted content raises the bar** (`src/plans/run-gate.ts`). After web, browser, MCP or
+  service content enters the conversation, an unattended run stops letting the model reviewer approve
+  network operations or MCP calls. The flag persists with the session through compaction and restore.
+- **Tripwires are measured, not reported** (`src/plans/run-tripwires.ts`): deletions and
+  out-of-territory changes come from comparing the run's private snapshots, so shell commands are
+  included. A tripwire pauses; it never undoes or continues anything.
+- **Isolated copies are containment, not a sandbox** (`src/plans/run-isolation.ts`). The copy is a
+  git worktree outside the workspace, opened in its own window. A user-level `blacksite.workspaceRoot`
+  would root that window elsewhere, so isolation is refused when one is set, and the copy window
+  refuses to start a handed-over run whose tools are not rooted inside the copy. The handoff file is
+  read once, deleted, and ignored after 30 minutes.
+
 ## Triage
 
 For a possible committed secret, do not merely delete the line. Revoke or rotate the credential,

@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { AlertTriangle, Info, Play, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
-import type { PlanRunCharterInput, PreflightReport } from "@/lib/protocol";
+import type { PlanRunCharterInput, PreflightReport, RunPermissionValue, WhenBlocked } from "@/lib/protocol";
+import { RUN_PERMISSION_LABELS, RUN_PERMISSION_VALUES } from "../../../../plans/plan-run-view";
 import { Button } from "@/components/ui/button";
 
 const field = "h-7 w-20 rounded-md border border-input bg-transparent px-2 text-right text-sm tabular-nums outline-none focus:border-ring";
@@ -28,24 +29,47 @@ export function RunPreflight() {
   return <Dialog key={report.planId} report={report} />;
 }
 
+/** What each permission covers, in the words the tooltip uses. Matched exactly by the harness. */
+const PERMISSION_HINTS: Record<RunPermissionValue, string> = {
+  install_dependencies: "npm ci, pnpm install, uv sync, pip install -r requirements.txt and the like. Never adds a package by name, never a global install or another registry.",
+  project_scripts: "The test, build, lint, type-check and format scripts (npm test, npm run build, cargo test, pytest…). Not deploy, release or publish.",
+  git_commit: "git add and git commit in the workspace. Never amend, skip hooks, or change git's config.",
+  push_run_branch: "git push origin <the run's own branch>, without force. Only an isolated copy has a branch of its own.",
+};
+
 function Dialog({ report }: { report: PreflightReport }) {
   const store = useStore();
   const [maxUsd, setMaxUsd] = useState(report.defaultMaxUsd ? String(report.defaultMaxUsd) : "");
   const [maxMinutes, setMaxMinutes] = useState("");
-  const [blocked, setBlocked] = useState<"wait" | "pause">("pause");
+  const [blocked, setBlocked] = useState<WhenBlocked>("defer");
   const [blockedMinutes, setBlockedMinutes] = useState("30");
+  const [deferMinutes, setDeferMinutes] = useState("2");
   const [notifications, setNotifications] = useState<"attention" | "all" | "off">("attention");
+  const [isolated, setIsolated] = useState(false);
+  const [allow, setAllow] = useState<RunPermissionValue[]>(["install_dependencies", "project_scripts"]);
+  const [tripwires, setTripwires] = useState(true);
+
+  function toggle(permission: RunPermissionValue): void {
+    setAllow((current) => current.includes(permission) ? current.filter((entry) => entry !== permission) : [...current, permission]);
+  }
 
   function start(): void {
-    const charter: PlanRunCharterInput = { notifications };
+    const charter: PlanRunCharterInput = { notifications, whenBlocked: blocked, tripwires };
     const usd = Number(maxUsd);
     const minutes = Number(maxMinutes);
     const away = Number(blockedMinutes);
+    const grace = Number(deferMinutes);
     if (Number.isFinite(usd) && usd > 0) charter.maxUsd = usd;
     if (Number.isFinite(minutes) && minutes > 0) charter.maxMinutes = minutes;
     if (blocked === "pause" && Number.isFinite(away) && away > 0) charter.pauseWhenBlockedMinutes = away;
+    if (blocked === "defer") charter.deferAfterMinutes = Number.isFinite(grace) && grace >= 0 ? grace : 2;
+    // Pushing needs a branch of the run's own, which only an isolated copy has.
+    charter.allow = allow.filter((permission) => isolated || permission !== "push_run_branch");
+    if (isolated && report.isolation.available) charter.isolated = true;
     actions.startPlanRun(report.planId, charter);
   }
+
+  const iso = report.isolation;
 
   const warnings = report.findings.filter((finding) => finding.level === "warn");
   const notes = report.findings.filter((finding) => finding.level === "info");
@@ -118,6 +142,37 @@ function Dialog({ report }: { report: PreflightReport }) {
           </section>
         )}
 
+        <section aria-label="Where it works" className="flex flex-col gap-1.5">
+          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Where it works</div>
+          <div className="inline-flex self-start overflow-hidden rounded-md border border-border" role="group" aria-label="Where the run works">
+            <button type="button" aria-pressed={!isolated} onClick={() => setIsolated(false)}
+              className={cn("px-2.5 py-1 text-xs font-medium", !isolated ? "bg-primary/20 text-foreground" : "text-muted-foreground hover:text-foreground")}
+              title="Work in this folder. Every step is a restore point, so the files can be put back.">
+              Here
+            </button>
+            <button type="button" aria-pressed={isolated} disabled={!iso.available} onClick={() => setIsolated(true)}
+              className={cn("px-2.5 py-1 text-xs font-medium disabled:opacity-40", isolated ? "bg-primary/20 text-foreground" : "text-muted-foreground hover:text-foreground")}
+              title={iso.available ? "Work in a copy of the repository on a branch of its own, in a new window. Nothing here changes; you merge the branch when you are happy with it." : iso.reason}>
+              Isolated copy
+            </button>
+          </div>
+          {!iso.available && iso.reason && <div className="text-xs text-muted-foreground">{iso.reason}</div>}
+          {isolated && iso.available && (
+            <div className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+              <div>Opens a new window on a copy of {iso.branch && iso.branch !== "HEAD" ? <code>{iso.branch}</code> : "the repository"} at <code>{iso.head}</code>, on a branch of its own. This folder is not touched.</div>
+              {iso.dirtyFiles > 0 && <div className="text-[color:var(--s-warn)]">{iso.dirtyFiles} uncommitted change{iso.dirtyFiles === 1 ? "" : "s"} stay here; the copy starts from the last commit. Commit first if the run needs them.</div>}
+              <div>The copy has no installed dependencies yet, so the run installs them first.</div>
+              {iso.notes.map((note, index) => <div key={index}>{note}</div>)}
+            </div>
+          )}
+          {iso.available && (
+            <button type="button" className="chat-interactive self-start text-xs text-primary hover:underline" onClick={() => actions.openRunCopies()}
+              title="List the isolated copies earlier runs made from this repository, to open or remove one.">
+              Earlier copies…
+            </button>
+          )}
+        </section>
+
         <section aria-label="What you are agreeing to" className="flex flex-col gap-2 rounded-lg border border-border bg-white/[0.02] p-3">
           <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">While it runs</div>
           <div className="flex items-center justify-between gap-3 text-sm">
@@ -140,16 +195,22 @@ function Dialog({ report }: { report: PreflightReport }) {
             <span>Stop after</span>
             <span className="inline-flex items-center gap-1"><input className={field} inputMode="numeric" value={maxMinutes} placeholder="none" onChange={(event) => setMaxMinutes(event.target.value)} aria-label="Time limit in minutes" />min</span>
           </label>
-          <div className="flex items-center justify-between gap-3 text-sm" title="What happens when the run needs an answer and you are not there.">
+          <div className="flex items-center justify-between gap-3 text-sm" title="What happens when the run needs an approval or an answer and you are not there. Queued decisions wait under Decisions on the run bar; nothing queued ever runs without you.">
             <span>If it needs me</span>
             <span className="inline-flex items-center gap-1.5">
-              <select className="h-7 rounded-md border border-input bg-popover px-1.5 text-sm" value={blocked} onChange={(event) => setBlocked(event.target.value as "wait" | "pause")} aria-label="When blocked on you">
+              <select className="h-7 rounded-md border border-input bg-popover px-1.5 text-sm" value={blocked} onChange={(event) => setBlocked(event.target.value as WhenBlocked)} aria-label="When blocked on you">
+                <option value="defer">Queue it and carry on after</option>
                 <option value="pause">Pause after</option>
                 <option value="wait">Keep waiting</option>
               </select>
+              {blocked === "defer" && <><input className={field} inputMode="numeric" value={deferMinutes} onChange={(event) => setDeferMinutes(event.target.value)} aria-label="Minutes before queuing" />min</>}
               {blocked === "pause" && <><input className={field} inputMode="numeric" value={blockedMinutes} onChange={(event) => setBlockedMinutes(event.target.value)} aria-label="Minutes to wait" />min</>}
             </span>
           </div>
+          <label className="flex items-center justify-between gap-3 text-sm" title="The harness watches what actually happens — many files deleted, work spreading outside the plan's folders, a check that passed now failing, the same failure over and over, spending speeding up — and pauses the run so you can look.">
+            <span>Pause if something looks wrong</span>
+            <input type="checkbox" className="size-4 accent-[color:var(--primary)]" checked={tripwires} onChange={(event) => setTripwires(event.target.checked)} aria-label="Tripwires" />
+          </label>
           <div className="flex items-center justify-between gap-3 text-sm" title="How loudly to tell you outside the chat. Nothing is shown while you are looking at it.">
             <span>Tell me</span>
             <select className="h-7 rounded-md border border-input bg-popover px-1.5 text-sm" value={notifications} onChange={(event) => setNotifications(event.target.value as "attention" | "all" | "off")} aria-label="Notifications">
@@ -160,10 +221,24 @@ function Dialog({ report }: { report: PreflightReport }) {
           </div>
         </section>
 
+        <section aria-label="What it may do without asking" className="flex flex-col gap-1.5 rounded-lg border border-border bg-white/[0.02] p-3">
+          <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground" title="Matched exactly against each command, for this run only. Destructive operations, external services, anything outside the workspace and anything else always follow the approval mode.">It may, without asking</div>
+          {RUN_PERMISSION_VALUES.map((permission) => {
+            const needsCopy = permission === "push_run_branch" && !isolated;
+            return (
+              <label key={permission} className={cn("flex items-start gap-2 text-sm", needsCopy && "opacity-40")} title={needsCopy ? "Only an isolated copy has a branch of its own to push." : PERMISSION_HINTS[permission]}>
+                <input type="checkbox" className="mt-0.5 size-4 accent-[color:var(--primary)]" disabled={needsCopy} checked={!needsCopy && allow.includes(permission)} onChange={() => toggle(permission)} />
+                <span className="first-letter:uppercase">{RUN_PERMISSION_LABELS[permission]}</span>
+              </label>
+            );
+          })}
+          <div className="text-xs text-muted-foreground">Destructive operations, external services and anything outside the workspace always ask, whatever is ticked.</div>
+        </section>
+
         <div className="flex items-center justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={() => actions.closeRunPreflight()}>Cancel</Button>
-          <Button size="sm" disabled={!report.canStart} onClick={start} title={report.canStart ? "Start working through the plan now." : report.blocker}>
-            <Play className="size-3.5" />Start run
+          <Button size="sm" disabled={!report.canStart} onClick={start} title={report.canStart ? (isolated ? "Make the copy and start the run in a new window." : "Start working through the plan now.") : report.blocker}>
+            <Play className="size-3.5" />{isolated ? "Start in a copy" : "Start run"}
           </Button>
         </div>
       </div>

@@ -18,7 +18,8 @@ export type HandoffReason =
   | "stalled"
   | "blocked"
   | "halt"
-  | "interrupted";
+  | "interrupted"
+  | "tripwire";
 
 export interface HandoffChange {
   path: string;
@@ -73,6 +74,7 @@ export function describeStopReason(reason: HandoffReason, input: Pick<HandoffInp
     case "blocked": return input.detail ? `Waiting on you: ${oneLine(input.detail, 160)}` : "Waiting on you.";
     case "halt": return input.detail ? oneLine(input.detail, 200) : "The conductor stopped the run.";
     case "interrupted": return "VS Code closed or reloaded while the run was working.";
+    case "tripwire": return input.detail ? `Paused by a tripwire: ${oneLine(input.detail, 200)}` : "Paused by a tripwire.";
   }
 }
 

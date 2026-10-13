@@ -37,6 +37,8 @@ function runView(overrides: Record<string, unknown> = {}): Record<string, unknow
       ] },
     ],
     turns: 4, retries: 0, compactions: 1, pauseRequested: false, hasBaseline: true, hasReport: false,
+    whenBlocked: "defer", deferAfterMinutes: 2, allow: ["project_scripts"], tripwiresOn: true,
+    decisions: [], openDecisions: 0, autoAllowed: 0, tripwires: [],
     ...overrides,
   };
 }
@@ -155,6 +157,7 @@ describe("built chat webview — plan runs", () => {
         findings: [{ level: "warn", message: "2 open steps have no definition of done, so the run cannot tell finished from nearly finished.", fix: "Add acceptance criteria.", examples: ["Docs"] }],
         projects: [{ name: "billing-service", root: "services/billing", files: 4, issues: ["Node 20 is required; 18 is installed."] }],
         moreProjects: 0, approvalMode: "ask", defaultMaxUsd: 5, canStart: true,
+        isolation: { available: true, branch: "main", head: "abc1234", dirtyFiles: 2, notes: [] },
       },
     });
     const dialog = page.getByRole("dialog", { name: "Start a plan run" });
@@ -165,8 +168,79 @@ describe("built chat webview — plan runs", () => {
     await page.getByRole("button", { name: "Start run" }).click();
     const start = (await sent()).find((message) => message.type === "plan_run_start") as { planId?: string; charter?: Record<string, unknown> } | undefined;
     expect(start?.planId).toBe("plan_1");
-    expect(start?.charter).toMatchObject({ maxUsd: 5, maxMinutes: 90, pauseWhenBlockedMinutes: 30, notifications: "attention" });
+    // Queue-and-carry-on is the default, with the two routine permissions ticked and tripwires on.
+    expect(start?.charter).toMatchObject({ maxUsd: 5, maxMinutes: 90, whenBlocked: "defer", deferAfterMinutes: 2, tripwires: true, notifications: "attention" });
+    expect(start?.charter?.allow).toEqual(["install_dependencies", "project_scripts"]);
+    expect(start?.charter?.isolated).toBeUndefined();
+    expect(start?.charter?.pauseWhenBlockedMinutes).toBeUndefined();
     await page.getByRole("dialog", { name: "Start a plan run" }).waitFor({ state: "detached" });
+  });
+
+  it("starts in an isolated copy with the push permission only there, and explains when it cannot", async () => {
+    const report = {
+      planId: "plan_2", planTitle: "Ship invoices", stepsOpen: 2, stepsTotal: 2, phaseCount: 1, findings: [], projects: [],
+      moreProjects: 0, approvalMode: "auto", canStart: true,
+      isolation: { available: true, branch: "main", head: "abc1234", dirtyFiles: 3, notes: ["Submodules are not checked out in the copy."] },
+    };
+    await post({ type: "plan_run_preflight", report });
+    const dialog = page.getByRole("dialog", { name: "Start a plan run" });
+    await dialog.waitFor();
+    const push = dialog.getByRole("checkbox", { name: /push the run's own branch/i });
+    expect(await push.isDisabled()).toBe(true);
+    await dialog.getByRole("button", { name: "Isolated copy" }).click();
+    expect(await dialog.textContent()).toContain("3 uncommitted changes stay here");
+    expect(await dialog.textContent()).toContain("Submodules are not checked out");
+    await push.check();
+    await dialog.getByRole("checkbox", { name: /install the dependencies/i }).uncheck();
+    await dialog.getByLabel("When blocked on you").selectOption("pause");
+    await dialog.getByRole("button", { name: "Start in a copy" }).click();
+    await dialog.waitFor({ state: "detached" });
+    const start = (await sent()).filter((message) => message.type === "plan_run_start").at(-1) as { charter?: Record<string, unknown> } | undefined;
+    expect(start?.charter).toMatchObject({ isolated: true, whenBlocked: "pause", pauseWhenBlockedMinutes: 30 });
+    expect(start?.charter?.allow).toEqual(["project_scripts", "push_run_branch"]);
+
+    await post({ type: "plan_run_preflight", report: { ...report, isolation: { available: false, reason: "This folder is not in a git repository, so an isolated copy cannot be made.", dirtyFiles: 0, notes: [] } } });
+    await dialog.waitFor();
+    expect(await dialog.getByRole("button", { name: "Isolated copy" }).isDisabled()).toBe(true);
+    expect(await dialog.textContent()).toContain("not in a git repository");
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await dialog.waitFor({ state: "detached" });
+  });
+
+  it("lists queued decisions and sends the user's answers", async () => {
+    await post({
+      type: "plan_run_state",
+      run: runView({
+        openDecisions: 2,
+        isolation: { branch: "blacksite/run-migrate-billing-a1b2c3", baseBranch: "main", baseHead: "abc1234", sourceRoot: "/w", worktreePath: "/home/u/.blacksite/worktrees/w-a1b2c3" },
+        tripwires: [{ at: Date.now(), kind: "mass_delete", title: "Many files were deleted", detail: "The last step deleted 31 files." }],
+        decisions: [
+          { id: "D1", kind: "approval", description: "Run `git push origin main` (network operation)", tier: "network", stepTitle: "Backfill invoices", at: Date.now() - 300_000, status: "open" },
+          { id: "D2", kind: "question", description: "Which database?", at: Date.now() - 60_000, status: "open", questions: [{ question: "Which database?", options: [{ key: "pg", label: "Postgres" }, { key: "my", label: "MySQL" }] }] },
+          { id: "D0", kind: "edit", description: "Apply changes to 1 file(s)", at: Date.now() - 900_000, status: "declined", answer: "Declined" },
+        ],
+      }),
+    });
+    const rail = page.getByRole("region", { name: "Plan run" });
+    await rail.filter({ hasText: "copy" }).waitFor();
+    await page.getByRole("button", { name: /Decisions · 2/ }).click();
+    const queue = page.getByRole("region", { name: "Queued decisions" });
+    await queue.waitFor();
+    const text = await queue.textContent();
+    expect(text).toContain("git push origin main");
+    expect(text).toContain("During “Backfill invoices”");
+    expect(text).toContain("declined");
+
+    await queue.getByRole("button", { name: "Approve" }).click();
+    expect((await sent()).some((message) => message.type === "plan_run_decision" && message.id === "D1" && message.outcome === "approve")).toBe(true);
+
+    const send = queue.getByRole("button", { name: "Send answer" });
+    expect(await send.isDisabled()).toBe(true);
+    await queue.getByRole("button", { name: "Postgres" }).click();
+    await send.click();
+    const answer = (await sent()).find((message) => message.type === "plan_run_decision" && message.id === "D2") as { outcome?: string; answers?: string[][] } | undefined;
+    expect(answer).toMatchObject({ outcome: "answer", answers: [["pg"]] });
+    await page.getByRole("button", { name: /Decisions · 2/ }).click();
   });
 
   it("explains an automatic turn with a seam, and leaves a note where a turn stopped short", async () => {

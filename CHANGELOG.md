@@ -3,6 +3,61 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.33.0-pre.3
+
+Prerelease. The stable update channel remains on 1.32.0.
+
+Plan runs can now work much longer on their own without you giving up control. Before, one
+unanswered approval stopped the whole run until you came back. Now the run carries on with
+everything else. You decide up front what routine work it may do. It pauses itself when something
+looks wrong, and it can work in an isolated copy of your repository so your own checkout is never
+touched.
+
+### Added
+
+- **Queue it and carry on.** A new choice under *If it needs me*, and the default for new runs. An
+  approval or question nobody answers within 2 minutes (you can change this) goes to **Decisions**
+  on the run bar, and the agent works on what doesn't depend on it. Nothing queued ever runs
+  without you. **Approve** lets the agent repeat exactly that operation once, **Decline** tells it
+  to find another way, and questions can be answered or left to the agent. If everything left is
+  waiting on you, the run stops and says so instead of spending turns.
+- **It may, without asking.** Tick the routine work a run may do on its own: install the
+  dependencies the project declares, run its test, build and lint scripts, commit locally, and (in
+  an isolated copy) push its own branch. Each is matched exactly against the command: adding a new
+  package, a global install, `--amend`, `--no-verify` or a force push is never covered. Destructive
+  operations, external services and anything outside the workspace always ask.
+- **Tripwires.** The run pauses with the reason when it sees, on disk or in its own accounting:
+  many files deleted in one step, many files changed outside the plan's folders, a check that
+  passed earlier now failing on a finished step, the same failure six times in a row, or spending
+  suddenly far above the run's usual pace. It never undoes anything; you look, then resume or restore.
+- **Isolated copies.** *Where it works: Isolated copy* makes a git worktree on a new
+  `blacksite/run-…` branch and starts the run in a new window. Your folder, branch and uncommitted
+  work are untouched, and you can keep working. **Blacksite: Isolated Run Copies…** opens or
+  removes copies later (branches are kept). The preflight says what the copy will not have:
+  uncommitted changes, installed dependencies, submodules and nested repositories.
+- **A fuller report.** The end-of-run report now lists the decisions still waiting and the ones you
+  answered, every operation approved without asking you and who approved it, any tripwires, and
+  for an isolated copy, where the work is and how to merge it.
+
+### Changed
+
+- **The approval reviewer knows when you're away.** During a run in Auto mode it is given the plan,
+  the current step, its acceptance criteria and the folders the plan names, instead of only your
+  recent messages, and it is told that escalating only queues the operation.
+- **Untrusted content raises the bar.** Once the conversation has read web pages, search results,
+  MCP results or Jira, Confluence or GitHub content, an unattended run no longer lets the reviewer
+  approve network operations or MCP calls. Only the permissions you ticked, or you, can. In chat
+  the reviewer is told what was read and is stricter for the rest of the conversation.
+- The preflight warns when approvals are set to Ask, since an unattended run would then queue most
+  of its work.
+
+### Fixed
+
+- A run asked to pause whose turn then finished on its own stayed at "Pausing…" with nothing to
+  end it. It now pauses.
+- Edit approvals now count as the run waiting for you, like command approvals, so the run's clock,
+  its status and *If it needs me* apply to them.
+
 ## 1.33.0-pre.2
 
 Prerelease. The stable update channel remains on 1.32.0.

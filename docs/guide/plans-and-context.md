@@ -63,10 +63,27 @@ files. It lists the projects the plan will touch and anything missing from their
 link to Project setup. None of this stops you starting; it is there so you have seen it. Then you set
 the run's limits:
 
+- **Where it works**: here, or in an **isolated copy** (see below).
 - **Stop at** a dollar amount and **Stop after** a number of minutes. The model cannot raise these.
-- **If it needs me**: keep waiting, or pause with a note after a number of minutes.
+- **If it needs me**: queue it and carry on (the default), pause with a note after a number of
+  minutes, or keep waiting.
+- **Pause if something looks wrong**: the tripwires described below. On by default.
 - **Tell me**: when it needs you or finishes, about every wait as well, or never.
 - **Approvals**: Ask or Auto, the same setting as the composer. Destructive operations always ask.
+  In Ask mode every edit waits for you, so an unattended run would queue most of its work; the
+  preflight says so.
+- **It may, without asking**: a few kinds of routine work the run may do on its own, matched
+  exactly against each command and only for this run:
+  - *Install the dependencies the project declares* (`npm ci`, `pnpm install`, `uv sync`,
+    `pip install -r requirements.txt`). Adding a package by name, a global install or another
+    registry is never covered.
+  - *Run the project's test, build and lint scripts* (`npm test`, `npm run build`, `cargo test`,
+    `pytest`). Not deploy, release or publish.
+  - *Commit locally* (`git add`, `git commit`). Never amend, skip hooks or change git's config.
+  - *Push the run's own branch* to `origin`, without force. Only an isolated copy has one.
+
+  Destructive operations, external services, MCP calls, edits, and anything outside the workspace
+  are never covered, whatever is ticked.
 
 **While it runs**, a bar pinned above the chat shows the state in one word (Working, Needs you,
 Waiting, Quiet, Paused, Done), the run's own clock and spend, a progress bar with a segment per
@@ -83,6 +100,54 @@ during the run cover those turns too, and end when the run does or when you send
 you are not looking at the chat a notification appears with a **Show** button. Your Notification
 hooks receive the same events, so you can send them to your phone. Clicking the status bar item opens
 the chat; it never cancels the run.
+
+**Queued decisions.** With *Queue it and carry on*, an approval card or a question that nobody
+answers within the grace period (2 minutes by default) is not left holding up the whole run. The
+card closes with a note, the decision goes to **Decisions** on the run bar, and the agent is told
+not to do it or work around it: it marks the step that needs it blocked and carries on with work
+that does not depend on it. Nothing queued ever runs without you. When you come back:
+
+- **Approve** lets the agent repeat exactly that operation, once. A different command is a new
+  decision.
+- **Decline** tells it not to do it or reach the same result another way.
+- For a question, pick the answer, or **Let it decide**, and it chooses what is easiest to change
+  later and says so in the step's notes.
+
+Your answers reach the agent at its next step. If everything left in the plan is waiting on you, the
+run stops and says so instead of spending turns, and answering picks it back up.
+
+**Tripwires.** Approvals judge what the agent says it is about to do; tripwires watch what actually
+happened, measured by the harness. The run pauses, with the reason on the bar and a notification,
+when:
+
+- a finished step deleted 25 or more files (measured on disk, so shell commands count);
+- a step changed 15 or more files outside the folders the plan names (lockfiles do not count);
+- a step was marked done while a check that passed earlier in the run was failing;
+- the same tool failed the same way six times in one step;
+- the last ten minutes cost at least four times the run's usual pace (and at least $2).
+
+A tripwire never undoes anything. Look, then **Resume**, or put the files back with **Restore to here**.
+
+**Untrusted content.** Once the conversation has read something someone else wrote (a web page or
+search result, a page in the browser, an MCP result, or Jira, Confluence or GitHub content), an
+unattended run stops letting the approval reviewer approve network operations or MCP calls. Only
+the permissions you ticked or you yourself can. Instructions planted in a page are a known attack,
+and the reviewer is a model too. In chat, the reviewer is told what has been read and is stricter
+for the rest of the conversation.
+
+**Isolated copies.** With *Where it works: Isolated copy*, Blacksite makes a git worktree of the
+repository in `~/.blacksite/worktrees/`, on a new branch named `blacksite/run-…`, and opens it in a
+new window, where the run starts. Your folder, its branch and its uncommitted work are not touched,
+and you can keep working while the run goes. The language servers and the Map work in the copy as
+they do anywhere. When it is done, commit in the copy and merge the branch, or throw it away:
+**Blacksite: Isolated Run Copies…** opens or removes a copy (its branch is kept). Know before you
+choose it:
+
+- the copy starts from your last commit, so uncommitted changes stay behind (the preflight counts them);
+- it has no installed dependencies, so the run installs them first;
+- submodules and repositories nested inside the folder are not part of it;
+- it is containment for the run's work, not a sandbox. A command can still reach outside the copy
+  the same way it could reach outside any folder, and those still ask.
 
 **Pause** stops the run at the end of the tool call it is in, so nothing is cut off mid-command.
 **Stop** ends it. If the model provider goes down, the run waits and retries on a slowing schedule
@@ -102,8 +167,11 @@ offers to undo. Changes outside the project folders — services, databases — 
 repository nested inside a project is recorded as a single entry; the run says so.
 
 **When it ends**, a report is added to the plan's documents: each step's outcome, time and evidence,
-what was never checked, what needs a decision, the files changed, what the conductor decided, and
-where it stopped. **Changes** on the bar opens every file changed since the run started as one review.
+what was never checked, what needs a decision, the decisions still queued and the ones you answered,
+every operation approved without asking you (and whether your permissions, the reviewer or an
+earlier answer approved it), any tripwire, the files changed, what the conductor decided, and where
+it stopped. A run in an isolated copy also says where the work is and how to merge it. **Changes**
+on the bar opens every file changed since the run started as one review.
 
 The run's record lives in `.blacksite/plan-runs/` (gitignored) and finished runs are removed after
 `blacksite.planRuns.retentionDays`.

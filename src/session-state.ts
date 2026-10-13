@@ -64,6 +64,8 @@ export interface PersistedSessionState {
   toolReferenceResults?: Array<{ toolUseId: string; names: string[] }>;
   /** What the user typed, one entry per user message (see AgentSession.send). */
   userPrompts?: string[];
+  /** Kinds of untrusted outside content the conversation has read (web, browser, mcp, service). */
+  untrustedSources?: string[];
   compressedSummary?: string;
   compressionCount?: number;
   lastInputTokens?: number;

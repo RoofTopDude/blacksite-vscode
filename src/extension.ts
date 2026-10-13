@@ -764,6 +764,9 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     },
   }));
 
+  /* A window opened on an isolated run copy starts the run another window handed to it. */
+  setTimeout(() => { void chat.startHandedOffRun().catch((error) => console.warn("Blacksite: handed-over run did not start", error)); }, 800);
+
   /* A run that was working when the host died is now interrupted, and says so. */
   const retentionDays = vscode.workspace.getConfiguration("blacksite.planRuns").get<number>("retentionDays", 30);
   planRunStore.prune(retentionDays);
@@ -1017,6 +1020,7 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     vscode.commands.registerCommand("blacksite.openRunPreflight", (planId?: string) => {
       if (typeof planId === "string" && planId) void chatProvider?.openRunPreflight(planId);
     }),
+    vscode.commands.registerCommand("blacksite.runCopies", () => chatProvider?.openRunCopy()),
     vscode.commands.registerCommand("blacksite.pauseRun", () => chatProvider?.planRuns?.pause()),
     vscode.commands.registerCommand("blacksite.resumeRun", () => {
       const outcome = chatProvider?.planRuns?.resume();

@@ -273,6 +273,7 @@ All available from the command palette under the **Blacksite** category.
 | **Pause Plan Run** | Stop the run at the end of the tool call it is in |
 | **Resume Plan Run** | Carry on a paused, interrupted or failed run from where it stopped |
 | **Stop Plan Run** | End the run, after a confirmation. Work already done stays |
+| **Isolated Run Copies…** | List this repository's isolated run copies, to open one in a new window or remove it (its branch is kept) |
 | **Compact Conversation History** | Summarize older history to reclaim context |
 | **Set API Key** | Store a provider key in `SecretStorage` |
 | **Check Lifecycle Hooks** | Report whether each configured hook can be found and started, and any mistake in the setting, without running anything |

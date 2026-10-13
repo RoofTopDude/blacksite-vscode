@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   activeExecutingPlan,
   continuationAction,
@@ -265,6 +265,37 @@ describe("PlanContinuationService", () => {
     await first;
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(decisions).toBe(2);
+  });
+
+  it("does not spend a conductor call when everything left is waiting on the user", async () => {
+    const decide = vi.fn(async () => '{"action":"continue","message":"go"}');
+    const reported: Array<{ kind: string; message: string }> = [];
+    const stopped: Array<{ kind: string; message: string }> = [];
+    const recorded: string[] = [];
+    const service = new PlanContinuationService(
+      fakePlanning([plan()]),
+      () => ({ decide }),
+      () => [],
+      () => ({ enabled: false, maxConsecutive: 5 }),
+      { continueWith: async () => {}, report: (kind, message) => { reported.push({ kind, message }); } },
+      {
+        active: () => ({ planId: "plan1", consecutive: 0 }),
+        holds: () => false,
+        digest: () => undefined,
+        priorDecisions: () => [],
+        ledgerAttempts: () => new Map(),
+        triggerHint: () => undefined,
+        record: ({ text }) => { recorded.push(text); },
+        stopped: (kind, message) => { stopped.push({ kind, message }); },
+        waitingOnUserOnly: () => "Everything left in the plan is waiting on you: 2 decisions are queued (D1, D2).",
+      },
+    );
+    const gate = await service.afterTurn(CLEAN_TURN);
+    expect(gate).toMatchObject({ ask: false, reason: "awaiting_user" });
+    expect(decide).not.toHaveBeenCalled();
+    expect(reported).toEqual([{ kind: "ask", message: expect.stringContaining("2 decisions are queued") }]);
+    expect(stopped).toEqual([{ kind: "ask", message: expect.stringContaining("D1, D2") }]);
+    expect(recorded).toHaveLength(1);
   });
 
   it("survives an unreadable planning document", async () => {

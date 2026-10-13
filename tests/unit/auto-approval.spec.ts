@@ -13,7 +13,7 @@ import {
   triageAutoApproval,
   triageAutoEdit,
 } from "../../src/auto-approval-policy.js";
-import { parseChatApprovalVerdict, reviewChatApproval, reviewChatApprovalGroups, buildChatApprovalReviewUserPrompt } from "../../src/continuation/approval-review.js";
+import { parseChatApprovalVerdict, reviewChatApproval, reviewChatApprovalGroups, buildChatApprovalReviewSystemPrompt, buildChatApprovalReviewUserPrompt } from "../../src/continuation/approval-review.js";
 import type { EditApprovalRequest } from "../../src/workspace-edit-applier.js";
 import { ScriptedProviderSession } from "./helpers/scripted-provider-session.js";
 
@@ -338,5 +338,45 @@ describe("recorded user prompts", () => {
     const restored = make();
     restored.restoreState({ ...session.exportState(true), messages: [] });
     expect(restored.userPrompts).toEqual(["fix the bug"]);
+  });
+});
+
+describe("the reviewer during an unattended plan run", () => {
+  const run = {
+    planTitle: "Ship billing",
+    phaseTitle: "Invoices",
+    stepTitle: "Add the invoice PDF renderer",
+    acceptanceCriteria: ["npm test passes", "a PDF is written for each invoice"],
+    territory: ["src/billing/", "tests/billing/"],
+  };
+
+  it("is told the user is away, that escalating only queues the call, and what the step is", () => {
+    const system = buildChatApprovalReviewSystemPrompt({ run: true });
+    expect(system).toContain("unattended Blacksite plan run");
+    expect(system).toContain("Escalating does not stop the run");
+    expect(system).not.toContain("The user is present and watching");
+    const prompt = buildChatApprovalReviewUserPrompt({ userPrompts: ["build invoicing"], toolName: "shell_run", tier: "network", description: "Run `npm install pdfkit`", run });
+    expect(prompt).toContain("PLAN THE USER APPROVED: Ship billing");
+    expect(prompt).toContain("CURRENT STEP: Add the invoice PDF renderer");
+    expect(prompt).toContain("- a PDF is written for each invoice");
+    expect(prompt).toContain("- src/billing/");
+  });
+
+  it("is warned when the session has read untrusted content, in chat and in a run", async () => {
+    expect(buildChatApprovalReviewSystemPrompt({ untrusted: true })).toContain("untrusted outside content");
+    expect(buildChatApprovalReviewSystemPrompt()).not.toContain("untrusted outside content");
+    const prompt = buildChatApprovalReviewUserPrompt({ userPrompts: [], toolName: "shell_run", tier: "network", description: "Run `curl`", untrustedSources: ["web", "mcp"] });
+    expect(prompt).toContain("UNTRUSTED CONTENT READ THIS SESSION: web pages and search results, MCP tool results");
+
+    const seen: string[] = [];
+    await reviewChatApproval({ decide: async (system) => { seen.push(system); return '{"action":"escalate","reason":"x"}'; } }, { userPrompts: [], toolName: "shell_run", tier: "network", description: "Run `curl`", run, untrustedSources: ["web"] });
+    expect(seen[0]).toContain("unattended Blacksite plan run");
+    expect(seen[0]).toContain("untrusted outside content");
+
+    const batchSeen: string[] = [];
+    await reviewChatApprovalGroups(() => ({ decide: async (system) => { batchSeen.push(system); return '{"decisions":[]}'; } }), [], [
+      { toolCallId: "a", toolName: "shell_run", input: { command: "npm", args: ["test"] } },
+    ], { untrustedSources: ["browser"] });
+    expect(batchSeen[0]).toContain("untrusted outside content");
   });
 });

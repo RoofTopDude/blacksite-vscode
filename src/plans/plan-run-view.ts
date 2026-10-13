@@ -68,6 +68,67 @@ export interface PlanRunPhaseView {
   steps: PlanRunStepView[];
 }
 
+/** Routine work a run may do without asking, ticked before it starts (see run-envelope.ts). */
+export type RunPermissionValue = "install_dependencies" | "project_scripts" | "git_commit" | "push_run_branch";
+
+export const RUN_PERMISSION_VALUES: readonly RunPermissionValue[] = ["install_dependencies", "project_scripts", "git_commit", "push_run_branch"];
+
+export const RUN_PERMISSION_LABELS: Record<RunPermissionValue, string> = {
+  install_dependencies: "install the dependencies the project declares",
+  project_scripts: "run the project's test, build and lint scripts",
+  git_commit: "commit locally",
+  push_run_branch: "push the run's own branch",
+};
+
+/**
+ * What happens when the run needs the user and nobody answers: queue the decision and carry on
+ * with other work, pause after a while, or keep waiting.
+ */
+export type WhenBlocked = "defer" | "pause" | "wait";
+
+export type DeferredDecisionKind = "approval" | "edit" | "question";
+export type DeferredDecisionStatus = "open" | "approved" | "declined" | "answered";
+
+export interface DeferredQuestionView {
+  question: string;
+  options: Array<{ key: string; label: string; description?: string }>;
+  multiSelect?: boolean;
+}
+
+/** Something the run needed from the user while they were away, queued instead of waited on. */
+export interface DeferredDecisionView {
+  id: string;
+  kind: DeferredDecisionKind;
+  description: string;
+  tier?: string;
+  questions?: DeferredQuestionView[];
+  /** The step the run was on when it asked. */
+  stepTitle?: string;
+  at: number;
+  status: DeferredDecisionStatus;
+  resolvedAt?: number;
+  /** How it was answered, in words. */
+  answer?: string;
+}
+
+/** Where a run in an isolated copy came from, and the branch it works on. */
+export interface RunIsolationView {
+  branch: string;
+  baseBranch?: string;
+  baseHead: string;
+  /** The folder the copy was made from. */
+  sourceRoot: string;
+  worktreePath: string;
+}
+
+export interface TripwireView {
+  at: number;
+  kind: string;
+  title: string;
+  detail: string;
+  examples?: string[];
+}
+
 export interface PlanRunView {
   id: string;
   planId: string;
@@ -111,6 +172,18 @@ export interface PlanRunView {
   hasBaseline: boolean;
   /** An end-of-run report has been written and can be opened. */
   hasReport: boolean;
+  whenBlocked: WhenBlocked;
+  /** Minutes an unanswered gate waits before it is queued, when `whenBlocked` is "defer". */
+  deferAfterMinutes?: number;
+  allow: RunPermissionValue[];
+  tripwiresOn: boolean;
+  /** Open decisions first, then the most recently answered. */
+  decisions: DeferredDecisionView[];
+  openDecisions: number;
+  /** Operations approved without the user during the run: by the reviewer, the charter, or an earlier answer. */
+  autoAllowed: number;
+  tripwires: TripwireView[];
+  isolation?: RunIsolationView;
 }
 
 // ── Preflight ──────────────────────────────────────────────────────────────────
@@ -152,6 +225,18 @@ export interface PreflightReport {
   defaultMaxUsd?: number;
   canStart: boolean;
   blocker?: string;
+  /** Whether the run can work in an isolated copy, and what that copy would start from. */
+  isolation: PreflightIsolation;
+}
+
+export interface PreflightIsolation {
+  available: boolean;
+  reason?: string;
+  branch?: string;
+  head?: string;
+  /** Uncommitted files that would stay behind. */
+  dirtyFiles: number;
+  notes: string[];
 }
 
 /** What the user agrees to when they start a run, as the webview sends it. */
@@ -161,4 +246,10 @@ export interface PlanRunCharterInput {
   pauseWhenBlockedMinutes?: number;
   providerWaitMinutes?: number;
   notifications?: "attention" | "all" | "off";
+  whenBlocked?: WhenBlocked;
+  deferAfterMinutes?: number;
+  allow?: RunPermissionValue[];
+  tripwires?: boolean;
+  /** Work in an isolated copy, opened in a new window. */
+  isolated?: boolean;
 }

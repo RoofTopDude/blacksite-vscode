@@ -127,6 +127,8 @@ export interface Store {
   runNotice: { level: "info" | "error"; message: string; nonce: number } | null;
   /** The step timeline is open. */
   timelineOpen: boolean;
+  /** The run's queued decisions are open. */
+  decisionsOpen: boolean;
   /** A run that ended and has been dismissed from the bar. */
   dismissedRunId: string | null;
 }
@@ -186,6 +188,7 @@ export const store: Store = {
   runPreflight: null,
   runNotice: null,
   timelineOpen: false,
+  decisionsOpen: false,
   dismissedRunId: null,
 };
 
@@ -302,7 +305,7 @@ function handleIncoming(msg: IncomingMessage): void {
       store.planRunAt = Date.now();
       // A new run, or one that came back to life, brings the bar back.
       if (msg.run && store.dismissedRunId && msg.run.id !== store.dismissedRunId) store.dismissedRunId = null;
-      if (!msg.run) store.timelineOpen = false;
+      if (!msg.run) { store.timelineOpen = false; store.decisionsOpen = false; }
       break;
 
     case "plan_run_notice":
@@ -756,6 +759,16 @@ export const actions = {
   openRunReport(): void { post({ type: "plan_run_report" }); },
   showRunOnMap(): void { post({ type: "plan_run_show_map" }); },
   reviewChanges(scope: "run" | "conversation"): void { post({ type: "plan_run_review_changes", scope }); },
+  /** Answer a decision the run queued while the user was away. */
+  answerRunDecision(id: string, outcome: "approve" | "decline" | "answer", answers?: string[][]): void {
+    post({ type: "plan_run_decision", id, outcome, ...(answers ? { answers } : {}) });
+  },
+  /** List the isolated copies of this repository, to open or remove one. */
+  openRunCopies(): void { post({ type: "plan_run_open_copy" }); },
+  toggleDecisions(open?: boolean): void {
+    store.decisionsOpen = open ?? !store.decisionsOpen;
+    bump();
+  },
   /** Scroll the transcript to a turn, e.g. the one that finished a step. */
   revealTurn(turnId: string): void {
     store.view = "chat";

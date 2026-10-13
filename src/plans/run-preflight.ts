@@ -13,9 +13,9 @@
  */
 
 import type { TaskPlan } from "../planning-store.js";
-import type { PreflightApprovalMode, PreflightFinding, PreflightLevel, PreflightProject, PreflightReport } from "./plan-run-view.js";
+import type { PreflightApprovalMode, PreflightFinding, PreflightIsolation, PreflightLevel, PreflightProject, PreflightReport } from "./plan-run-view.js";
 
-export type { PreflightApprovalMode, PreflightFinding, PreflightLevel, PreflightProject, PreflightReport };
+export type { PreflightApprovalMode, PreflightFinding, PreflightIsolation, PreflightLevel, PreflightProject, PreflightReport };
 
 const MAX_EXAMPLES = 3;
 const LARGE_PHASE_STEPS = 12;
@@ -96,12 +96,15 @@ export function lintPlan(plan: TaskPlan): PreflightFinding[] {
   return findings;
 }
 
+const NO_ISOLATION: PreflightIsolation = { available: false, reason: "Not checked.", dirtyFiles: 0, notes: [] };
+
 export function buildPreflight(input: {
   plan: TaskPlan;
   projects: readonly PreflightProject[];
   approvalMode: PreflightApprovalMode;
   /** True when another run is already open. */
   runOpen?: boolean;
+  isolation?: PreflightIsolation;
 }): PreflightReport {
   const { plan } = input;
   const steps = plan.phases.flatMap((phase) => phase.steps);
@@ -113,18 +116,26 @@ export function buildPreflight(input: {
   else if (stepsOpen === 0) blocker = "Every step in this plan is already done.";
 
   const projects = [...input.projects].sort((a, b) => b.issues.length - a.issues.length || b.files - a.files);
+  const findings = lintPlan(plan);
+  if (input.approvalMode === "ask" && stepsOpen > 0) {
+    findings.push({
+      level: "warn",
+      message: "Approvals are set to Ask, so every edit and most commands wait for you. Left alone, the run will queue most of its work for you instead of doing it.",
+    });
+  }
   return {
     planId: plan.id,
     planTitle: plan.title,
     stepsOpen,
     stepsTotal: steps.length,
     phaseCount: plan.phases.length,
-    findings: lintPlan(plan),
+    findings,
     projects: projects.slice(0, MAX_LISTED_PROJECTS),
     moreProjects: Math.max(0, projects.length - MAX_LISTED_PROJECTS),
     approvalMode: input.approvalMode,
     defaultMaxUsd: plan.budget?.maxUsd,
     canStart: !blocker,
     blocker,
+    isolation: input.isolation ?? NO_ISOLATION,
   };
 }

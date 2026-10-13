@@ -384,11 +384,11 @@ export interface TranscriptDocumentData {
 
 /** Messages received from the extension host (host → webview). */
 import type { ProjectSetupState } from "../../../toolchains/setup-types.js";
-import type { PlanRunCharterInput, PlanRunLiveState, PlanRunPhaseView, PlanRunStepView, PlanRunView, PreflightReport, StepEvidence } from "../../../plans/plan-run-view.js";
+import type { DeferredDecisionView, PlanRunCharterInput, PlanRunLiveState, PlanRunPhaseView, PlanRunStepView, PlanRunView, PreflightIsolation, PreflightReport, RunPermissionValue, StepEvidence, TripwireView, WhenBlocked } from "../../../plans/plan-run-view.js";
 import type { AttentionItem } from "../../../chat/attention.js";
 import type { DiffPreview } from "../../../diff-preview.js";
 
-export type { DiffPreview, AttentionItem, PlanRunCharterInput, PlanRunLiveState, PlanRunPhaseView, PlanRunStepView, PlanRunView, PreflightReport, StepEvidence };
+export type { DiffPreview, AttentionItem, DeferredDecisionView, PlanRunCharterInput, PlanRunLiveState, PlanRunPhaseView, PlanRunStepView, PlanRunView, PreflightIsolation, PreflightReport, RunPermissionValue, StepEvidence, TripwireView, WhenBlocked };
 
 export type { ProjectSetupState } from "../../../toolchains/setup-types.js";
 
@@ -503,6 +503,8 @@ export type OutgoingMessage =
   | { type: "plan_run_report" }
   | { type: "plan_run_show_map" }
   | { type: "plan_run_review_changes"; scope: "run" | "conversation" }
+  | { type: "plan_run_decision"; id: string; outcome: "approve" | "decline" | "answer"; answers?: string[][] }
+  | { type: "plan_run_open_copy" }
   | { type: "compact_conversation" }
   | { type: "open_skills_panel" }
   | { type: "new_chat" }

@@ -11,9 +11,24 @@
  */
 
 import type { PlanStepStatus, TaskPlan } from "../planning-store.js";
-import type { PlanRunLiveState, PlanRunPhaseView, PlanRunStatus, PlanRunStepView, PlanRunView, StepEvidence } from "./plan-run-view.js";
+import {
+  RUN_PERMISSION_VALUES,
+  type DeferredDecisionKind,
+  type DeferredDecisionStatus,
+  type DeferredDecisionView,
+  type DeferredQuestionView,
+  type PlanRunLiveState,
+  type PlanRunPhaseView,
+  type PlanRunStatus,
+  type PlanRunStepView,
+  type PlanRunView,
+  type RunPermissionValue,
+  type StepEvidence,
+  type WhenBlocked,
+} from "./plan-run-view.js";
+import { TRIPWIRE_TITLES, type TripwireKind } from "./run-tripwires.js";
 
-export type { PlanRunLiveState, PlanRunPhaseView, PlanRunStatus, PlanRunStepView, PlanRunView, StepEvidence };
+export type { PlanRunLiveState, PlanRunPhaseView, PlanRunStatus, PlanRunStepView, PlanRunView, StepEvidence, WhenBlocked };
 
 export const PLAN_RUN_SCHEMA_VERSION = 1;
 
@@ -42,14 +57,26 @@ export interface PlanRunCharter {
   /** How long to keep retrying a provider outage before giving up. */
   providerWaitMinutes: number;
   notifications: PlanRunNotifications;
+  /** What an unanswered approval or question does: queue it, pause the run, or keep waiting. */
+  whenBlocked: WhenBlocked;
+  /** With "defer": how long a gate waits for an answer before it is queued. Zero queues at once. */
+  deferAfterMinutes?: number;
+  /** Routine work the run may do without asking (run-envelope.ts). */
+  allow: RunPermissionValue[];
+  /** Pause when the harness sees something go wrong (run-tripwires.ts). */
+  tripwires: boolean;
 }
 
 export const DEFAULT_PROVIDER_WAIT_MINUTES = 30;
 export const MAX_PROVIDER_WAIT_MINUTES = 240;
+export const DEFAULT_DEFER_AFTER_MINUTES = 2;
 
 export const DEFAULT_CHARTER: PlanRunCharter = {
   providerWaitMinutes: DEFAULT_PROVIDER_WAIT_MINUTES,
   notifications: "attention",
+  whenBlocked: "wait",
+  allow: [],
+  tripwires: true,
 };
 
 export function normalizeCharter(value: unknown): PlanRunCharter {
@@ -61,13 +88,71 @@ export function normalizeCharter(value: unknown): PlanRunCharter {
   const notifications: PlanRunNotifications = record.notifications === "all" || record.notifications === "off"
     ? record.notifications
     : "attention";
+  const pauseWhenBlockedMinutes = positive(record.pauseWhenBlockedMinutes, 60 * 24);
+  // A charter written before "defer" existed said what it meant with pauseWhenBlockedMinutes alone.
+  const whenBlocked: WhenBlocked = record.whenBlocked === "defer" || record.whenBlocked === "pause" || record.whenBlocked === "wait"
+    ? record.whenBlocked
+    : pauseWhenBlockedMinutes ? "pause" : "wait";
+  const deferAfter = Number(record.deferAfterMinutes);
+  const allow = Array.isArray(record.allow) ? RUN_PERMISSION_VALUES.filter((permission) => (record.allow as unknown[]).includes(permission)) : [];
   return {
     maxUsd: positive(record.maxUsd, 100_000),
     maxMinutes: positive(record.maxMinutes, 60 * 24 * 14),
-    pauseWhenBlockedMinutes: positive(record.pauseWhenBlockedMinutes, 60 * 24),
+    pauseWhenBlockedMinutes: whenBlocked === "pause" ? pauseWhenBlockedMinutes : undefined,
     providerWaitMinutes: positive(record.providerWaitMinutes, MAX_PROVIDER_WAIT_MINUTES) ?? DEFAULT_PROVIDER_WAIT_MINUTES,
     notifications,
+    whenBlocked,
+    deferAfterMinutes: whenBlocked === "defer"
+      ? Number.isFinite(deferAfter) && deferAfter >= 0 ? Math.min(deferAfter, 60 * 24) : DEFAULT_DEFER_AFTER_MINUTES
+      : undefined,
+    allow,
+    tripwires: record.tripwires !== false,
   };
+}
+
+/** Where a run in an isolated copy came from (run-isolation.ts). */
+export interface PlanRunIsolation {
+  branch: string;
+  baseBranch?: string;
+  baseHead: string;
+  sourceRoot: string;
+  worktreePath: string;
+}
+
+/** A gate nobody answered in time, queued for the user instead of waited on. */
+export interface DeferredDecision {
+  id: string;
+  kind: DeferredDecisionKind;
+  toolCallId: string;
+  toolName?: string;
+  description: string;
+  tier?: string;
+  /** What a repeat of the same operation looks like, so an approval given later covers it once. */
+  fingerprint?: string;
+  questions?: DeferredQuestionView[];
+  stepTitle?: string;
+  at: number;
+  status: DeferredDecisionStatus;
+  resolvedAt?: number;
+  answer?: string;
+}
+
+export type AutoAllowedBy = "reviewer" | "charter" | "earlier_answer";
+
+/** An operation that ran without the user being asked, and on whose say-so. */
+export interface AutoAllowedRecord {
+  at: number;
+  by: AutoAllowedBy;
+  toolName: string;
+  description: string;
+  reason: string;
+}
+
+export interface TripwireRecord {
+  at: number;
+  kind: string;
+  detail: string;
+  examples?: string[];
 }
 
 export interface PlanRunStep {
@@ -151,6 +236,13 @@ export interface PlanRun {
   snapshotNote?: string;
   /** Opening conversation size, for "restore conversation" to the very start. */
   startMessageCount?: number;
+  /** Set when the run works in an isolated copy. */
+  isolation?: PlanRunIsolation;
+  /** Decisions queued for the user while the run carried on. */
+  decisions?: DeferredDecision[];
+  /** Operations approved without asking. */
+  autoAllowed?: AutoAllowedRecord[];
+  tripwireHits?: TripwireRecord[];
 }
 
 export type PlanRunEvent =
@@ -171,10 +263,19 @@ export type PlanRunEvent =
   | { type: "conductor_decision"; at: number; trigger: string; decision: "continue" | "halt" | "ask"; rationale: string }
   | { type: "handoff"; at: number; reason: string; text: string }
   | { type: "snapshot"; at: number; stepId?: string; phaseId?: string; projects: Record<string, string>; skipped?: string; messageCount?: number }
-  | { type: "status"; at: number; status: PlanRunStatus; reason?: string };
+  | { type: "status"; at: number; status: PlanRunStatus; reason?: string }
+  | { type: "decision_deferred"; at: number; decision: DeferredDecision }
+  | { type: "decision_resolved"; at: number; id: string; status: Exclude<DeferredDecisionStatus, "open">; answer?: string }
+  | { type: "auto_allowed"; at: number; by: AutoAllowedBy; toolName: string; description: string; reason: string }
+  | { type: "tripwire"; at: number; kind: string; detail: string; examples?: string[] };
 
 const MAX_TURN_RECORDS = 400;
 const MAX_CONDUCTOR_RECORDS = 200;
+const MAX_DECISION_RECORDS = 200;
+const MAX_AUTO_ALLOWED_RECORDS = 300;
+const MAX_TRIPWIRE_RECORDS = 50;
+/** Answered decisions shown after the open ones. */
+const RESOLVED_DECISIONS_SHOWN = 5;
 
 export function createPlanRun(input: {
   id: string;
@@ -185,6 +286,7 @@ export function createPlanRun(input: {
   charter: PlanRunCharter;
   now: number;
   startMessageCount?: number;
+  isolation?: PlanRunIsolation;
 }): PlanRun {
   const steps: PlanRunStep[] = [];
   for (const phase of input.plan.phases) {
@@ -225,7 +327,13 @@ export function createPlanRun(input: {
     gatesAnswered: 0,
     turnsWithoutProgress: 0,
     startMessageCount: input.startMessageCount,
+    ...(input.isolation ? { isolation: input.isolation } : {}),
   };
+}
+
+function capped<T>(list: T[], max: number): T[] {
+  if (list.length > max) list.splice(0, list.length - max);
+  return list;
 }
 
 /** Charge the time since the clock was last read to whichever bucket it points at. */
@@ -391,8 +499,46 @@ export function applyPlanRunEvent(run: PlanRun, event: PlanRunEvent): PlanRun {
     case "status":
       setRunStatus(run, event.status, event.at, event.reason);
       break;
+    case "decision_deferred":
+      run.decisions = capped([...(run.decisions ?? []), { ...event.decision }], MAX_DECISION_RECORDS);
+      break;
+    case "decision_resolved": {
+      const decision = run.decisions?.find((entry) => entry.id === event.id);
+      if (decision && decision.status === "open") {
+        decision.status = event.status;
+        decision.resolvedAt = event.at;
+        if (event.answer !== undefined) decision.answer = event.answer;
+      }
+      break;
+    }
+    case "auto_allowed":
+      run.autoAllowed = capped([...(run.autoAllowed ?? []), { at: event.at, by: event.by, toolName: event.toolName, description: event.description, reason: event.reason }], MAX_AUTO_ALLOWED_RECORDS);
+      break;
+    case "tripwire":
+      run.tripwireHits = capped([...(run.tripwireHits ?? []), { at: event.at, kind: event.kind, detail: event.detail, ...(event.examples ? { examples: event.examples } : {}) }], MAX_TRIPWIRE_RECORDS);
+      break;
   }
   return run;
+}
+
+/** Decisions still waiting for the user. */
+export function openDecisions(run: PlanRun): DeferredDecision[] {
+  return (run.decisions ?? []).filter((decision) => decision.status === "open");
+}
+
+function decisionView(decision: DeferredDecision): DeferredDecisionView {
+  return {
+    id: decision.id,
+    kind: decision.kind,
+    description: decision.description,
+    ...(decision.tier ? { tier: decision.tier } : {}),
+    ...(decision.questions ? { questions: decision.questions } : {}),
+    ...(decision.stepTitle ? { stepTitle: decision.stepTitle } : {}),
+    at: decision.at,
+    status: decision.status,
+    ...(decision.resolvedAt !== undefined ? { resolvedAt: decision.resolvedAt } : {}),
+    ...(decision.answer !== undefined ? { answer: decision.answer } : {}),
+  };
 }
 
 // ── View ───────────────────────────────────────────────────────────────────────
@@ -559,6 +705,24 @@ export function buildPlanRunView(run: PlanRun, plan: TaskPlan | undefined, extra
     snapshotNote: run.snapshotNote,
     hasBaseline: !!run.baseline && Object.keys(run.baseline).length > 0,
     hasReport: !!run.reportDocId,
+    whenBlocked: run.charter.whenBlocked ?? "wait",
+    ...(run.charter.deferAfterMinutes !== undefined ? { deferAfterMinutes: run.charter.deferAfterMinutes } : {}),
+    allow: [...(run.charter.allow ?? [])],
+    tripwiresOn: run.charter.tripwires !== false,
+    decisions: [
+      ...openDecisions(run),
+      ...(run.decisions ?? []).filter((decision) => decision.status !== "open").slice(-RESOLVED_DECISIONS_SHOWN).reverse(),
+    ].map(decisionView),
+    openDecisions: openDecisions(run).length,
+    autoAllowed: run.autoAllowed?.length ?? 0,
+    tripwires: (run.tripwireHits ?? []).slice(-10).map((hit) => ({
+      at: hit.at,
+      kind: hit.kind,
+      title: TRIPWIRE_TITLES[hit.kind as TripwireKind] ?? "Tripwire",
+      detail: hit.detail,
+      ...(hit.examples ? { examples: hit.examples } : {}),
+    })),
+    ...(run.isolation ? { isolation: { ...run.isolation } } : {}),
   };
 }
 

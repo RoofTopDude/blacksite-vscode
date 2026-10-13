@@ -96,6 +96,27 @@ The Loops workbench shows these decisions inline with each subagent's tool activ
 blocked ticket is an explicit user action after inspection; a loop never writes a permanent
 `allow_always` permission.
 
+### Plan runs: approvals while you are away
+
+A plan run decides most gates the same way chat does, with four differences, in this order:
+
+1. **Your earlier answer.** A call you approved from the run's queue goes through once, if it is
+   exactly the same call.
+2. **The permissions you ticked** when you started the run (install declared dependencies, run test,
+   build and lint scripts, commit locally, push the run's own branch). These are matched against
+   the exact command by the extension, not judged by a model, and they end with the run. They
+   never cover destructive operations, external services, MCP calls, edits, unrecognized programs,
+   inline code, commands run through a shell, or anything outside the workspace.
+3. **In Auto mode, the reviewer knows it is unattended.** It is given the plan, the current step, its
+   acceptance criteria and the folders the plan names, and told that escalating only queues the
+   call. Once the conversation has read untrusted outside content, it no longer approves network
+   operations or MCP calls at all.
+4. **Nobody answering is not a reason to stop.** With *Queue it and carry on*, an unanswered card is
+   queued under Decisions after the grace period and the agent works around it. It is never
+   treated as approved.
+
+Every operation approved without you is listed in the run's report, with who approved it.
+
 ---
 
 ## The three lists

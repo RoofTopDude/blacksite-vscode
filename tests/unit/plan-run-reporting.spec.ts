@@ -93,6 +93,19 @@ describe("buildPreflight", () => {
     p.budget = { maxUsd: 7.5, spentUsd: 0, partial: false, exceeded: false, warned: false };
     expect(buildPreflight({ plan: p, projects: [], approvalMode: "ask" }).defaultMaxUsd).toBe(7.5);
   });
+
+  it("warns that Ask mode will queue most of an unattended run's work", () => {
+    const asks = buildPreflight({ plan: plan([["pending"]]), projects: [], approvalMode: "ask" });
+    expect(asks.findings.some((finding) => /Approvals are set to Ask/.test(finding.message))).toBe(true);
+    const auto = buildPreflight({ plan: plan([["pending"]]), projects: [], approvalMode: "auto" });
+    expect(auto.findings.some((finding) => /Approvals are set to Ask/.test(finding.message))).toBe(false);
+  });
+
+  it("passes the isolation check through, and says so when it was not made", () => {
+    const isolation = { available: true, branch: "main", head: "abc1234", dirtyFiles: 3, notes: [] };
+    expect(buildPreflight({ plan: plan([["pending"]]), projects: [], approvalMode: "auto", isolation }).isolation).toEqual(isolation);
+    expect(buildPreflight({ plan: plan([["pending"]]), projects: [], approvalMode: "auto" }).isolation.available).toBe(false);
+  });
 });
 
 describe("buildRunReport", () => {
@@ -140,6 +153,34 @@ describe("buildRunReport", () => {
     expect(text).not.toContain("## Not checked");
     expect(text).not.toContain("## Where it stopped");
     expect(text).toContain("Split a\\|b");
+  });
+
+  it("accounts for what ran unattended: the copy, the queue, what was approved without asking, and tripwires", () => {
+    const p = plan([["completed", "blocked"]]);
+    const run = createPlanRun({
+      id: "r", plan: p, sessionId: "s", now: 0,
+      charter: normalizeCharter({ whenBlocked: "defer", allow: ["project_scripts", "git_commit"] }),
+      isolation: { branch: "blacksite/run-ship-billing-a1b2c3", baseBranch: "main", baseHead: "abc1234", sourceRoot: "/w", worktreePath: "/home/u/.blacksite/worktrees/w-a1b2c3" },
+    });
+    applyPlanRunEvent(run, { type: "decision_deferred", at: 1_000, decision: { id: "D1", kind: "approval", toolCallId: "c1", description: "Run `git push origin main`", at: 1_000, status: "open", stepTitle: "Step 1.2" } });
+    applyPlanRunEvent(run, { type: "decision_deferred", at: 2_000, decision: { id: "D2", kind: "question", toolCallId: "c2", description: "Which database?", at: 2_000, status: "open" } });
+    applyPlanRunEvent(run, { type: "decision_resolved", at: 3_000, id: "D2", status: "answered", answer: "Which database? → Postgres" });
+    applyPlanRunEvent(run, { type: "auto_allowed", at: 4_000, by: "charter", toolName: "shell_run", description: "Run `npm test`", reason: "run the project's test, build and lint scripts" });
+    applyPlanRunEvent(run, { type: "auto_allowed", at: 5_000, by: "reviewer", toolName: "shell_run", description: "Run `tsc --noEmit`", reason: "type check for the step" });
+    applyPlanRunEvent(run, { type: "tripwire", at: 6_000, kind: "mass_delete", detail: "The last step deleted 31 files.", examples: ["src/a.ts"] });
+    const text = buildRunReport(run, p, { filesChanged: [], unverifiedNow: [] });
+
+    expect(text).toContain("Allowed without asking: run the project's test, build and lint scripts; commit locally");
+    expect(text).toContain("queued the decision after 2 min and carried on");
+    expect(text).toContain("## Where the work is");
+    expect(text).toContain("git merge blacksite/run-ship-billing-a1b2c3");
+    expect(text).toContain("## Still waiting for you");
+    expect(text).toContain("**D1** (approval, during \"Step 1.2\") — Run `git push origin main`");
+    expect(text).not.toContain("**D2** (question");
+    expect(text).toContain("**D2** answered — Which database? → Postgres");
+    expect(text).toContain("2 operations: 1 under the permissions you gave the run, 1 by the approval reviewer, 0 you had approved from the queue");
+    expect(text).toContain("## Tripwires");
+    expect(text).toContain("The last step deleted 31 files. (e.g. src/a.ts)");
   });
 
   it("gives the report a title that sorts by start time", () => {

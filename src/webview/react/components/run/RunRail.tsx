@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Bell, FileDiff, FileText, ListChecks, Map as MapIcon, Pause, Play, RotateCw, Square, X } from "lucide-react";
+import { Bell, FileDiff, FileText, GitBranch, Inbox, ListChecks, Map as MapIcon, Pause, Play, RotateCw, ShieldAlert, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { actions, useStore } from "@/lib/store";
 import { iterationProgressLabel } from "@/lib/format";
@@ -11,6 +11,7 @@ import { StatusPill, LiveDot } from "@/components/chat/signal";
 import { BudgetMeter, RunProgressBar } from "./bits";
 import { StepTimeline } from "./StepTimeline";
 import { LaneStrip } from "./LaneStrip";
+import { DecisionsPanel } from "./DecisionsPanel";
 
 const button = "chat-interactive inline-flex h-6 items-center gap-1 rounded-md border border-border bg-white/[0.03] px-1.5 text-xs font-medium text-muted-foreground hover:border-primary/40 hover:text-foreground";
 
@@ -70,6 +71,17 @@ function Rail({ run }: { run: PlanRunView }) {
           <span title={meta.hint}>{meta.label}</span>
         </StatusPill>
         <span className="min-w-0 flex-1 truncate text-sm font-semibold" title={run.planTitle}>{run.planTitle}</span>
+        {run.isolation && (
+          <span className="inline-flex shrink-0 items-center gap-0.5 text-xs text-muted-foreground"
+            title={`Working in an isolated copy on branch ${run.isolation.branch}, made from ${run.isolation.baseBranch ?? "the last commit"} at ${run.isolation.baseHead}. The original folder (${run.isolation.sourceRoot}) is untouched.`}>
+            <GitBranch className="size-3" />copy
+          </span>
+        )}
+        {run.tripwires.length > 0 && (
+          <span className="inline-flex shrink-0 items-center text-[color:var(--s-warn)]" title={`The harness paused this run:\n${run.tripwires.map((hit) => `${hit.title}: ${hit.detail}`).join("\n")}`}>
+            <ShieldAlert className="size-3" />
+          </span>
+        )}
         <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground" title="Time the run has spent working or waiting. Time paused is not counted.">{clock}</span>
         <BudgetMeter spent={run.spentUsd} max={run.maxUsd} partial={run.spendPartial} />
       </div>
@@ -106,6 +118,13 @@ function Rail({ run }: { run: PlanRunView }) {
             <Square className="size-3" />Stop
           </button>
         )}
+        {(run.decisions.length > 0 || run.whenBlocked === "defer") && (
+          <button type="button" className={cn(button, store.decisionsOpen && "border-primary/40 text-primary", run.openDecisions > 0 && "border-[color:var(--s-warn)]/50 text-[color:var(--s-warn)]")}
+            onClick={() => actions.toggleDecisions()} aria-pressed={store.decisionsOpen}
+            title={run.openDecisions > 0 ? `${run.openDecisions} decision${run.openDecisions === 1 ? "" : "s"} the run queued for you instead of waiting.` : "Decisions the run queues for you when nobody answers in time."}>
+            <Inbox className="size-3" />Decisions{run.openDecisions > 0 ? ` · ${run.openDecisions}` : ""}
+          </button>
+        )}
         <button type="button" className={cn(button, store.timelineOpen && "border-primary/40 text-primary")} onClick={() => actions.toggleTimeline()}
           aria-pressed={store.timelineOpen} title="Show every phase and step, how long each took, and what checked it.">
           <ListChecks className="size-3" />Steps
@@ -133,6 +152,7 @@ function Rail({ run }: { run: PlanRunView }) {
         )}
       </div>
 
+      {store.decisionsOpen && <DecisionsPanel run={run} />}
       {store.timelineOpen && <StepTimeline run={run} />}
     </section>
   );
@@ -157,9 +177,12 @@ function RailLine({ run, live, now, waitingOnYou }: { run: PlanRunView; live: Re
         </div>
       );
     case "needs_you":
+      // A reason here is the conductor's: the run stopped asking, rather than one card waiting.
+      if (run.endReason) return <div className="run-rail-line" role="status">{run.endReason}</div>;
       return (
         <div className="run-rail-line" role="status">
           Waiting for you{waitingOnYou > 1 ? ` — ${waitingOnYou} things` : ""}. The request is above the composer; the run continues as soon as you answer.
+          {run.whenBlocked === "defer" ? ` If nobody answers within ${run.deferAfterMinutes ?? 0} min, it is queued under Decisions and the run carries on.` : ""}
         </div>
       );
     case "provider":

@@ -11,7 +11,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { atomicWriteJson, ensureDir, readJsonDocument } from "../shared/durable-file.js";
-import { PLAN_RUN_SCHEMA_VERSION, isTerminalRunStatus, type PlanRun, type PlanRunEvent } from "./plan-run-model.js";
+import { PLAN_RUN_SCHEMA_VERSION, isTerminalRunStatus, normalizeCharter, type PlanRun, type PlanRunEvent } from "./plan-run-model.js";
 
 export const PLAN_RUNS_DIR = ".blacksite/plan-runs";
 const RUN_FILE = "run.json";
@@ -35,7 +35,9 @@ export function normalizePlanRun(value: unknown): PlanRun | null {
     schema: PLAN_RUN_SCHEMA_VERSION,
     planTitle: typeof value.planTitle === "string" ? value.planTitle : "Plan",
     sessionId: typeof value.sessionId === "string" ? value.sessionId : "",
-    charter: isRecord(value.charter) ? value.charter as unknown as PlanRun["charter"] : { providerWaitMinutes: 30, notifications: "attention" },
+    // Through the same normalizer a new run uses, so a charter saved before a field existed reads
+    // with that field's safe default (no permissions, tripwires on, keep waiting).
+    charter: normalizeCharter(isRecord(value.charter) ? value.charter : {}),
     status: typeof value.status === "string" ? value.status as PlanRun["status"] : "interrupted",
     startedAt,
     clock: value.clock === "user" || value.clock === "provider" || value.clock === "stopped" ? value.clock : "active",
@@ -52,6 +54,10 @@ export function normalizePlanRun(value: unknown): PlanRun | null {
     compactions: num(value.compactions),
     gatesAnswered: num(value.gatesAnswered),
     turnsWithoutProgress: num(value.turnsWithoutProgress),
+    decisions: Array.isArray(value.decisions) ? value.decisions as PlanRun["decisions"] : undefined,
+    autoAllowed: Array.isArray(value.autoAllowed) ? value.autoAllowed as PlanRun["autoAllowed"] : undefined,
+    tripwireHits: Array.isArray(value.tripwireHits) ? value.tripwireHits as PlanRun["tripwireHits"] : undefined,
+    isolation: isRecord(value.isolation) && typeof value.isolation.branch === "string" ? value.isolation as unknown as PlanRun["isolation"] : undefined,
   };
   return run;
 }

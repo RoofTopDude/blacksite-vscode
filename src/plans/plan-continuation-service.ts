@@ -55,6 +55,11 @@ export interface PlanContinuationRunContext {
   holds(): boolean;
   /** The conductor will not continue the run (it halted, asked, or ran out of budget). */
   stopped(kind: "halt" | "ask" | "budget", message: string): void;
+  /**
+   * Set when every step left is blocked and decisions are queued for the user: nothing remains
+   * that the run can do without them, so asking the conductor would only spend a call to learn it.
+   */
+  waitingOnUserOnly?(): string | undefined;
 }
 
 export interface PlanTurnOutcome {
@@ -141,6 +146,15 @@ export class PlanContinuationService {
         if (run) this._run?.stopped("budget", gate.detail);
       }
       return gate;
+    }
+
+    const onlyYou = run ? this._run?.waitingOnUserOnly?.() : undefined;
+    if (onlyYou) {
+      this._run?.record({ trigger: gate.trigger, kind: "ask", text: onlyYou });
+      this._consecutive = 0;
+      this._hooks.report("ask", onlyYou);
+      this._run?.stopped("ask", onlyYou);
+      return { ask: false, reason: "awaiting_user", detail: onlyYou };
     }
 
     const model = this._model();
