@@ -1,0 +1,11 @@
+{"trace":1,"scenario":"plan-long-outage","subject":"plan_run","description":"A two-phase plan with a provider outage mid-run, a compaction, and a step that is blocked and then retried before every step finishes.","setup":{"plan":{"phases":[{"id":"p1","files":["services/auth/src/session.ts"],"steps":[{"id":"s1","title":"Add refresh tokens"},{"id":"s2","title":"Rotate on use"}]},{"id":"p2","files":["services/auth/src/routes.ts"],"steps":[{"id":"s1","title":"Expose /refresh"},{"id":"s2","title":"Document the flow"}]}]},"charter":{"maxUsd":20,"providerWaitMinutes":60}}}
+{"op":"start","at":0}
+{"op":"turn","at":1000,"durationMs":300000,"moves":[["p1","s1","in_progress"],["p1","s1","completed"]],"evidence":{"p1/s1":{"checks":["npm test"],"unverified":[],"filesChanged":["services/auth/src/session.ts"],"at":"replay"}},"spend":1.2}
+{"op":"turn","at":400000,"durationMs":200000,"events":[{"type":"provider_activity","outage":true,"message":"529 overloaded"}],"spend":0.1,"stopReason":"end_turn"}
+{"op":"turn","at":2200000,"durationMs":400000,"events":[{"type":"text_delta"},{"type":"runtime_state","state":{"compressionCount":1}}],"moves":[["p1","s2","in_progress"],["p1","s2","blocked"]],"spend":0.9}
+{"op":"turn","at":2700000,"durationMs":300000,"moves":[["p1","s2","in_progress"],["p1","s2","completed"]],"evidence":{"p1/s2":{"checks":["npm test"],"unverified":[],"filesChanged":["services/auth/src/session.ts"],"at":"replay"}},"spend":0.8}
+{"op":"turn","at":3100000,"durationMs":500000,"moves":[["p2","s1","in_progress"],["p2","s1","completed"],["p2","s2","in_progress"],["p2","s2","completed"]],"evidence":{"p2/s1":{"checks":["npm test"],"unverified":[],"filesChanged":["services/auth/src/routes.ts"],"at":"replay"},"p2/s2":{"checks":[],"unverified":[],"filesChanged":["services/auth/README.md"],"at":"replay"}},"spend":1.1}
+{"op":"verifier","subject":"p1/s1","result":"pass"}
+{"op":"verifier","subject":"p1/s2","result":"pass"}
+{"op":"verifier","subject":"p2/s1","result":"pass"}
+{"op":"verifier","subject":"p2/s2","result":"pass"}

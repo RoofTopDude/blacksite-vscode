@@ -1,0 +1,8 @@
+{"trace":1,"scenario":"plan-crash-mid-step","subject":"plan_run","description":"VS Code reloads while a step is in progress: recovery marks the run interrupted, the user resumes, and the step finishes on the second attempt.","setup":{"plan":{"phases":[{"id":"p1","files":["cmd/agent/main.go"],"steps":[{"id":"s1","title":"Add a --dry-run flag"},{"id":"s2","title":"Wire it to the planner"}]}]},"charter":{"maxUsd":10}}}
+{"op":"start","at":0}
+{"op":"turn","at":1000,"durationMs":200000,"moves":[["p1","s1","in_progress"],["p1","s1","completed"],["p1","s2","in_progress"]],"evidence":{"p1/s1":{"checks":["go test"],"unverified":[],"filesChanged":["cmd/agent/main.go"],"at":"replay"}},"spend":0.4,"stopReason":"cancelled"}
+{"op":"crash","at":250000}
+{"op":"user","at":600000,"action":"resume"}
+{"op":"turn","at":605000,"origin":"resume","durationMs":200000,"moves":[["p1","s2","completed"]],"evidence":{"p1/s2":{"checks":[],"unverified":["internal/planner/plan.go"],"filesChanged":["internal/planner/plan.go"],"at":"replay"}},"spend":0.3}
+{"op":"verifier","subject":"p1/s1","result":"pass"}
+{"op":"verifier","subject":"p1/s2","result":"pass"}

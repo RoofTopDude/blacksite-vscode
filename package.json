@@ -1368,7 +1368,10 @@
     "security:static": "node scripts/security-scan.mjs",
     "security:dependencies": "node scripts/dependency-audit.mjs",
     "security": "npm run security:static && npm run security:dependencies",
-    "test:browser": "node scripts/run-vitest.mjs vitest.browser.config.ts"
+    "test:browser": "node scripts/run-vitest.mjs vitest.browser.config.ts",
+    "test:eval:replay": "node scripts/run-vitest.mjs vitest.eval.config.ts",
+    "eval:baseline": "node scripts/eval-baseline.mjs",
+    "eval:live": "npm run build && node tests/integration/eval/run.mjs"
   },
   "dependencies": {
     "@jsquash/webp": "^1.5.0",

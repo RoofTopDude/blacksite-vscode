@@ -1,0 +1,167 @@
+{
+  "arm": "enforce",
+  "hooks": [
+    {
+      "at": 300000,
+      "detail": "wc_2:T-1",
+      "hook": "abandoned_contract"
+    },
+    {
+      "at": 300000,
+      "detail": "",
+      "hook": "crash"
+    },
+    {
+      "at": 1000000,
+      "detail": "Every ticket in the queue has been worked.",
+      "hook": "settled:drained"
+    }
+  ],
+  "loop": {
+    "endedReason": "Every ticket in the queue has been worked.",
+    "executions": [
+      {
+        "reason": "Paused by an extension restart. Resume when ready.",
+        "status": "paused",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 2,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 1,
+          "usd": 0.1
+        }
+      },
+      {
+        "reason": "Every ticket in the queue has been worked.",
+        "status": "drained",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 1,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 1,
+          "usd": 0.25
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "contractId": "contract_for_T-2_1",
+        "detail": "Not verified (receipt receipt_1): Not verified: no passing check covered the changes.\n\nCheckout button disabled while submitting.",
+        "endedAt": 200000,
+        "outcome": "succeeded",
+        "receiptId": "receipt_1",
+        "receiptStatus": "succeeded_unverified",
+        "seq": 1,
+        "startedAt": 0,
+        "ticketId": "T-2",
+        "usd": 0.1
+      },
+      {
+        "contractId": "wc_2",
+        "detail": "The extension host restarted while this lane was running. Any work it completed is on disk; the lane itself could not be resumed.",
+        "endedAt": 300000,
+        "outcome": "abandoned",
+        "seq": 2,
+        "startedAt": 200000,
+        "ticketId": "T-1"
+      },
+      {
+        "contractId": "contract_for_T-1_2",
+        "detail": "Verified (receipt receipt_3): checks covered all 1 changed file(s).\n\nCart totals recompute on quantity change; component tests pass.",
+        "endedAt": 1000000,
+        "outcome": "succeeded",
+        "receiptId": "receipt_3",
+        "receiptStatus": "verified",
+        "seq": 3,
+        "startedAt": 600000,
+        "ticketId": "T-1",
+        "usd": 0.25
+      }
+    ],
+    "status": "drained",
+    "ticketState": [
+      {
+        "attempts": 1,
+        "ticketId": "T-2",
+        "touchedFiles": [
+          "packages/web/src/checkout.tsx"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "T-1",
+        "touchedFiles": [
+          "packages/web/src/cart.tsx"
+        ]
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 0,
+      "dispatched": 3,
+      "failed": 1,
+      "parked": 0,
+      "succeeded": 2,
+      "usd": 0.35
+    }
+  },
+  "scenario": "loop-crash-mid-lane",
+  "scorecard": {
+    "abandoned": 1,
+    "arm": "enforce",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 0.175,
+    "costUsd": 0.35,
+    "elapsedMs": 1000000,
+    "falseCompletions": 0,
+    "halts": 0,
+    "interventions": 1,
+    "parks": 0,
+    "receipts": {
+      "agree": 1,
+      "disagree": 0,
+      "unknown": 1
+    },
+    "repeatedFailures": 0,
+    "retries": 1,
+    "scenario": "loop-crash-mid-lane",
+    "selfReportedSuccess": 2,
+    "subject": "loop",
+    "subjects": 2,
+    "verifiedSuccess": 2
+  },
+  "ticketLog": [
+    {
+      "at": 200000,
+      "id": "T-2",
+      "kind": "review",
+      "note": "Not verified (receipt receipt_1): Not verified: no passing check covered the changes.\n\nCheckout button disabled while submitting."
+    },
+    {
+      "at": 300000,
+      "id": "T-1",
+      "kind": "attempt",
+      "note": "A loop lane was interrupted by an extension restart. Re-dispatched on resume."
+    },
+    {
+      "at": 1000000,
+      "id": "T-1",
+      "kind": "review",
+      "note": "Verified (receipt receipt_3): checks covered all 1 changed file(s).\n\nCart totals recompute on quantity change; component tests pass."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-1",
+      "status": "review"
+    },
+    {
+      "id": "T-2",
+      "status": "review"
+    }
+  ]
+}

@@ -42,6 +42,19 @@ jobs:
       - name: Unit tests and coverage thresholds
         run: npm run test:coverage
 
+      # Synthetic loop and plan-run traces replayed through the real services, under each
+      # work-contracts arm: deterministic, golden-checked, and shadow mode must equal baseline.
+      - name: Orchestration replay baseline
+        run: npm run test:eval:replay
+
+      - name: Upload replay scorecard
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: orchestration-scorecard
+          path: eval-results/replay-scorecard.*
+          if-no-files-found: ignore
+
       - name: Security policy and public advisories
         run: npm run security
 

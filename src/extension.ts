@@ -41,6 +41,7 @@ import { LoopSupervisor } from "./loops/loop-supervisor.js";
 import { LoopProvider } from "./loops/loop-view.js";
 import { registerLoopCommands } from "./loops/loop-commands.js";
 import { SubagentLoopDispatcher } from "./loops/loop-dispatcher.js";
+import { registerEvalCommands } from "./eval/eval-commands.js";
 import { TicketStoreLoopGateway } from "./loops/loop-ticket-gateway.js";
 import { LoopToolService } from "./loops/loop-tool-provider.js";
 import { reviewLoopApproval } from "./continuation/approval-review.js";
@@ -712,6 +713,9 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   loopAttention.current = attention;
   const planRunStore = new PlanRunStore(workspaceRoot);
   const planRuns = new PlanRunService(planRunStore, planning, chat.planRunHost(), attention);
+  // Live orchestration evaluations only (tests/integration/eval): inert unless BLACKSITE_EVAL=1.
+  const evalCommands = registerEvalCommands({ workspaceRoot, loops, loopSupervisor, planRuns, secrets: context.secrets });
+  if (evalCommands) context.subscriptions.push(evalCommands);
   const planContinuation = new PlanContinuationService(
     planning,
     () => chat.createContinuationModel(),

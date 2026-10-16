@@ -1,0 +1,9 @@
+{"trace":1,"scenario":"loop-consecutive-failure-halt","subject":"loop","description":"Something environmental is broken: every lane fails the same way, and the loop stops at its consecutive-failure ceiling instead of working through the rest.","setup":{"tickets":[{"id":"T-1","files":["libs/core/a.py"]},{"id":"T-2","files":["libs/core/b.py"]},{"id":"T-3","files":["libs/core/c.py"]}],"loop":{"workers":{"concurrency":1},"ceilings":{"maxConsecutiveFailures":2}}}}
+{"op":"user","at":0,"action":"start"}
+{"op":"lane","ticket":"T-1","attempt":1,"durationMs":60000,"spend":[[30000,0.04]],"result":{"ok":false,"detail":"ModuleNotFoundError: No module named 'core_native'\n\nNext: the native extension is not built in this environment."},"receipt":"failed"}
+{"op":"lane","ticket":"T-1","attempt":2,"durationMs":60000,"spend":[[30000,0.04]],"result":{"ok":false,"detail":"ModuleNotFoundError: No module named 'core_native'\n\nNext: the native extension is not built in this environment."},"receipt":"failed"}
+{"op":"lane","ticket":"T-2","attempt":1,"durationMs":60000,"spend":[[30000,0.04]],"result":{"ok":false,"detail":"ModuleNotFoundError: No module named 'core_native'\n\nNext: the native extension is not built in this environment."},"receipt":"failed"}
+{"op":"lane","ticket":"T-3","attempt":1,"durationMs":60000,"result":{"ok":true,"detail":"Not reached."},"receipt":"verified"}
+{"op":"verifier","subject":"T-1","result":"fail"}
+{"op":"verifier","subject":"T-2","result":"fail"}
+{"op":"verifier","subject":"T-3","result":"fail"}

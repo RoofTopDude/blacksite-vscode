@@ -213,8 +213,10 @@ describe("contract edit provider", () => {
   it("puts the files a rename actually touches to the gate, and rejects on refusal", async () => {
     const { provider } = delegate(["src/a.ts", "test/a.spec.ts"]);
     const contract = active();
-    const gate = vi.fn(async () => false);
-    const lsp = createContractLspProvider({ dispatch: async (_op, _payload, ctx) => ({ decision: await ctx.approvalProvider?.({ summary: "rename", fileCount: 2, paths: ["src/a.ts", "test/a.spec.ts"] }) }) }, contract, context, gate);
+    const gate = vi.fn(async (_toolName: string, _description: string, _paths: readonly string[]) => false);
+    const lsp = createContractLspProvider({
+      dispatch: async (_op, _payload, ctx) => ({ decision: await ctx.approvalProvider?.({ summary: "rename", fileCount: 2, paths: ["src/a.ts", "test/a.spec.ts"] }) }) as never,
+    }, contract, context, gate);
     expect(await lsp.dispatch("rename", {}, { autoApprove: true })).toEqual({ decision: "reject" });
     expect(gate.mock.calls[0]?.[0]).toBe("code_rename");
     expect(contract.refused).toHaveLength(1);

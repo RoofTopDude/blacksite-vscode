@@ -1,0 +1,125 @@
+{
+  "arm": "enforce",
+  "hooks": [
+    {
+      "at": 120000,
+      "detail": "2 tickets failed in a row — stopping rather than working through the rest.",
+      "hook": "settled:stopped"
+    }
+  ],
+  "loop": {
+    "endedReason": "2 tickets failed in a row — stopping rather than working through the rest.",
+    "executions": [
+      {
+        "reason": "2 tickets failed in a row — stopping rather than working through the rest.",
+        "status": "stopped",
+        "totals": {
+          "consecutiveFailures": 2,
+          "dispatched": 2,
+          "failed": 2,
+          "parked": 0,
+          "succeeded": 0,
+          "usd": 0.08
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "contractId": "contract_for_T-1_1",
+        "detail": "Receipt receipt_1: failed. A check failed on the changed files.\n\nModuleNotFoundError: No module named 'core_native'\n\nNext: the native extension is not built in this environment.",
+        "endedAt": 60000,
+        "outcome": "failed",
+        "receiptId": "receipt_1",
+        "receiptStatus": "failed",
+        "seq": 1,
+        "startedAt": 0,
+        "ticketId": "T-1",
+        "usd": 0.04
+      },
+      {
+        "contractId": "contract_for_T-1_2",
+        "detail": "Receipt receipt_2: failed. A check failed on the changed files.\n\nModuleNotFoundError: No module named 'core_native'\n\nNext: the native extension is not built in this environment.",
+        "endedAt": 120000,
+        "outcome": "failed",
+        "receiptId": "receipt_2",
+        "receiptStatus": "failed",
+        "seq": 2,
+        "startedAt": 60000,
+        "ticketId": "T-1",
+        "usd": 0.04
+      }
+    ],
+    "status": "stopped",
+    "ticketState": [
+      {
+        "attempts": 2,
+        "ticketId": "T-1",
+        "touchedFiles": []
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 2,
+      "dispatched": 2,
+      "failed": 2,
+      "parked": 0,
+      "succeeded": 0,
+      "usd": 0.08
+    }
+  },
+  "scenario": "loop-consecutive-failure-halt",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "enforce",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": null,
+    "costUsd": 0.08,
+    "elapsedMs": 120000,
+    "falseCompletions": 0,
+    "halts": 1,
+    "interventions": 0,
+    "parks": 0,
+    "receipts": {
+      "agree": 1,
+      "disagree": 0,
+      "unknown": 0
+    },
+    "repeatedFailures": 1,
+    "retries": 1,
+    "scenario": "loop-consecutive-failure-halt",
+    "selfReportedSuccess": 0,
+    "subject": "loop",
+    "subjects": 3,
+    "verifiedSuccess": 0
+  },
+  "ticketLog": [
+    {
+      "at": 60000,
+      "id": "T-1",
+      "kind": "attempt",
+      "note": "Loop attempt 1 failed, will retry: Receipt receipt_1: failed. A check failed on the changed files.\n\nModuleNotFoundError: No module named 'core_native'\n\nNext: the native extension is not built in this "
+    },
+    {
+      "at": 120000,
+      "id": "T-1",
+      "kind": "attempt",
+      "note": "Loop attempt 2 failed and the retry budget is spent: Receipt receipt_2: failed. A check failed on the changed files.\n\nModuleNotFoundError: No module named 'core_native'\n\nNext: the native extension is "
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-1",
+      "status": "backlog"
+    },
+    {
+      "id": "T-2",
+      "status": "backlog"
+    },
+    {
+      "id": "T-3",
+      "status": "backlog"
+    }
+  ]
+}

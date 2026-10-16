@@ -1,0 +1,6 @@
+{"trace":1,"scenario":"plan-false-completion","subject":"plan_run","description":"The agent marks a step done with no check covering its change; the independent verifier rejects it. The scorecard counts it as self-reported, not verified.","setup":{"plan":{"phases":[{"id":"p1","files":["lib/cache/lru.rs"],"steps":[{"id":"s1","title":"Evict by size"},{"id":"s2","title":"Expose metrics"}]}]},"charter":{"maxUsd":10}}}
+{"op":"start","at":0}
+{"op":"turn","at":1000,"durationMs":300000,"moves":[["p1","s1","in_progress"],["p1","s1","completed"]],"evidence":{"p1/s1":{"checks":[],"unverified":["lib/cache/lru.rs"],"filesChanged":["lib/cache/lru.rs"],"at":"replay"}},"spend":0.5}
+{"op":"turn","at":400000,"durationMs":300000,"moves":[["p1","s2","in_progress"],["p1","s2","completed"]],"evidence":{"p1/s2":{"checks":["cargo test"],"unverified":[],"filesChanged":["lib/cache/metrics.rs"],"at":"replay"}},"spend":0.5}
+{"op":"verifier","subject":"p1/s1","result":"fail"}
+{"op":"verifier","subject":"p1/s2","result":"pass"}

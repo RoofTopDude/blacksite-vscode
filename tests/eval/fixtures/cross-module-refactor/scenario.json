@@ -1,0 +1,34 @@
+{
+  "scenario": "cross-module-refactor",
+  "subject": "plan_run",
+  "description": "Rename a shared helper used by two nested services and change its rounding, as a two-phase plan run. The verifier runs every package's tests and checks the old name is gone.",
+  "timeoutMinutes": 45,
+  "workspace": "nested-packages",
+  "plan": {
+    "id": "plan-eval-refactor",
+    "title": "Rename toCents to toMinorUnits",
+    "phases": [
+      {
+        "id": "ph-1",
+        "title": "Change the shared helper",
+        "files": ["packages/money/src/money.js", "packages/money/test/money.test.js"],
+        "acceptanceCriteria": ["packages/money exports toMinorUnits and no longer exports toCents", "toMinorUnits rounds half away from zero: toMinorUnits(1.005) is 101, toMinorUnits(-1.005) is -101"],
+        "steps": [
+          { "id": "st-1", "title": "Rename toCents to toMinorUnits and fix its rounding" },
+          { "id": "st-2", "title": "Update the money package's tests" }
+        ]
+      },
+      {
+        "id": "ph-2",
+        "title": "Move the services over",
+        "files": ["services/billing/src/invoice.js", "services/checkout/src/cart.js"],
+        "acceptanceCriteria": ["No file in the workspace mentions toCents", "Every package's tests pass with `node --test`"],
+        "steps": [
+          { "id": "st-1", "title": "Update billing" },
+          { "id": "st-2", "title": "Update checkout" }
+        ]
+      }
+    ]
+  },
+  "charter": { "whenBlocked": "defer", "deferAfterMinutes": 0, "allow": ["project_scripts"], "tripwires": true }
+}

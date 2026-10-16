@@ -1,0 +1,6 @@
+{"trace":1,"scenario":"plan-tripwire-repeated-failure","subject":"plan_run","description":"The same tool failure comes back six times in one step: the repeated-failure tripwire pauses the run; the user resumes and it finishes.","setup":{"plan":{"phases":[{"id":"p1","files":["apps/web/src/chart.tsx"],"steps":[{"id":"s1","title":"Fix the chart legend"}]}]},"charter":{"tripwires":true}}}
+{"op":"start","at":0}
+{"op":"turn","at":1000,"durationMs":400000,"moves":[["p1","s1","in_progress"]],"toolFailures":[["shell_run","vitest: 1 failed — legend overlaps axis (took 812ms)"],["shell_run","vitest: 1 failed — legend overlaps axis (took 790ms)"],["shell_run","vitest: 1 failed — legend overlaps axis (took 801ms)"],["shell_run","vitest: 1 failed — legend overlaps axis (took 799ms)"],["shell_run","vitest: 1 failed — legend overlaps axis (took 830ms)"],["shell_run","vitest: 1 failed — legend overlaps axis (took 805ms)"]],"spend":0.7,"stopReason":"paused"}
+{"op":"user","at":900000,"action":"resume"}
+{"op":"turn","at":905000,"origin":"resume","durationMs":200000,"moves":[["p1","s1","completed"]],"evidence":{"p1/s1":{"checks":["npm test"],"unverified":[],"filesChanged":["apps/web/src/chart.tsx"],"at":"replay"}},"spend":0.3}
+{"op":"verifier","subject":"p1/s1","result":"pass"}

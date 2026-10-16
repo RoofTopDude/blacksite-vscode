@@ -1,0 +1,149 @@
+{
+  "arm": "enforce",
+  "hooks": [
+    {
+      "at": 540000,
+      "detail": "Every ticket in the queue has been worked.",
+      "hook": "settled:drained"
+    }
+  ],
+  "loop": {
+    "endedReason": "Every ticket in the queue has been worked.",
+    "executions": [
+      {
+        "reason": "Every ticket in the queue has been worked.",
+        "status": "drained",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 3,
+          "failed": 1,
+          "parked": 0,
+          "succeeded": 2,
+          "usd": 0.6
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "contractId": "contract_for_T-2_1",
+        "detail": "Verified (receipt receipt_1): checks covered all 1 changed file(s).\n\nAdded the health route.",
+        "endedAt": 120000,
+        "outcome": "succeeded",
+        "receiptId": "receipt_1",
+        "receiptStatus": "verified",
+        "seq": 1,
+        "startedAt": 0,
+        "ticketId": "T-2",
+        "usd": 0.09
+      },
+      {
+        "contractId": "contract_for_T-1_1",
+        "detail": "Receipt receipt_2: failed. A check failed on the changed files.\n\nTypeError: cannot read properties of undefined (reading 'tokens')\n\nNext: the tokenizer returns undefined for empty input; guard it befo",
+        "endedAt": 360000,
+        "outcome": "failed",
+        "receiptId": "receipt_2",
+        "receiptStatus": "failed",
+        "seq": 2,
+        "startedAt": 120000,
+        "ticketId": "T-1",
+        "usd": 0.3
+      },
+      {
+        "contractId": "contract_for_T-1_2",
+        "detail": "Verified (receipt receipt_3): checks covered all 2 changed file(s).\n\nGuarded empty input in the tokenizer; parser tests pass.",
+        "endedAt": 540000,
+        "outcome": "succeeded",
+        "receiptId": "receipt_3",
+        "receiptStatus": "verified",
+        "seq": 3,
+        "startedAt": 360000,
+        "ticketId": "T-1",
+        "usd": 0.21
+      }
+    ],
+    "status": "drained",
+    "ticketState": [
+      {
+        "attempts": 1,
+        "ticketId": "T-2",
+        "touchedFiles": [
+          "services/api/src/router.ts"
+        ]
+      },
+      {
+        "attempts": 2,
+        "ticketId": "T-1",
+        "touchedFiles": [
+          "services/api/src/parser.ts",
+          "services/api/test/parser.spec.ts"
+        ]
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 0,
+      "dispatched": 3,
+      "failed": 1,
+      "parked": 0,
+      "succeeded": 2,
+      "usd": 0.6
+    }
+  },
+  "scenario": "loop-retry-then-succeed",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "enforce",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 0.3,
+    "costUsd": 0.6,
+    "elapsedMs": 540000,
+    "falseCompletions": 0,
+    "halts": 0,
+    "interventions": 0,
+    "parks": 0,
+    "receipts": {
+      "agree": 2,
+      "disagree": 0,
+      "unknown": 0
+    },
+    "repeatedFailures": 0,
+    "retries": 1,
+    "scenario": "loop-retry-then-succeed",
+    "selfReportedSuccess": 2,
+    "subject": "loop",
+    "subjects": 2,
+    "verifiedSuccess": 2
+  },
+  "ticketLog": [
+    {
+      "at": 120000,
+      "id": "T-2",
+      "kind": "review",
+      "note": "Verified (receipt receipt_1): checks covered all 1 changed file(s).\n\nAdded the health route."
+    },
+    {
+      "at": 360000,
+      "id": "T-1",
+      "kind": "attempt",
+      "note": "Loop attempt 1 failed, will retry: Receipt receipt_2: failed. A check failed on the changed files.\n\nTypeError: cannot read properties of undefined (reading 'tokens')\n\nNext: the tokenizer returns undef"
+    },
+    {
+      "at": 540000,
+      "id": "T-1",
+      "kind": "review",
+      "note": "Verified (receipt receipt_3): checks covered all 2 changed file(s).\n\nGuarded empty input in the tokenizer; parser tests pass."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-1",
+      "status": "review"
+    },
+    {
+      "id": "T-2",
+      "status": "review"
+    }
+  ]
+}

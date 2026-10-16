@@ -1,0 +1,10 @@
+{"trace":1,"scenario":"plan-defer-and-answer","subject":"plan_run","description":"The run queues an approval nobody answered and carries on with other steps; the user approves it later and the run finishes.","setup":{"plan":{"phases":[{"id":"p1","files":["tools/release/publish.mjs"],"steps":[{"id":"s1","title":"Bump the CLI"},{"id":"s2","title":"Publish dry run"},{"id":"s3","title":"Write notes"}]}]},"charter":{"whenBlocked":"defer","deferAfterMinutes":0,"maxUsd":10}}}
+{"op":"start","at":0}
+{"op":"turn","at":1000,"durationMs":200000,"moves":[["p1","s1","in_progress"],["p1","s1","completed"],["p1","s2","in_progress"],["p1","s2","blocked"]],"evidence":{"p1/s1":{"checks":["npm test"],"unverified":[],"filesChanged":["tools/release/cli.mjs"],"at":"replay"}},"spend":0.4}
+{"op":"defer","at":150000,"id":"call_publish","description":"npm publish --dry-run (network)","tier":"network"}
+{"op":"turn","at":300000,"durationMs":200000,"moves":[["p1","s3","in_progress"],["p1","s3","completed"]],"evidence":{"p1/s3":{"checks":[],"unverified":[],"filesChanged":["tools/release/NOTES.md"],"at":"replay"}},"spend":0.3}
+{"op":"answer","at":900000,"decision":"D1","status":"approved"}
+{"op":"turn","at":905000,"origin":"resume","durationMs":100000,"moves":[["p1","s2","in_progress"],["p1","s2","completed"]],"evidence":{"p1/s2":{"checks":["npm publish --dry-run"],"unverified":[],"filesChanged":["tools/release/publish.mjs"],"at":"replay"}},"spend":0.2}
+{"op":"verifier","subject":"p1/s1","result":"pass"}
+{"op":"verifier","subject":"p1/s2","result":"pass"}
+{"op":"verifier","subject":"p1/s3","result":"pass"}

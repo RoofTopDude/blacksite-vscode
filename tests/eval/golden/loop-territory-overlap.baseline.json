@@ -1,0 +1,173 @@
+{
+  "arm": "baseline",
+  "hooks": [
+    {
+      "at": 350000,
+      "detail": "Every ticket in the queue has been worked.",
+      "hook": "settled:drained"
+    }
+  ],
+  "loop": {
+    "endedReason": "Every ticket in the queue has been worked.",
+    "executions": [
+      {
+        "reason": "Every ticket in the queue has been worked.",
+        "status": "drained",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 4,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 4,
+          "usd": 0.4
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "detail": "Invoice totals round half-even.",
+        "endedAt": 200000,
+        "outcome": "succeeded",
+        "seq": 1,
+        "startedAt": 0,
+        "ticketId": "T-1",
+        "usd": 0.1
+      },
+      {
+        "detail": "Tax uses the shared money helper.",
+        "endedAt": 100000,
+        "outcome": "succeeded",
+        "seq": 2,
+        "startedAt": 0,
+        "ticketId": "T-3",
+        "usd": 0.1
+      },
+      {
+        "detail": "Currency formatting moved into the money helper.",
+        "endedAt": 100000,
+        "outcome": "succeeded",
+        "seq": 3,
+        "startedAt": 0,
+        "ticketId": "T-4",
+        "usd": 0.1
+      },
+      {
+        "detail": "Invoice numbers are zero-padded.",
+        "endedAt": 350000,
+        "outcome": "succeeded",
+        "seq": 4,
+        "startedAt": 200000,
+        "ticketId": "T-2",
+        "usd": 0.1
+      }
+    ],
+    "status": "drained",
+    "ticketState": [
+      {
+        "attempts": 1,
+        "ticketId": "T-3",
+        "touchedFiles": [
+          "services/billing/src/tax.ts",
+          "services/billing/src/money.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "T-4",
+        "touchedFiles": [
+          "services/billing/src/currency.ts",
+          "services/billing/src/money.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "T-1",
+        "touchedFiles": [
+          "services/billing/src/invoice.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "T-2",
+        "touchedFiles": [
+          "services/billing/src/invoice.ts"
+        ]
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 0,
+      "dispatched": 4,
+      "failed": 0,
+      "parked": 0,
+      "succeeded": 4,
+      "usd": 0.4
+    }
+  },
+  "scenario": "loop-territory-overlap",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "baseline",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 1
+    },
+    "costPerVerifiedSuccess": 0.1333,
+    "costUsd": 0.4,
+    "elapsedMs": 350000,
+    "falseCompletions": 1,
+    "halts": 0,
+    "interventions": 0,
+    "parks": 0,
+    "repeatedFailures": 0,
+    "retries": 0,
+    "scenario": "loop-territory-overlap",
+    "selfReportedSuccess": 4,
+    "subject": "loop",
+    "subjects": 4,
+    "verifiedSuccess": 3
+  },
+  "ticketLog": [
+    {
+      "at": 100000,
+      "id": "T-3",
+      "kind": "review",
+      "note": "Tax uses the shared money helper."
+    },
+    {
+      "at": 100000,
+      "id": "T-4",
+      "kind": "review",
+      "note": "Currency formatting moved into the money helper."
+    },
+    {
+      "at": 200000,
+      "id": "T-1",
+      "kind": "review",
+      "note": "Invoice totals round half-even."
+    },
+    {
+      "at": 350000,
+      "id": "T-2",
+      "kind": "review",
+      "note": "Invoice numbers are zero-padded."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-1",
+      "status": "review"
+    },
+    {
+      "id": "T-2",
+      "status": "review"
+    },
+    {
+      "id": "T-3",
+      "status": "review"
+    },
+    {
+      "id": "T-4",
+      "status": "review"
+    }
+  ]
+}

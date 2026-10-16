@@ -130,6 +130,12 @@ export interface ReceiptFacts {
   /** The lane left something usable (a partial answer) even though it did not finish. */
   partialAnswer?: boolean;
   verificationRequired: boolean;
+  /**
+   * Out-of-territory changes are recorded but do not fail the work. True for an observing contract:
+   * nothing gated those writes, so they say what enforcement would have asked about, not that
+   * anything slipped past it.
+   */
+  scopeAdvisory?: boolean;
 }
 
 export interface DerivedStatus {
@@ -175,7 +181,7 @@ export function deriveReceiptStatus(facts: ReceiptFacts): DerivedStatus {
       next: { guidance: facts.gate.whatWouldUnblock || "Answer the blocked approval, then run it again.", retryable: true },
     };
   }
-  if (facts.outOfScope.length > 0) {
+  if (facts.outOfScope.length > 0 && !facts.scopeAdvisory) {
     return {
       status: "failed",
       basis: ["changes_outside_territory"],
@@ -259,7 +265,10 @@ const MAX_FILES = 200;
 const MAX_EXCERPT = 600;
 
 export function buildReceipt(input: BuildReceiptInput): WorkReceipt {
-  const derived = deriveReceiptStatus(input.facts);
+  const derived = deriveReceiptStatus({
+    ...input.facts,
+    scopeAdvisory: input.facts.scopeAdvisory ?? input.contract.enforcement === "observe",
+  });
   return {
     schema: WORK_RECEIPT_SCHEMA,
     id: input.id,

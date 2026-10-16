@@ -1,0 +1,7 @@
+{"trace":1,"scenario":"loop-false-completion","subject":"loop","description":"A lane reports success while the check on its change failed. Without receipts the ticket goes to review anyway; with enforcing receipts it is retried and, failing again, held back from review.","setup":{"tickets":[{"id":"T-1","files":["src/search/rank.ts"]},{"id":"T-2","files":["src/search/query.ts"]}],"loop":{"workers":{"concurrency":1},"ceilings":{"maxConsecutiveFailures":3}}}}
+{"op":"user","at":0,"action":"start"}
+{"op":"lane","ticket":"T-1","attempt":1,"durationMs":120000,"spend":[[60000,0.12]],"result":{"ok":true,"detail":"Ranking now boosts exact matches. All tests pass.","filesTouched":["src/search/rank.ts"]},"receipt":"failed"}
+{"op":"lane","ticket":"T-1","attempt":2,"durationMs":120000,"spend":[[60000,0.12]],"result":{"ok":true,"detail":"Adjusted the boost. All tests pass.","filesTouched":["src/search/rank.ts"]},"receipt":"failed"}
+{"op":"lane","ticket":"T-2","attempt":1,"durationMs":90000,"spend":[[45000,0.08]],"result":{"ok":true,"detail":"Query parser accepts quoted phrases.","filesTouched":["src/search/query.ts"]},"receipt":"succeeded_unverified"}
+{"op":"verifier","subject":"T-1","result":"fail"}
+{"op":"verifier","subject":"T-2","result":"pass"}

@@ -242,6 +242,17 @@ itself always lives in SecretStorage — these settings only name where it is al
 
 ---
 
+## Orchestration (experimental)
+
+Both settings default to the previous behaviour. Setting either back to its default is the rollback: nothing they wrote is read again.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| `blacksite.orchestration.workContracts` | `off` | Work contracts for delegated lanes and loop tickets. `observe` gives each lane a contract (what it may change, its budget, its definition of done) and writes a receipt of what was actually observed — files changed, checks run — kept apart from what the lane said. Nothing about how work runs changes. `enforce` also asks before a lane writes outside its contract's files (you, the reviewer, or **Allow all** can grant it) and lets the receipt decide a loop ticket's outcome: a lane whose check failed goes back for another attempt instead of to review. Stored under `.blacksite/orchestration/` |
+| `blacksite.orchestration.workGraph` | `false` | Builds a read-only work graph linking tickets, plan steps, code, runs and receipts, and gives the agent the `work_graph` tool for dependency, blocker, impact and critical-path questions. Derived from the existing stores, never written back |
+
+---
+
 ## PAU (Beta)
 
 | Setting | Default | What it does |

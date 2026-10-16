@@ -35,3 +35,7 @@ coverage/
 
 # Throwaway local capture/debug scratch (hardcoded local paths, never source).
 .tmp-screenshot/
+
+# Orchestration evaluation output (npm run test:eval:replay, npm run eval:live). Summaries worth
+# keeping are copied into tests/eval/baselines/ by hand.
+eval-results/

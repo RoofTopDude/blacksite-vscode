@@ -1,0 +1,34 @@
+{
+  "scenario": "delegation-fanout",
+  "subject": "loop",
+  "description": "Three independent tickets in three nested packages, worked by a loop two lanes at a time. Each ticket's verifier is a hidden test the agent never sees.",
+  "timeoutMinutes": 40,
+  "workspace": "nested-packages",
+  "loop": { "title": "Fan-out utilities", "ticketIds": ["EV-1", "EV-2", "EV-3"], "concurrency": 2 },
+  "tickets": [
+    {
+      "id": "EV-1",
+      "title": "Add slugify to the text package",
+      "description": "Export `slugify(text)` from packages/text/src/slug.js. Lowercase, trim, replace runs of non-alphanumeric characters with a single hyphen, and strip leading and trailing hyphens.",
+      "complexity": "small",
+      "acceptanceCriteria": ["slugify(\"  Hello, World!  \") returns \"hello-world\"", "The package's own tests pass with `node --test`"],
+      "territory": { "files": ["packages/text/src/slug.js"], "areas": ["packages/text"] }
+    },
+    {
+      "id": "EV-2",
+      "title": "Add clamp to the math package",
+      "description": "Export `clamp(value, min, max)` from packages/math/src/clamp.js. Throw a RangeError when min is greater than max.",
+      "complexity": "small",
+      "acceptanceCriteria": ["clamp(5, 0, 3) returns 3", "clamp(1, 3, 0) throws RangeError", "The package's own tests pass with `node --test`"],
+      "territory": { "files": ["packages/math/src/clamp.js"], "areas": ["packages/math"] }
+    },
+    {
+      "id": "EV-3",
+      "title": "Add chunk to the list package",
+      "description": "Export `chunk(items, size)` from packages/list/src/chunk.js, splitting an array into arrays of at most `size` items. Throw a RangeError for a size below 1.",
+      "complexity": "small",
+      "acceptanceCriteria": ["chunk([1,2,3,4,5], 2) returns [[1,2],[3,4],[5]]", "The package's own tests pass with `node --test`"],
+      "territory": { "files": ["packages/list/src/chunk.js"], "areas": ["packages/list"] }
+    }
+  ]
+}

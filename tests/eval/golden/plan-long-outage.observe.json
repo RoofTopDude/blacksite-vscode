@@ -1,0 +1,150 @@
+{
+  "arm": "observe",
+  "launches": [
+    {
+      "at": 0,
+      "origin": "run"
+    }
+  ],
+  "run": {
+    "activeMs": 2900000,
+    "compactions": 1,
+    "conductorDecisions": [],
+    "decisions": [],
+    "endReason": "Every step is done.",
+    "gatesAnswered": 0,
+    "retries": 0,
+    "spentUsd": 4.1,
+    "status": "completed",
+    "steps": [
+      {
+        "attempts": 1,
+        "evidence": {
+          "checks": [
+            "npm test"
+          ],
+          "filesChanged": [
+            "services/auth/src/session.ts"
+          ],
+          "unverified": []
+        },
+        "phaseId": "p1",
+        "receiptIds": [
+          "receipt_1"
+        ],
+        "status": "completed",
+        "stepId": "s1"
+      },
+      {
+        "attempts": 2,
+        "evidence": {
+          "checks": [
+            "npm test"
+          ],
+          "filesChanged": [
+            "services/auth/src/session.ts"
+          ],
+          "unverified": []
+        },
+        "phaseId": "p1",
+        "receiptIds": [
+          "receipt_2"
+        ],
+        "status": "completed",
+        "stepId": "s2"
+      },
+      {
+        "attempts": 1,
+        "evidence": {
+          "checks": [
+            "npm test"
+          ],
+          "filesChanged": [
+            "services/auth/src/routes.ts"
+          ],
+          "unverified": []
+        },
+        "phaseId": "p2",
+        "receiptIds": [
+          "receipt_3"
+        ],
+        "status": "completed",
+        "stepId": "s1"
+      },
+      {
+        "attempts": 1,
+        "evidence": {
+          "checks": [],
+          "filesChanged": [
+            "services/auth/README.md"
+          ],
+          "unverified": []
+        },
+        "phaseId": "p2",
+        "receiptIds": [
+          "receipt_4"
+        ],
+        "status": "completed",
+        "stepId": "s2"
+      }
+    ],
+    "tripwires": [],
+    "turns": [
+      {
+        "origin": "run",
+        "stepTransitions": 2,
+        "stopReason": "end_turn"
+      },
+      {
+        "origin": "run",
+        "stepTransitions": 0,
+        "stopReason": "end_turn"
+      },
+      {
+        "origin": "run",
+        "stepTransitions": 2,
+        "stopReason": "end_turn"
+      },
+      {
+        "origin": "run",
+        "stepTransitions": 2,
+        "stopReason": "end_turn"
+      },
+      {
+        "origin": "run",
+        "stepTransitions": 4,
+        "stopReason": "end_turn"
+      }
+    ],
+    "waitingProviderMs": 200000,
+    "waitingUserMs": 0
+  },
+  "scenario": "plan-long-outage",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "observe",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 1.025,
+    "costUsd": 4.1,
+    "elapsedMs": 3100000,
+    "falseCompletions": 0,
+    "halts": 0,
+    "interventions": 0,
+    "parks": 0,
+    "receipts": {
+      "agree": 3,
+      "disagree": 0,
+      "unknown": 1
+    },
+    "repeatedFailures": 0,
+    "retries": 1,
+    "scenario": "plan-long-outage",
+    "selfReportedSuccess": 4,
+    "subject": "plan_run",
+    "subjects": 4,
+    "verifiedSuccess": 4
+  }
+}

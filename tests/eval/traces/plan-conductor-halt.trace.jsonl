@@ -1,0 +1,7 @@
+{"trace":1,"scenario":"plan-conductor-halt","subject":"plan_run","description":"After a turn that makes no progress, the conductor halts the run rather than continuing it.","setup":{"plan":{"phases":[{"id":"p1","files":["db/migrations/0042_orders.sql"],"steps":[{"id":"s1","title":"Write the migration"},{"id":"s2","title":"Backfill"}]}]},"charter":{"maxUsd":10}}}
+{"op":"start","at":0}
+{"op":"turn","at":1000,"durationMs":200000,"moves":[["p1","s1","in_progress"],["p1","s1","completed"]],"evidence":{"p1/s1":{"checks":["npm run db:check"],"unverified":[],"filesChanged":["db/migrations/0042_orders.sql"],"at":"replay"}},"spend":0.5}
+{"op":"turn","at":300000,"durationMs":200000,"moves":[["p1","s2","in_progress"]],"spend":0.6}
+{"op":"conductor","at":510000,"decision":"halt","rationale":"The backfill needs production row counts the run cannot see; continuing would guess."}
+{"op":"verifier","subject":"p1/s1","result":"pass"}
+{"op":"verifier","subject":"p1/s2","result":"fail"}

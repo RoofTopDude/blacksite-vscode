@@ -1,0 +1,127 @@
+{
+  "arm": "observe",
+  "launches": [
+    {
+      "at": 0,
+      "origin": "run"
+    }
+  ],
+  "run": {
+    "activeMs": 905000,
+    "compactions": 0,
+    "conductorDecisions": [],
+    "decisions": [
+      {
+        "id": "D1",
+        "status": "approved"
+      }
+    ],
+    "endReason": "Every step is done.",
+    "gatesAnswered": 0,
+    "retries": 0,
+    "spentUsd": 0.8999999999999999,
+    "status": "completed",
+    "steps": [
+      {
+        "attempts": 1,
+        "evidence": {
+          "checks": [
+            "npm test"
+          ],
+          "filesChanged": [
+            "tools/release/cli.mjs"
+          ],
+          "unverified": []
+        },
+        "phaseId": "p1",
+        "receiptIds": [
+          "receipt_1"
+        ],
+        "status": "completed",
+        "stepId": "s1"
+      },
+      {
+        "attempts": 2,
+        "evidence": {
+          "checks": [
+            "npm publish --dry-run"
+          ],
+          "filesChanged": [
+            "tools/release/publish.mjs"
+          ],
+          "unverified": []
+        },
+        "phaseId": "p1",
+        "receiptIds": [
+          "receipt_3"
+        ],
+        "status": "completed",
+        "stepId": "s2"
+      },
+      {
+        "attempts": 1,
+        "evidence": {
+          "checks": [],
+          "filesChanged": [
+            "tools/release/NOTES.md"
+          ],
+          "unverified": []
+        },
+        "phaseId": "p1",
+        "receiptIds": [
+          "receipt_2"
+        ],
+        "status": "completed",
+        "stepId": "s3"
+      }
+    ],
+    "tripwires": [],
+    "turns": [
+      {
+        "origin": "run",
+        "stepTransitions": 4,
+        "stopReason": "end_turn"
+      },
+      {
+        "origin": "run",
+        "stepTransitions": 2,
+        "stopReason": "end_turn"
+      },
+      {
+        "origin": "resume",
+        "stepTransitions": 2,
+        "stopReason": "end_turn"
+      }
+    ],
+    "waitingProviderMs": 0,
+    "waitingUserMs": 0
+  },
+  "scenario": "plan-defer-and-answer",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "observe",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 0.3,
+    "costUsd": 0.9,
+    "elapsedMs": 905000,
+    "falseCompletions": 0,
+    "halts": 0,
+    "interventions": 1,
+    "parks": 1,
+    "receipts": {
+      "agree": 2,
+      "disagree": 0,
+      "unknown": 1
+    },
+    "repeatedFailures": 0,
+    "retries": 1,
+    "scenario": "plan-defer-and-answer",
+    "selfReportedSuccess": 3,
+    "subject": "plan_run",
+    "subjects": 3,
+    "verifiedSuccess": 3
+  }
+}

@@ -1,0 +1,5 @@
+{"trace":1,"scenario":"plan-budget-exhausted","subject":"plan_run","description":"Spend reaches the run's ceiling partway through; the run ends as budget-exhausted with the remaining steps untouched.","setup":{"plan":{"phases":[{"id":"p1","files":["ml/train/loader.py"],"steps":[{"id":"s1","title":"Stream shards"},{"id":"s2","title":"Prefetch"},{"id":"s3","title":"Benchmark"}]}]},"charter":{"maxUsd":1}}}
+{"op":"start","at":0}
+{"op":"turn","at":1000,"durationMs":300000,"moves":[["p1","s1","in_progress"],["p1","s1","completed"]],"evidence":{"p1/s1":{"checks":["pytest"],"unverified":[],"filesChanged":["ml/train/loader.py"],"at":"replay"}},"spend":0.6}
+{"op":"turn","at":400000,"durationMs":300000,"moves":[["p1","s2","in_progress"]],"spend":0.6}
+{"op":"verifier","subject":"p1/s1","result":"pass"}

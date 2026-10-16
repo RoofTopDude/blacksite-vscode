@@ -1,0 +1,8 @@
+{"trace":1,"scenario":"loop-spend-ceiling","subject":"loop","description":"Two lanes run at once and their live spend crosses the loop's ceiling: no further lane starts, the running ones finish, and the loop stops.","setup":{"tickets":[{"id":"T-1","files":["apps/mobile/src/login.ts"]},{"id":"T-2","files":["apps/mobile/src/profile.ts"]},{"id":"T-3","files":["apps/mobile/src/settings.ts"]}],"loop":{"workers":{"concurrency":2},"ceilings":{"maxUsd":1,"maxConsecutiveFailures":3}}}}
+{"op":"user","at":0,"action":"start"}
+{"op":"lane","ticket":"T-1","attempt":1,"durationMs":300000,"spend":[[100000,0.3],[250000,0.2]],"result":{"ok":true,"detail":"Login validates email format.","filesTouched":["apps/mobile/src/login.ts"]},"receipt":"verified"}
+{"op":"lane","ticket":"T-2","attempt":1,"durationMs":200000,"spend":[[100000,0.5],[150000,0.3]],"result":{"ok":true,"detail":"Profile avatar falls back to initials.","filesTouched":["apps/mobile/src/profile.ts"]},"receipt":"succeeded_unverified"}
+{"op":"lane","ticket":"T-3","attempt":1,"durationMs":100000,"spend":[[50000,0.3]],"result":{"ok":true,"detail":"Should not start.","filesTouched":["apps/mobile/src/settings.ts"]},"receipt":"verified"}
+{"op":"verifier","subject":"T-1","result":"pass"}
+{"op":"verifier","subject":"T-2","result":"pass"}
+{"op":"verifier","subject":"T-3","result":"pass"}

@@ -1,0 +1,10 @@
+{"trace":1,"scenario":"loop-territory-overlap","subject":"loop","description":"Two tickets declare the same file and are serialized by the territory lock; two others declare disjoint files but both actually change a shared file while running at once, which the conflict metric counts. Every lane's receipt says verified, but the verifier fails one of the colliding tickets: a receipt and verifier disagreement.","setup":{"tickets":[{"id":"T-1","files":["services/billing/src/invoice.ts"]},{"id":"T-2","files":["services/billing/src/invoice.ts"]},{"id":"T-3","files":["services/billing/src/tax.ts"]},{"id":"T-4","files":["services/billing/src/currency.ts"]}],"loop":{"workers":{"concurrency":3}}}}
+{"op":"user","at":0,"action":"start"}
+{"op":"lane","ticket":"T-1","attempt":1,"durationMs":200000,"spend":[[50000,0.1]],"result":{"ok":true,"detail":"Invoice totals round half-even.","filesTouched":["services/billing/src/invoice.ts"]},"receipt":"verified"}
+{"op":"lane","ticket":"T-2","attempt":1,"durationMs":150000,"spend":[[50000,0.1]],"result":{"ok":true,"detail":"Invoice numbers are zero-padded.","filesTouched":["services/billing/src/invoice.ts"]},"receipt":"verified"}
+{"op":"lane","ticket":"T-3","attempt":1,"durationMs":100000,"spend":[[50000,0.1]],"result":{"ok":true,"detail":"Tax uses the shared money helper.","filesTouched":["services/billing/src/tax.ts","services/billing/src/money.ts"]},"receipt":"verified"}
+{"op":"lane","ticket":"T-4","attempt":1,"durationMs":100000,"spend":[[50000,0.1]],"result":{"ok":true,"detail":"Currency formatting moved into the money helper.","filesTouched":["services/billing/src/currency.ts","services/billing/src/money.ts"]},"receipt":"verified"}
+{"op":"verifier","subject":"T-1","result":"pass"}
+{"op":"verifier","subject":"T-2","result":"pass"}
+{"op":"verifier","subject":"T-3","result":"pass"}
+{"op":"verifier","subject":"T-4","result":"fail"}

@@ -1,0 +1,123 @@
+{
+  "arm": "baseline",
+  "hooks": [
+    {
+      "at": 300000,
+      "detail": "Reached the $1 spend ceiling.",
+      "hook": "settled:stopped"
+    }
+  ],
+  "loop": {
+    "endedReason": "Reached the $1 spend ceiling.",
+    "executions": [
+      {
+        "reason": "Reached the $1 spend ceiling.",
+        "status": "stopped",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 2,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 2,
+          "usd": 1.3
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "detail": "Login validates email format.",
+        "endedAt": 300000,
+        "outcome": "succeeded",
+        "seq": 1,
+        "startedAt": 0,
+        "ticketId": "T-1",
+        "usd": 0.5
+      },
+      {
+        "detail": "Profile avatar falls back to initials.",
+        "endedAt": 200000,
+        "outcome": "succeeded",
+        "seq": 2,
+        "startedAt": 0,
+        "ticketId": "T-2",
+        "usd": 0.8
+      }
+    ],
+    "status": "stopped",
+    "ticketState": [
+      {
+        "attempts": 1,
+        "ticketId": "T-2",
+        "touchedFiles": [
+          "apps/mobile/src/profile.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "T-1",
+        "touchedFiles": [
+          "apps/mobile/src/login.ts"
+        ]
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 0,
+      "dispatched": 2,
+      "failed": 0,
+      "parked": 0,
+      "succeeded": 2,
+      "usd": 1.3
+    }
+  },
+  "scenario": "loop-spend-ceiling",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "baseline",
+    "budgetStops": 1,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 0.65,
+    "costUsd": 1.3,
+    "elapsedMs": 300000,
+    "falseCompletions": 0,
+    "halts": 0,
+    "interventions": 0,
+    "parks": 0,
+    "repeatedFailures": 0,
+    "retries": 0,
+    "scenario": "loop-spend-ceiling",
+    "selfReportedSuccess": 2,
+    "subject": "loop",
+    "subjects": 3,
+    "verifiedSuccess": 2
+  },
+  "ticketLog": [
+    {
+      "at": 200000,
+      "id": "T-2",
+      "kind": "review",
+      "note": "Profile avatar falls back to initials."
+    },
+    {
+      "at": 300000,
+      "id": "T-1",
+      "kind": "review",
+      "note": "Login validates email format."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-1",
+      "status": "review"
+    },
+    {
+      "id": "T-2",
+      "status": "review"
+    },
+    {
+      "id": "T-3",
+      "status": "backlog"
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "arm": "baseline",
+  "launches": [
+    {
+      "at": 0,
+      "origin": "run"
+    },
+    {
+      "at": 900000,
+      "origin": "resume"
+    }
+  ],
+  "run": {
+    "activeMs": 406000,
+    "compactions": 0,
+    "conductorDecisions": [],
+    "decisions": [],
+    "endReason": "Every step is done.",
+    "gatesAnswered": 0,
+    "lastHandoff": "Stopped: Paused by a tripwire: The same failure keeps coming back. shell_run has failed the same way 6 times during this step.",
+    "retries": 0,
+    "spentUsd": 1,
+    "status": "completed",
+    "steps": [
+      {
+        "attempts": 1,
+        "evidence": {
+          "checks": [
+            "npm test"
+          ],
+          "filesChanged": [
+            "apps/web/src/chart.tsx"
+          ],
+          "unverified": []
+        },
+        "phaseId": "p1",
+        "status": "completed",
+        "stepId": "s1"
+      }
+    ],
+    "tripwires": [
+      "repeated_failure"
+    ],
+    "turns": [
+      {
+        "origin": "run",
+        "stepTransitions": 1,
+        "stopReason": "paused"
+      },
+      {
+        "origin": "resume",
+        "stepTransitions": 1,
+        "stopReason": "end_turn"
+      }
+    ],
+    "waitingProviderMs": 0,
+    "waitingUserMs": 0
+  },
+  "scenario": "plan-tripwire-repeated-failure",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "baseline",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 1,
+    "costUsd": 1,
+    "elapsedMs": 905000,
+    "falseCompletions": 0,
+    "halts": 1,
+    "interventions": 1,
+    "parks": 0,
+    "repeatedFailures": 1,
+    "retries": 0,
+    "scenario": "plan-tripwire-repeated-failure",
+    "selfReportedSuccess": 1,
+    "subject": "plan_run",
+    "subjects": 1,
+    "verifiedSuccess": 1
+  }
+}

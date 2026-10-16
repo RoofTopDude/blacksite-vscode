@@ -1,0 +1,135 @@
+{
+  "arm": "baseline",
+  "hooks": [
+    {
+      "at": 540000,
+      "detail": "Every ticket in the queue has been worked.",
+      "hook": "settled:drained"
+    }
+  ],
+  "loop": {
+    "endedReason": "Every ticket in the queue has been worked.",
+    "executions": [
+      {
+        "reason": "Every ticket in the queue has been worked.",
+        "status": "drained",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 3,
+          "failed": 1,
+          "parked": 0,
+          "succeeded": 2,
+          "usd": 0.6
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "detail": "Added the health route.",
+        "endedAt": 120000,
+        "outcome": "succeeded",
+        "seq": 1,
+        "startedAt": 0,
+        "ticketId": "T-2",
+        "usd": 0.09
+      },
+      {
+        "detail": "TypeError: cannot read properties of undefined (reading 'tokens')\n\nNext: the tokenizer returns undefined for empty input; guard it before parsing.",
+        "endedAt": 360000,
+        "outcome": "failed",
+        "seq": 2,
+        "startedAt": 120000,
+        "ticketId": "T-1",
+        "usd": 0.3
+      },
+      {
+        "detail": "Guarded empty input in the tokenizer; parser tests pass.",
+        "endedAt": 540000,
+        "outcome": "succeeded",
+        "seq": 3,
+        "startedAt": 360000,
+        "ticketId": "T-1",
+        "usd": 0.21
+      }
+    ],
+    "status": "drained",
+    "ticketState": [
+      {
+        "attempts": 1,
+        "ticketId": "T-2",
+        "touchedFiles": [
+          "services/api/src/router.ts"
+        ]
+      },
+      {
+        "attempts": 2,
+        "ticketId": "T-1",
+        "touchedFiles": [
+          "services/api/src/parser.ts",
+          "services/api/test/parser.spec.ts"
+        ]
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 0,
+      "dispatched": 3,
+      "failed": 1,
+      "parked": 0,
+      "succeeded": 2,
+      "usd": 0.6
+    }
+  },
+  "scenario": "loop-retry-then-succeed",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "baseline",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 0.3,
+    "costUsd": 0.6,
+    "elapsedMs": 540000,
+    "falseCompletions": 0,
+    "halts": 0,
+    "interventions": 0,
+    "parks": 0,
+    "repeatedFailures": 0,
+    "retries": 1,
+    "scenario": "loop-retry-then-succeed",
+    "selfReportedSuccess": 2,
+    "subject": "loop",
+    "subjects": 2,
+    "verifiedSuccess": 2
+  },
+  "ticketLog": [
+    {
+      "at": 120000,
+      "id": "T-2",
+      "kind": "review",
+      "note": "Added the health route."
+    },
+    {
+      "at": 360000,
+      "id": "T-1",
+      "kind": "attempt",
+      "note": "Loop attempt 1 failed, will retry: TypeError: cannot read properties of undefined (reading 'tokens')\n\nNext: the tokenizer returns undefined for empty input; guard it before parsing."
+    },
+    {
+      "at": 540000,
+      "id": "T-1",
+      "kind": "review",
+      "note": "Guarded empty input in the tokenizer; parser tests pass."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-1",
+      "status": "review"
+    },
+    {
+      "id": "T-2",
+      "status": "review"
+    }
+  ]
+}

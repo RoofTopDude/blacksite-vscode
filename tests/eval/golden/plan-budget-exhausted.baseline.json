@@ -1,0 +1,88 @@
+{
+  "arm": "baseline",
+  "launches": [
+    {
+      "at": 0,
+      "origin": "run"
+    }
+  ],
+  "run": {
+    "activeMs": 400000,
+    "compactions": 0,
+    "conductorDecisions": [],
+    "decisions": [],
+    "endReason": "Spend reached $1.20 of the $1.00 ceiling for this run.",
+    "gatesAnswered": 0,
+    "lastHandoff": "Stopped: Spend reached $1.20 of the $1.00 ceiling.",
+    "retries": 0,
+    "spentUsd": 1.2,
+    "status": "budget_exhausted",
+    "steps": [
+      {
+        "attempts": 1,
+        "evidence": {
+          "checks": [
+            "pytest"
+          ],
+          "filesChanged": [
+            "ml/train/loader.py"
+          ],
+          "unverified": []
+        },
+        "phaseId": "p1",
+        "status": "completed",
+        "stepId": "s1"
+      },
+      {
+        "attempts": 0,
+        "phaseId": "p1",
+        "status": "pending",
+        "stepId": "s2"
+      },
+      {
+        "attempts": 0,
+        "phaseId": "p1",
+        "status": "pending",
+        "stepId": "s3"
+      }
+    ],
+    "tripwires": [],
+    "turns": [
+      {
+        "origin": "run",
+        "stepTransitions": 2,
+        "stopReason": "end_turn"
+      },
+      {
+        "origin": "run",
+        "stepTransitions": 0,
+        "stopReason": "end_turn"
+      }
+    ],
+    "waitingProviderMs": 0,
+    "waitingUserMs": 0
+  },
+  "scenario": "plan-budget-exhausted",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "baseline",
+    "budgetStops": 1,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 1.2,
+    "costUsd": 1.2,
+    "elapsedMs": 400000,
+    "falseCompletions": 0,
+    "halts": 0,
+    "interventions": 0,
+    "parks": 0,
+    "repeatedFailures": 0,
+    "retries": 0,
+    "scenario": "plan-budget-exhausted",
+    "selfReportedSuccess": 1,
+    "subject": "plan_run",
+    "subjects": 3,
+    "verifiedSuccess": 1
+  }
+}

@@ -1,0 +1,7 @@
+{"trace":1,"scenario":"loop-park-release","subject":"loop","description":"The unattended reviewer refuses an approval, so the ticket parks and the loop ends blocked; the user releases it and resumes, and the retry succeeds.","setup":{"tickets":[{"id":"T-1","files":["infra/deploy/config.yaml"]}],"loop":{"workers":{"concurrency":1}}}}
+{"op":"user","at":0,"action":"start"}
+{"op":"lane","ticket":"T-1","attempt":1,"durationMs":90000,"spend":[[30000,0.05]],"result":{"ok":false,"parkedOnGate":"network","detail":"The reviewer would not allow fetching a remote schema during an unattended run."},"receipt":"blocked"}
+{"op":"user","at":400000,"action":"release","ticket":"T-1"}
+{"op":"user","at":400001,"action":"resume"}
+{"op":"lane","ticket":"T-1","attempt":2,"durationMs":150000,"spend":[[60000,0.08]],"result":{"ok":true,"detail":"Used the vendored schema instead; config validates.","filesTouched":["infra/deploy/config.yaml"]},"receipt":"verified"}
+{"op":"verifier","subject":"T-1","result":"pass"}

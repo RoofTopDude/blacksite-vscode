@@ -1,0 +1,157 @@
+{
+  "arm": "observe",
+  "hooks": [
+    {
+      "at": 90000,
+      "detail": "T-1:network",
+      "hook": "parked"
+    },
+    {
+      "at": 90000,
+      "detail": "T-1 was blocked by continuation review (network). The loop is continuing with other tickets.",
+      "hook": "notify"
+    },
+    {
+      "at": 90000,
+      "detail": "1 ticket(s) remain, none dispatchable: T-1 (parked)",
+      "hook": "settled:blocked"
+    },
+    {
+      "at": 400000,
+      "detail": "T-1",
+      "hook": "released"
+    },
+    {
+      "at": 550001,
+      "detail": "Every ticket in the queue has been worked.",
+      "hook": "settled:drained"
+    }
+  ],
+  "loop": {
+    "endedReason": "Every ticket in the queue has been worked.",
+    "executions": [
+      {
+        "reason": "1 ticket(s) remain, none dispatchable: T-1 (parked)",
+        "status": "blocked",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 1,
+          "failed": 0,
+          "parked": 1,
+          "succeeded": 0,
+          "usd": 0.05
+        }
+      },
+      {
+        "reason": "Every ticket in the queue has been worked.",
+        "status": "drained",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 1,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 1,
+          "usd": 0.08
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "contractId": "contract_for_T-1_1",
+        "detail": "The reviewer would not allow fetching a remote schema during an unattended run.",
+        "endedAt": 90000,
+        "outcome": "parked",
+        "receiptId": "receipt_1",
+        "receiptStatus": "blocked",
+        "seq": 1,
+        "startedAt": 0,
+        "ticketId": "T-1",
+        "usd": 0.05
+      },
+      {
+        "contractId": "contract_for_T-1_2",
+        "detail": "Used the vendored schema instead; config validates.",
+        "endedAt": 550001,
+        "outcome": "succeeded",
+        "receiptId": "receipt_2",
+        "receiptStatus": "verified",
+        "seq": 2,
+        "startedAt": 400001,
+        "ticketId": "T-1",
+        "usd": 0.08
+      }
+    ],
+    "status": "drained",
+    "ticketState": [
+      {
+        "attempts": 1,
+        "ticketId": "T-1",
+        "touchedFiles": [
+          "infra/deploy/config.yaml"
+        ]
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 0,
+      "dispatched": 2,
+      "failed": 0,
+      "parked": 1,
+      "succeeded": 1,
+      "usd": 0.13
+    }
+  },
+  "scenario": "loop-park-release",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "observe",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 0.13,
+    "costUsd": 0.13,
+    "elapsedMs": 550001,
+    "falseCompletions": 0,
+    "halts": 0,
+    "interventions": 2,
+    "parks": 1,
+    "receipts": {
+      "agree": 1,
+      "disagree": 0,
+      "unknown": 0
+    },
+    "repeatedFailures": 0,
+    "retries": 0,
+    "scenario": "loop-park-release",
+    "selfReportedSuccess": 1,
+    "subject": "loop",
+    "subjects": 1,
+    "verifiedSuccess": 1
+  },
+  "ticketLog": [
+    {
+      "at": 90000,
+      "id": "T-1",
+      "kind": "blocked",
+      "note": "Automated continuation review blocked an approval (network). The reviewer would not allow fetching a remote schema during an unattended run."
+    },
+    {
+      "at": 400000,
+      "id": "T-1",
+      "kind": "released",
+      "note": "Released from continuation-review block by the user."
+    },
+    {
+      "at": 550001,
+      "id": "T-1",
+      "kind": "review",
+      "note": "Used the vendored schema instead; config validates."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-1",
+      "status": "review"
+    }
+  ]
+}
