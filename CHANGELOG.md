@@ -3,6 +3,67 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.33.0-pre.5
+
+Prerelease. The stable update channel remains on 1.32.0.
+
+This release lets coordinated work react to what happens while it runs:
+
+- Ticket loops notice when a blocker is closed.
+- Two background lanes can no longer silently write the same file.
+- Loops can pick the ticket that unblocks the most other work first.
+
+All three are experimental and **off by default**. With the settings left alone, nothing about how
+Blacksite works changes.
+
+### Added
+
+- **Orchestration signals** (`blacksite.orchestration.signals`). Blacksite records what it observes
+  as work goes on: work finishing, a check failing, a lane writing more than it was given, two
+  pieces of work colliding, progress stalling, waiting work becoming ready.
+  - **`observe`** records these, and what would have been done about each, under
+    `.blacksite/orchestration/signals/`. Nothing else changes.
+  - **`act`** also lets a running loop re-check its queue the moment a blocker is closed, instead of
+    waiting for one of its lanes to finish.
+  - **A loop never restarts by itself.** If a loop stopped because everything left was waiting on
+    other tickets, you are told when it can continue, and you resume it.
+  - **Flagged for you.** Anything that needs judgment is listed on the loop or shown to the plan
+    run's conductor: a check failing on finished work, a collision, stalled progress, or something
+    only the agent claimed.
+  - Signals never create work, close a ticket, or change a limit or an approval.
+- **Concurrency claims** (`blacksite.orchestration.claims`). A delegated lane claims each file at
+  the moment it writes it.
+  - **`enforce`.** A second lane writing a file another lane holds is refused, with the other lane
+    named. So is a lane overwriting a file someone changed after it read it.
+  - **`observe`.** Records the same collisions and refuses nothing.
+  - **What is never blocked.** Reads, and your own chat agent, which gets a warning instead.
+  - **Shell commands.** A lane's shell commands are checked afterwards for files they changed, so
+    shell writes now show up on receipts too.
+  - Claims end with the lane.
+- **Graph-aware loop scheduling** (`blacksite.orchestration.scheduler`; needs the work graph).
+  - **`graph`.** Runs first the tickets that unblock the most other work or sit on the critical
+    path. A low-priority ticket earns credit every time it waits, so it is never starved.
+  - **What it holds back.** Tickets in a dependency cycle, or waiting on a ticket that does not
+    exist, are held back and shown as such.
+  - **Running alone.** Large tickets, and tickets that collided last time, run alone.
+  - **Explanations.** The Loops view shows why each ticket was picked and why each waiting one is
+    held back.
+  - **`shadow`.** Picks as before and records what `graph` would have picked.
+- **Start dependents on verified work** (per loop). A ticket that waits on another normally starts
+  only after you close that one. A loop can now be set to start it once the other is in review
+  and its work was verified by a check. This needs work contracts. Closing tickets stays yours.
+
+### Changed
+
+- A loop proposal no longer says tickets blocked by others in the same queue "will wait their
+  turn". A blocker the loop finishes goes to review, so its dependents wait until you close it.
+  The proposal now says so, and names the option that changes it.
+
+### Notes
+
+- Every new setting defaults to the previous behaviour. Setting it back is the rollback.
+- Claims live in memory only. The signal journal follows the plan-run retention setting.
+
 ## 1.33.0-pre.4
 
 Prerelease. The stable update channel remains on 1.32.0.

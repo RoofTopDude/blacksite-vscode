@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.33.0-pre.4",
+  "version": "1.33.0-pre.5",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -1160,6 +1160,51 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "**Experimental.** Builds a read-only work graph linking tickets, plan steps, code, runs and receipts, and gives the agent the `work_graph` tool for dependency, blocker, impact and critical-path questions. Derived from the existing stores and never written back."
+        },
+        "blacksite.orchestration.signals": {
+          "type": "string",
+          "enum": [
+            "off",
+            "observe",
+            "act"
+          ],
+          "enumDescriptions": [
+            "Loops and plan runs react only to their own lanes finishing, as before.",
+            "Records what the host observes (work completed, checks failing, scope growing, conflicts, stalls) and what it would do about it. Nothing about how work runs changes.",
+            "As observe, and a running loop re-checks its queue as soon as a blocker closes. A loop that stopped on blocked tickets tells you when it can continue; it never restarts by itself."
+          ],
+          "default": "off",
+          "markdownDescription": "**Experimental.** Typed orchestration signals, journaled under `.blacksite/orchestration/signals`. Signals never start a loop, create work, close a ticket or change a limit. Set to `off` to return to the previous behaviour."
+        },
+        "blacksite.orchestration.claims": {
+          "type": "string",
+          "enum": [
+            "off",
+            "observe",
+            "enforce"
+          ],
+          "enumDescriptions": [
+            "Concurrent delegated lanes write as before.",
+            "Records when two lanes write the same file at the same time, or a lane overwrites a file another lane changed after it read it. Nothing is refused.",
+            "As observe, and such writes are refused with the other lane named. Your own chat agent is never refused; it is warned."
+          ],
+          "default": "off",
+          "markdownDescription": "**Experimental.** Short-lived, in-memory claims on the files a delegated lane is writing, checked at the moment of each write. Set to `off` to return to the previous behaviour."
+        },
+        "blacksite.orchestration.scheduler": {
+          "type": "string",
+          "enum": [
+            "legacy",
+            "shadow",
+            "graph"
+          ],
+          "enumDescriptions": [
+            "Ticket loops pick work by the board's ranking, as before.",
+            "Picks as before, and records what the graph-aware scheduler would have picked and why.",
+            "Picks tickets that unblock the most other work and sit on the critical path first, never starves a ticket, and records why each ticket ran. Needs the work graph."
+          ],
+          "default": "legacy",
+          "markdownDescription": "**Experimental.** How ticket loops choose what to run next. `shadow` and `graph` need `blacksite.orchestration.workGraph`; without it they behave as `legacy`. Set to `legacy` to return to the previous behaviour."
         },
         "blacksite.notifications.runEvents": {
           "type": "string",
