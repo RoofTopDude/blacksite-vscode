@@ -203,7 +203,7 @@ import {
   guessMimeType,
 } from "./chat/attachments.js";
 import { prepareVisionImage } from "./vision-image.js";
-import { readOrchestrationFlags, type WorkContractsMode } from "./orchestration/flags.js";
+import { readOrchestrationFlags, type ClaimsMode, type WorkContractsMode } from "./orchestration/flags.js";
 import { ReceiptStore } from "./orchestration/receipt-store.js";
 import { LaneContracts, LaneMeter, type LaneEndFacts } from "./orchestration/lane-contracts.js";
 import {
@@ -214,6 +214,12 @@ import {
 } from "./orchestration/active-contract.js";
 import { summarizeReceipt, type ReceiptSummary } from "./orchestration/work-receipt.js";
 import type { WorkGraphService } from "./orchestration/work-graph/service.js";
+import type { SignalService } from "./orchestration/signals/service.js";
+import { ClaimRegistry } from "./orchestration/claims/registry.js";
+import { LaneClaims, MainSessionClaims, type WorkingTreeState } from "./orchestration/claims/session-claims.js";
+import { createClaimEditProvider, createClaimLspProvider } from "./orchestration/claims/edit-claims.js";
+import { gitWorkingTree } from "./orchestration/claims/working-tree.js";
+import { NULL_SINK, type SignalSink } from "./orchestration/signals/model.js";
 import type { LaneEnd } from "./orchestration/work-receipt.js";
 import type { AttachmentKind } from "./chat/attachments.js";
 
@@ -606,6 +612,15 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   /** Work contracts and receipts for delegated lanes (blacksite.orchestration.workContracts). */
   private _laneContractService: LaneContracts | undefined;
   private _workGraph: WorkGraphService | undefined;
+  /** Concurrency claims (#19): one registry per window, shared by every lane and the main session. */
+  private readonly _claimRegistry = new ClaimRegistry();
+  /** Each lane's claims, by lane id, so a resumed lane releases them when it ends too. */
+  private readonly _laneClaims = new Map<string, LaneClaims>();
+  private _mainSessionClaims: MainSessionClaims | undefined;
+  private _workingTreeReader: (() => Promise<WorkingTreeState | undefined>) | undefined;
+  /** Orchestration signals (#14). The null sink until the extension sets the real one. */
+  private _signals: SignalSink = NULL_SINK;
+  private _signalService: SignalService | undefined;
   private _restoredSessionState: SessionRestoreState | null = null;
   /** MCP configuration, credentials, and tool policy. Shared with the MCP panel so a change
    *  made there is live for the next tool call without a reload. */
@@ -1190,6 +1205,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._workGraph = service;
   }
 
+  /** Orchestration signals (blacksite.orchestration.signals): where lanes report what they observed. */
+  setSignals(service: SignalService): void {
+    this._signals = service;
+    this._signalService = service;
+  }
+
   /** Where lane contracts and receipts are kept, shared so every reader sees the same index. */
   receiptStore(): ReceiptStore {
     return this._laneContracts().store;
@@ -1624,6 +1645,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       ticketProvider: this._tickets,
       graphProvider: this._graphAnnotations,
       ...(this._workGraph ? { workGraphProvider: this._workGraph } : {}),
+      claims: this._mainClaims(),
       dataProvider: this._buildDataToolProvider(),
       referenceProvider: this._buildReferenceToolProvider(),
       skillProvider: this._buildSkillToolProvider(),
@@ -2499,6 +2521,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       else request.signal.addEventListener("abort", forwardAbort, { once: true });
     }
     const watchdog = createLaneWatchdog(budget, (reason) => {
+      if (reason === LANE_STALL_REASON) this._signalLaneStalled(laneId, label, activeContract);
       if (!controller.signal.aborted) controller.abort(reason);
     });
     const meter = activeContract
@@ -2563,9 +2586,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       };
 
       const failureKind = classifyLaneFailure(timedOut, cancelled, answer);
+      const resumedClaims = this._laneClaims.get(laneId);
       const receipt = this._laneReceipt(activeContract, meter, {
         session, controller, ok, answer, errorMessage, timedOut, cancelled,
         filesTouched: outcome.filesTouched, toolRounds, elapsedMs, laneId, subRequestId,
+        ...(resumedClaims ? { claims: resumedClaims } : {}),
       });
       yield {
         type: "subagent_tool_result",
@@ -2600,6 +2625,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       };
     } finally {
       this._liveSubagentSessions.delete(session);
+      this._laneClaims.get(laneId)?.release();
       watchdog.stop();
       request.signal?.removeEventListener("abort", forwardAbort);
     }
@@ -2613,8 +2639,72 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       planning: () => {
         try { return this._planning.read(); } catch { return undefined; }
       },
+      onIssued: (contract, live) => this._signalService?.observeContractIssued(contract, live),
     });
     return this._laneContractService;
+  }
+
+  /** A lane's watchdog ended it for making no progress: the host saw that, so it is a signal. */
+  private _signalLaneStalled(laneId: string, label: string, active: ActiveWorkContract | undefined): void {
+    const ticketId = active?.contract.origin.ticketId;
+    this._signals.emit({
+      kind: "progress_stalled",
+      taskId: ticketId ? `ticket:${ticketId}` : `lane:${laneId}`,
+      causeId: `watchdog:${laneId}`,
+      provenance: { source: "host", observer: "watchdog" },
+      scope: {
+        laneId,
+        ...(active ? { contractId: active.contract.id } : {}),
+        ...(active?.contract.origin.loopId ? { loopId: active.contract.origin.loopId } : {}),
+      },
+      detail: `${label} stopped making progress and was ended by its watchdog.`,
+    });
+  }
+
+  /** The concurrency-claims setting as it reads now. */
+  claimsMode(): ClaimsMode {
+    return readOrchestrationFlags((key) => vscode.workspace.getConfiguration().get(key)).claims;
+  }
+
+  /** The window's claim registry: what lanes hold right now, for loop scheduling (#15). */
+  claimRegistry(): ClaimRegistry {
+    return this._claimRegistry;
+  }
+
+  private _workspaceRelative(file: string): string | null {
+    if (!path.isAbsolute(file)) return file.split(path.sep).join("/");
+    const relative = path.relative(this._workspaceRoot, file).split(path.sep).join("/");
+    return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? relative : null;
+  }
+
+  /** The main chat session's claims: never refused, warned when it writes where a lane works (D8). */
+  private _mainClaims(): MainSessionClaims {
+    this._mainSessionClaims ??= new MainSessionClaims(this._claimRegistry, () => this.claimsMode(), (file) => this._workspaceRelative(file));
+    return this._mainSessionClaims;
+  }
+
+  /** Claims for a lane about to start, when claims are on. */
+  private _claimsForLane(laneId: string, label: string, active: ActiveWorkContract | undefined): LaneClaims | undefined {
+    if (this.claimsMode() === "off") return undefined;
+    this._workingTreeReader ??= gitWorkingTree(this._workspaceRoot);
+    const origin = active?.contract.origin;
+    const claims = new LaneClaims({
+      registry: this._claimRegistry,
+      holder: {
+        id: laneId,
+        laneId,
+        label,
+        ...(active ? { contractId: active.contract.id } : {}),
+        ...(origin?.loopId ? { loopId: origin.loopId } : {}),
+        ...(origin?.ticketId ? { ticketId: origin.ticketId } : {}),
+      },
+      mode: () => this.claimsMode(),
+      sink: this._signals,
+      toRelative: (file) => this._workspaceRelative(file),
+      workingTree: this._workingTreeReader,
+    });
+    this._laneClaims.set(laneId, claims);
+    return claims;
   }
 
   /** The work-contracts setting as it reads now, for the loop dispatcher. */
@@ -2644,6 +2734,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       elapsedMs: number;
       laneId: string;
       subRequestId: string;
+      claims?: LaneClaims;
     },
   ): ReceiptSummary | undefined {
     if (!active) return undefined;
@@ -2666,6 +2757,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       ...(stoppedByGate ? { gate: meter?.lastRefusal ?? { gate: "approval", detail: reason } } : {}),
       observation: context.session.contractObservation(),
       filesTouched: [...context.filesTouched],
+      ...(context.claims ? {
+        claims: {
+          shellChanged: [...context.claims.shellChanged],
+          shellCovered: context.claims.shellCovered,
+          conflicts: [...context.claims.conflicts],
+          unattributed: [...context.claims.unattributed],
+        },
+      } : {}),
       answer: context.answer,
       toolRounds: context.toolRounds,
       elapsedMs: context.elapsedMs,
@@ -2764,6 +2863,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       else request.signal.addEventListener("abort", forwardAbort, { once: true });
     }
     const watchdog = createLaneWatchdog(budget, (reason) => {
+      if (reason === LANE_STALL_REASON) this._signalLaneStalled(laneId, label, activeContract);
       if (!controller.signal.aborted) controller.abort(reason);
     });
     const meter = activeContract
@@ -2813,9 +2913,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const contractEditProvider = activeContract && laneEditProvider
       ? createContractEditProvider(laneEditProvider, activeContract, scopeContext, scopeGate)
       : laneEditProvider;
-    const laneLspProvider = activeContract && reviewedLspProvider
+    const contractLspProvider = activeContract && reviewedLspProvider
       ? createContractLspProvider(reviewedLspProvider, activeContract, scopeContext, scopeGate)
       : reviewedLspProvider;
+    // Claims wrap outside the contract: scope is settled first, then the claim on the real paths.
+    const laneClaims = this._claimsForLane(laneId, label, activeContract);
+    const claimedEditProvider = laneClaims && contractEditProvider ? createClaimEditProvider(contractEditProvider, laneClaims) : contractEditProvider;
+    const laneLspProvider = laneClaims && contractLspProvider ? createClaimLspProvider(contractLspProvider, laneClaims) : contractLspProvider;
 
     // Hoisted so the finally below can always unregister it from the live-session set,
     // even when the lane exits via an exception mid-run.
@@ -2862,6 +2966,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         mapNotes: () => this._readCfgAgentNotes(),
         delegatedLane: true,
         ...(activeContract ? { workContract: activeContract } : {}),
+        ...(laneClaims ? { claims: laneClaims } : {}),
         fastMode: subPSettings.fastMode,
         taskBudgetTokens: subPSettings.taskBudgetTokens,
         contextEditingEnabled: subPSettings.contextEditingEnabled,
@@ -2887,7 +2992,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           // render aborted the whole lane as "blocked on human approval".
           renderDocument: (request, signal) => childChromium.renderDocument(request, signal),
         },
-        editProvider: contractEditProvider,
+        editProvider: claimedEditProvider,
         diagnosticsProvider: this._diagnostics,
         lspProvider: laneLspProvider,
         // A loop lane is reviewed by its own policy; a chat lane follows the chat's approval mode.
@@ -2994,6 +3099,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       const receipt = this._laneReceipt(activeContract, meter, {
         session: childSession, controller, ok, answer, errorMessage, timedOut, cancelled,
         filesTouched, toolRounds, elapsedMs, laneId, subRequestId,
+        ...(laneClaims ? { claims: laneClaims } : {}),
       });
       yield {
         type: "subagent_tool_result",
@@ -3032,6 +3138,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       this._retainLane(subRequestId, { laneId, label, session: childSession, ...(activeContract ? { contract: activeContract } : {}) });
     } finally {
       if (liveChild) this._liveSubagentSessions.delete(liveChild);
+      // Claims end with the lane, however it ended. A resumed lane takes them again as it writes.
+      laneClaims?.release();
       watchdog.stop();
       request.signal?.removeEventListener("abort", forwardAbort);
       // Safe to dispose even though the session may be retained for follow-up: the runner

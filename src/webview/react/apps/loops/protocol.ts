@@ -36,6 +36,34 @@ export interface LoopIteration {
   endedAt?: string;
   usd?: number;
   activity: LoopActivity[];
+  /** Why the scheduler picked this ticket when it did (graph scheduler). */
+  scheduledBecause?: string[];
+  receiptStatus?: string;
+}
+
+export interface LoopResumeOffer {
+  at: string;
+  ready: string[];
+  because: string;
+  signalIds: string[];
+}
+
+export interface LoopReassessment {
+  signalId: string;
+  kind: string;
+  taskId: string;
+  detail: string;
+  at: string;
+  source: string;
+}
+
+export interface LoopSchedulingDecision {
+  at: string;
+  mode: "graph" | "shadow";
+  chosen: Array<{ ticketId: string; score: number; reasons: string[] }>;
+  withheld: Array<{ ticketId: string; reason: string; detail: string }>;
+  wouldChoose?: string[];
+  signalIds?: string[];
 }
 
 export interface LoopExecution {
@@ -53,6 +81,7 @@ export interface LoopTicketState {
   parkedOnGate?: string;
   parkedAt?: string;
   touchedFiles: string[];
+  passedOver?: number;
 }
 
 export interface LoopTicket {
@@ -83,16 +112,20 @@ export interface LoopRecord {
     id: string;
     title: string;
     status: LoopStatus;
-    queue: { statuses: string[]; ids: string[]; labels: string[]; priorities: string[]; areas: string[]; respectBlockedBy: boolean };
+    queue: { statuses: string[]; ids: string[]; labels: string[]; priorities: string[]; areas: string[]; respectBlockedBy: boolean; dependencySatisfiedBy?: "closed" | "verified_review" };
     workers: { concurrency: number; profileId?: string };
     ceilings: { maxTickets?: number; maxWallClockMs?: number; maxUsd?: number; maxConsecutiveFailures: number };
     approvals: { reviewer: "continuation"; autoApproveTiers: string[]; onGate: string; notify: boolean };
     startedAt?: string;
     endedAt?: string;
     endedReason?: string;
+    blockedOn?: "dependencies" | "mixed";
     createdAt: string;
     updatedAt: string;
   };
+  resumeOffer?: LoopResumeOffer;
+  reassessments?: LoopReassessment[];
+  decisions?: LoopSchedulingDecision[];
   executions: LoopExecution[];
   iterations: LoopIteration[];
   ticketState: LoopTicketState[];
@@ -109,6 +142,8 @@ export interface LoopsStateMessage {
   selectedLoopId?: string;
   availableTickets: LoopTicket[];
   maxConcurrency: number;
+  /** Work contracts are on, so receipts can say a blocker's work was verified. */
+  workContracts?: boolean;
   reviewer: { mode: string; label: string; detail: string };
 }
 

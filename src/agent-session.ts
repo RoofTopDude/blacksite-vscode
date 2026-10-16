@@ -107,7 +107,8 @@ import { buildDesignDigest, DEFAULT_DIGEST_LIMITS } from "./preview-design-diges
 import { buildCodePreview, buildMountPreview, type PreviewMount } from "./preview-build.js";
 import { renderPreview } from "./preview-render.js";
 import { prepareVisionImage } from "./vision-image.js";
-import { FileFreshnessLedger, freshnessWarning } from "./file-freshness.js";
+import { FileFreshnessLedger, freshnessWarning, writtenPathsFromResult } from "./file-freshness.js";
+import { SHELL_TOOLS, type SessionClaims } from "./orchestration/claims/session-claims.js";
 import type {
   AgentStopReason,
   CompressionTrigger,
@@ -996,6 +997,12 @@ export interface AgentSessionOptions {
    * session records what it changed and checked for the lane's receipt. See src/orchestration.
    */
   workContract?: ActiveWorkContract;
+  /**
+   * Concurrency claims (blacksite.orchestration.claims): checked right before each write this
+   * session makes, so two lanes cannot silently write one file at once. A lane's claims can refuse
+   * a write; the main chat session's only warn. Shell commands are diffed afterwards.
+   */
+  claims?: SessionClaims;
   /** Backs the read-only work_graph tool ("work.*" runtime types). Absent: the tool is not offered. */
   workGraphProvider?: { enabled?(): boolean; dispatch(op: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> };
   /** Probe installed toolchains again (workspace_refresh): something may have been installed since. */
@@ -1410,6 +1417,10 @@ export class AgentSession {
       write, silently discarding the session's own earlier change. See
       file-freshness.ts for why only some tools are worth warning about. */
   private readonly _freshness: FileFreshnessLedger;
+  /** Warnings from claims (the main session writing where a lane works), attached to that call's result. */
+  private readonly _claimWarnings = new Map<string, string>();
+  /** Shell calls whose working tree was captured before they ran, so the diff runs after. */
+  private readonly _shellCaptured = new Set<string>();
   /** Forced end-of-turn continuations issued so far for the current
       unresolved batch of dirty files — resets to 0 once _dirtyMapFiles empties,
       so a later, unrelated editing episode gets its own fresh budget rather
@@ -2276,6 +2287,46 @@ export class AgentSession {
         + "Keep the change inside the contract's files, or report what else needs to change.";
     active.refused.push({ toolName: tc.name, reason: error });
     return { ok: false, error };
+  }
+
+  /**
+   * Concurrency claims, right before a write runs: the paths this call names are claimed for this
+   * session. Another lane holding one (or having changed a file this call would overwrite since it
+   * was read) refuses the call under `enforce`; the main session is only ever warned. Every tool
+   * call keeps the session's claims alive.
+   */
+  private _claimGate(tc: ToolUseBlock, payload: Record<string, unknown>): { ok: false; error: string } | null {
+    const claims = this.opts.claims;
+    if (!claims) return null;
+    claims.touch();
+    const targets = mutationTargets(tc.name, payload);
+    if (!targets || targets.length === 0) return null;
+    const checked = claims.beforeWrite(tc.name, targets.map((target) => this._canonicalPath(target)), {
+      prefix: tc.name === "file_delete" || tc.name === "file_move",
+    });
+    if (!checked.ok) return { ok: false, error: checked.error };
+    if (checked.warning) this._claimWarnings.set(tc.id, checked.warning);
+    return null;
+  }
+
+  /** After a call: what it read and wrote, for claims; the shell diff; any warning for the result. */
+  private async _settleClaims(tc: ToolUseBlock, result: unknown, ok: boolean): Promise<unknown> {
+    const claims = this.opts.claims;
+    if (!claims) return result;
+    if (this._shellCaptured.delete(tc.id)) {
+      try { await claims.afterShell?.(); } catch { /* the command ran; its diff is bookkeeping */ }
+    }
+    if (ok) {
+      const input = tc.input && typeof tc.input === "object" ? tc.input as Record<string, unknown> : undefined;
+      const touched = this._freshness.touchedPaths(tc.name, input);
+      const writes = [...new Set([...touched.writes, ...writtenPathsFromResult(tc.name, result)])].map((file) => this._canonicalPath(file));
+      if (writes.length) claims.afterWrite(writes);
+      if (touched.reads.length) claims.noteRead(touched.reads.map((file) => this._canonicalPath(file)));
+    }
+    const warning = this._claimWarnings.get(tc.id);
+    this._claimWarnings.delete(tc.id);
+    if (!warning || !result || typeof result !== "object" || Array.isArray(result)) return result;
+    return { ...(result as object), claimWarning: warning };
   }
 
   /** Nothing is left to verify: every file the episode changed was a scratch file the session
@@ -4839,7 +4890,7 @@ export class AgentSession {
               continue;
             }
 
-            const scopeRefusal = yield* this._contractScopeGate(tc, payload);
+            const scopeRefusal = (yield* this._contractScopeGate(tc, payload)) ?? this._claimGate(tc, payload);
             if (scopeRefusal) {
               toolResults[idx] = {
                 type: "tool_result",
@@ -4924,6 +4975,14 @@ export class AgentSession {
             // previous content. Must stay ahead of the dispatch below, and must never throw.
             if (this.opts.editDiffJournal) {
               await this.opts.editDiffJournal.captureBefore(tc.id, tc.name, payload);
+            }
+            // A shell command's writes cannot be known before it runs: capture the working tree so
+            // the claims can see afterwards what it changed (claims on, delegated lanes only).
+            if (this.opts.claims?.beforeShell && SHELL_TOOLS.has(tc.name)) {
+              try {
+                await this.opts.claims.beforeShell();
+                this._shellCaptured.add(tc.id);
+              } catch { /* without a "before" there is nothing to diff; the command still runs */ }
             }
 
             try {
@@ -5513,6 +5572,7 @@ export class AgentSession {
 
             const ok = isOk(result);
             result = this._annotateFileFreshness(tc.name, tc.input, result, ok);
+            result = await this._settleClaims(tc, result, ok);
             this._trackToolResultForNotes(tc.name, result);
             result = this._trackVerification(tc.name, tc.input, result, ok);
             // Attach post-write diagnostics so file_write reports its fallout in the

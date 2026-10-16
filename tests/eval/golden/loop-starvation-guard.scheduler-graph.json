@@ -1,0 +1,782 @@
+{
+  "arm": "scheduler-graph",
+  "hooks": [
+    {
+      "at": 3300000,
+      "detail": "Every ticket in the queue has been worked.",
+      "hook": "settled:drained"
+    }
+  ],
+  "loop": {
+    "endedReason": "Every ticket in the queue has been worked.",
+    "executions": [
+      {
+        "reason": "Every ticket in the queue has been worked.",
+        "status": "drained",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 11,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 11,
+          "usd": 1.0999999999999999
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "detail": "Done.",
+        "endedAt": 300000,
+        "outcome": "succeeded",
+        "scheduledBecause": [
+          "normal priority",
+          "assigned to you",
+          "small enough to finish",
+          "unblocks 1 ticket (X-1)",
+          "on the critical path (weight 2)"
+        ],
+        "seq": 1,
+        "startedAt": 0,
+        "ticketId": "K-1",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 600000,
+        "outcome": "succeeded",
+        "scheduledBecause": [
+          "normal priority",
+          "assigned to you",
+          "small enough to finish",
+          "unblocks 1 ticket (X-2)"
+        ],
+        "seq": 2,
+        "startedAt": 300000,
+        "ticketId": "K-2",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 900000,
+        "outcome": "succeeded",
+        "scheduledBecause": [
+          "normal priority",
+          "assigned to you",
+          "small enough to finish",
+          "unblocks 1 ticket (X-3)"
+        ],
+        "seq": 3,
+        "startedAt": 600000,
+        "ticketId": "K-3",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 1200000,
+        "outcome": "succeeded",
+        "scheduledBecause": [
+          "normal priority",
+          "assigned to you",
+          "small enough to finish",
+          "unblocks 1 ticket (X-4)"
+        ],
+        "seq": 4,
+        "startedAt": 900000,
+        "ticketId": "K-4",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 1500000,
+        "outcome": "succeeded",
+        "scheduledBecause": [
+          "low priority",
+          "assigned to you",
+          "small enough to finish",
+          "passed over 4 times"
+        ],
+        "seq": 5,
+        "startedAt": 1200000,
+        "ticketId": "L-1",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 1800000,
+        "outcome": "succeeded",
+        "scheduledBecause": [
+          "normal priority",
+          "assigned to you",
+          "small enough to finish",
+          "unblocks 1 ticket (X-5)",
+          "passed over 1 time"
+        ],
+        "seq": 6,
+        "startedAt": 1500000,
+        "ticketId": "K-5",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 2100000,
+        "outcome": "succeeded",
+        "scheduledBecause": [
+          "normal priority",
+          "assigned to you",
+          "small enough to finish",
+          "unblocks 1 ticket (X-6)",
+          "passed over 1 time"
+        ],
+        "seq": 7,
+        "startedAt": 1800000,
+        "ticketId": "K-6",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 2400000,
+        "outcome": "succeeded",
+        "scheduledBecause": [
+          "normal priority",
+          "assigned to you",
+          "small enough to finish",
+          "unblocks 1 ticket (X-7)",
+          "passed over 1 time"
+        ],
+        "seq": 8,
+        "startedAt": 2100000,
+        "ticketId": "K-7",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 2700000,
+        "outcome": "succeeded",
+        "scheduledBecause": [
+          "normal priority",
+          "assigned to you",
+          "small enough to finish",
+          "unblocks 1 ticket (X-8)",
+          "passed over 1 time"
+        ],
+        "seq": 9,
+        "startedAt": 2400000,
+        "ticketId": "K-8",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 3000000,
+        "outcome": "succeeded",
+        "scheduledBecause": [
+          "normal priority",
+          "assigned to you",
+          "small enough to finish",
+          "unblocks 1 ticket (X-9)",
+          "passed over 1 time"
+        ],
+        "seq": 10,
+        "startedAt": 2700000,
+        "ticketId": "K-9",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 3300000,
+        "outcome": "succeeded",
+        "scheduledBecause": [
+          "normal priority",
+          "assigned to you",
+          "small enough to finish",
+          "unblocks 1 ticket (X-10)",
+          "passed over 1 time"
+        ],
+        "seq": 11,
+        "startedAt": 3000000,
+        "ticketId": "K-10",
+        "usd": 0.1
+      }
+    ],
+    "schedulingDecisions": [
+      {
+        "at": 0,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish",
+              "unblocks 1 ticket (X-1)",
+              "on the critical path (weight 2)"
+            ],
+            "score": 126,
+            "ticketId": "K-1"
+          }
+        ],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 0,
+        "chosen": [],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 300000,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish",
+              "unblocks 1 ticket (X-2)"
+            ],
+            "score": 101,
+            "ticketId": "K-2"
+          }
+        ],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 300000,
+        "chosen": [],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 600000,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish",
+              "unblocks 1 ticket (X-3)"
+            ],
+            "score": 101,
+            "ticketId": "K-3"
+          }
+        ],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 600000,
+        "chosen": [],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 900000,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish",
+              "unblocks 1 ticket (X-4)"
+            ],
+            "score": 101,
+            "ticketId": "K-4"
+          }
+        ],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 900000,
+        "chosen": [],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 1200000,
+        "chosen": [
+          {
+            "reasons": [
+              "low priority",
+              "assigned to you",
+              "small enough to finish",
+              "passed over 4 times"
+            ],
+            "score": 108,
+            "ticketId": "L-1"
+          }
+        ],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 1200000,
+        "chosen": [],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 1500000,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish",
+              "unblocks 1 ticket (X-5)",
+              "passed over 1 time"
+            ],
+            "score": 111,
+            "ticketId": "K-5"
+          }
+        ],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 1500000,
+        "chosen": [],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 1800000,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish",
+              "unblocks 1 ticket (X-6)",
+              "passed over 1 time"
+            ],
+            "score": 111,
+            "ticketId": "K-6"
+          }
+        ],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 1800000,
+        "chosen": [],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 2100000,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish",
+              "unblocks 1 ticket (X-7)",
+              "passed over 1 time"
+            ],
+            "score": 111,
+            "ticketId": "K-7"
+          }
+        ],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 2100000,
+        "chosen": [],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 2400000,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish",
+              "unblocks 1 ticket (X-8)",
+              "passed over 1 time"
+            ],
+            "score": 111,
+            "ticketId": "K-8"
+          }
+        ],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 2400000,
+        "chosen": [],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 2700000,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish",
+              "unblocks 1 ticket (X-9)",
+              "passed over 1 time"
+            ],
+            "score": 111,
+            "ticketId": "K-9"
+          }
+        ],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 2700000,
+        "chosen": [],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 3000000,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish",
+              "unblocks 1 ticket (X-10)",
+              "passed over 1 time"
+            ],
+            "score": 111,
+            "ticketId": "K-10"
+          }
+        ],
+        "mode": "graph",
+        "withheld": []
+      },
+      {
+        "at": 3000000,
+        "chosen": [],
+        "mode": "graph",
+        "withheld": []
+      }
+    ],
+    "status": "drained",
+    "ticketState": [
+      {
+        "attempts": 1,
+        "ticketId": "L-1",
+        "touchedFiles": [
+          "web/low.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "K-1",
+        "touchedFiles": [
+          "web/k1.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "K-2",
+        "touchedFiles": [
+          "web/k2.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "K-3",
+        "touchedFiles": [
+          "web/k3.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "K-4",
+        "touchedFiles": [
+          "web/k4.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "K-5",
+        "touchedFiles": [
+          "web/k5.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "K-6",
+        "touchedFiles": [
+          "web/k6.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "K-7",
+        "touchedFiles": [
+          "web/k7.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "K-8",
+        "touchedFiles": [
+          "web/k8.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "K-9",
+        "touchedFiles": [
+          "web/k9.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "K-10",
+        "touchedFiles": [
+          "web/k10.ts"
+        ]
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 0,
+      "dispatched": 11,
+      "failed": 0,
+      "parked": 0,
+      "succeeded": 11,
+      "usd": 1.0999999999999999
+    }
+  },
+  "scenario": "loop-starvation-guard",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "scheduler-graph",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": null,
+    "costUsd": 1.1,
+    "elapsedMs": 3300000,
+    "falseCompletions": 11,
+    "halts": 0,
+    "interventions": 0,
+    "parks": 0,
+    "repeatedFailures": 0,
+    "retries": 0,
+    "scenario": "loop-starvation-guard",
+    "selfReportedSuccess": 11,
+    "subject": "loop",
+    "subjects": 21,
+    "verifiedSuccess": 0
+  },
+  "ticketLog": [
+    {
+      "at": 299000,
+      "id": "K-2",
+      "kind": "edited",
+      "note": "user: backlog"
+    },
+    {
+      "at": 300000,
+      "id": "K-1",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 599000,
+      "id": "K-3",
+      "kind": "edited",
+      "note": "user: backlog"
+    },
+    {
+      "at": 600000,
+      "id": "K-2",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 899000,
+      "id": "K-4",
+      "kind": "edited",
+      "note": "user: backlog"
+    },
+    {
+      "at": 900000,
+      "id": "K-3",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 1199000,
+      "id": "K-5",
+      "kind": "edited",
+      "note": "user: backlog"
+    },
+    {
+      "at": 1200000,
+      "id": "K-4",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 1499000,
+      "id": "K-6",
+      "kind": "edited",
+      "note": "user: backlog"
+    },
+    {
+      "at": 1500000,
+      "id": "L-1",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 1799000,
+      "id": "K-7",
+      "kind": "edited",
+      "note": "user: backlog"
+    },
+    {
+      "at": 1800000,
+      "id": "K-5",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 2099000,
+      "id": "K-8",
+      "kind": "edited",
+      "note": "user: backlog"
+    },
+    {
+      "at": 2100000,
+      "id": "K-6",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 2399000,
+      "id": "K-9",
+      "kind": "edited",
+      "note": "user: backlog"
+    },
+    {
+      "at": 2400000,
+      "id": "K-7",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 2699000,
+      "id": "K-10",
+      "kind": "edited",
+      "note": "user: backlog"
+    },
+    {
+      "at": 2700000,
+      "id": "K-8",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 3000000,
+      "id": "K-9",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 3300000,
+      "id": "K-10",
+      "kind": "review",
+      "note": "Done."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "L-1",
+      "status": "review"
+    },
+    {
+      "id": "K-1",
+      "status": "review"
+    },
+    {
+      "id": "K-2",
+      "status": "review"
+    },
+    {
+      "id": "K-3",
+      "status": "review"
+    },
+    {
+      "id": "K-4",
+      "status": "review"
+    },
+    {
+      "id": "K-5",
+      "status": "review"
+    },
+    {
+      "id": "K-6",
+      "status": "review"
+    },
+    {
+      "id": "K-7",
+      "status": "review"
+    },
+    {
+      "id": "K-8",
+      "status": "review"
+    },
+    {
+      "id": "K-9",
+      "status": "review"
+    },
+    {
+      "id": "K-10",
+      "status": "review"
+    },
+    {
+      "id": "X-1",
+      "status": "in_progress"
+    },
+    {
+      "id": "X-2",
+      "status": "in_progress"
+    },
+    {
+      "id": "X-3",
+      "status": "in_progress"
+    },
+    {
+      "id": "X-4",
+      "status": "in_progress"
+    },
+    {
+      "id": "X-5",
+      "status": "in_progress"
+    },
+    {
+      "id": "X-6",
+      "status": "in_progress"
+    },
+    {
+      "id": "X-7",
+      "status": "in_progress"
+    },
+    {
+      "id": "X-8",
+      "status": "in_progress"
+    },
+    {
+      "id": "X-9",
+      "status": "in_progress"
+    },
+    {
+      "id": "X-10",
+      "status": "in_progress"
+    }
+  ]
+}

@@ -1,0 +1,120 @@
+{
+  "arm": "baseline",
+  "hooks": [
+    {
+      "at": 0,
+      "detail": "1 ticket(s) remain, none dispatchable: T-2 (blocked)",
+      "hook": "settled:blocked"
+    },
+    {
+      "at": 2400000,
+      "detail": "Every ticket in the queue has been worked.",
+      "hook": "settled:drained"
+    }
+  ],
+  "loop": {
+    "endedReason": "Every ticket in the queue has been worked.",
+    "executions": [
+      {
+        "reason": "1 ticket(s) remain, none dispatchable: T-2 (blocked)",
+        "status": "blocked",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 0,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 0,
+          "usd": 0
+        }
+      },
+      {
+        "reason": "Every ticket in the queue has been worked.",
+        "status": "drained",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 1,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 1,
+          "usd": 0.1
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "detail": "Parser accepts the new token.",
+        "endedAt": 2400000,
+        "outcome": "succeeded",
+        "seq": 1,
+        "startedAt": 1800000,
+        "ticketId": "T-2",
+        "usd": 0.1
+      }
+    ],
+    "status": "drained",
+    "ticketState": [
+      {
+        "attempts": 1,
+        "ticketId": "T-2",
+        "touchedFiles": [
+          "lib/parse/b.go"
+        ]
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 0,
+      "dispatched": 1,
+      "failed": 0,
+      "parked": 0,
+      "succeeded": 1,
+      "usd": 0.1
+    }
+  },
+  "scenario": "loop-dependency-chain-blocked",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "baseline",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 0.1,
+    "costUsd": 0.1,
+    "elapsedMs": 2400000,
+    "falseCompletions": 0,
+    "halts": 0,
+    "interventions": 1,
+    "parks": 0,
+    "repeatedFailures": 0,
+    "retries": 0,
+    "scenario": "loop-dependency-chain-blocked",
+    "selfReportedSuccess": 1,
+    "subject": "loop",
+    "subjects": 2,
+    "verifiedSuccess": 1
+  },
+  "ticketLog": [
+    {
+      "at": 600000,
+      "id": "T-9",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 2400000,
+      "id": "T-2",
+      "kind": "review",
+      "note": "Parser accepts the new token."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-2",
+      "status": "review"
+    },
+    {
+      "id": "T-9",
+      "status": "done"
+    }
+  ]
+}

@@ -1,0 +1,303 @@
+{
+  "arm": "observe",
+  "hooks": [
+    {
+      "at": 600000,
+      "detail": "wc_1:T-1",
+      "hook": "abandoned_contract"
+    },
+    {
+      "at": 600000,
+      "detail": "",
+      "hook": "crash"
+    },
+    {
+      "at": 1800000,
+      "detail": "Every ticket in the queue has been worked.",
+      "hook": "settled:drained"
+    }
+  ],
+  "loop": {
+    "endedReason": "Every ticket in the queue has been worked.",
+    "executions": [
+      {
+        "reason": "Paused by an extension restart. Resume when ready.",
+        "status": "paused",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 1,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 0,
+          "usd": 0
+        }
+      },
+      {
+        "reason": "Every ticket in the queue has been worked.",
+        "status": "drained",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 2,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 2,
+          "usd": 0.2
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "contractId": "wc_1",
+        "detail": "The extension host restarted while this lane was running. Any work it completed is on disk; the lane itself could not be resumed.",
+        "endedAt": 600000,
+        "outcome": "abandoned",
+        "seq": 1,
+        "startedAt": 0,
+        "ticketId": "T-1"
+      },
+      {
+        "contractId": "contract_for_T-1_2",
+        "detail": "Done after the restart.",
+        "endedAt": 1800000,
+        "outcome": "succeeded",
+        "receiptId": "receipt_2",
+        "receiptStatus": "verified",
+        "seq": 2,
+        "startedAt": 1200000,
+        "ticketId": "T-1",
+        "usd": 0.1
+      },
+      {
+        "contractId": "contract_for_T-2_1",
+        "detail": "Done.",
+        "endedAt": 1800000,
+        "outcome": "succeeded",
+        "receiptId": "receipt_3",
+        "receiptStatus": "verified",
+        "seq": 3,
+        "startedAt": 1200000,
+        "ticketId": "T-2",
+        "usd": 0.1
+      }
+    ],
+    "schedulingDecisions": [
+      {
+        "at": 0,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish"
+            ],
+            "score": 0,
+            "ticketId": "T-1"
+          }
+        ],
+        "mode": "shadow",
+        "withheld": [
+          {
+            "detail": "Blocked by T-9.",
+            "reason": "blocked",
+            "ticketId": "T-2"
+          }
+        ],
+        "wouldChoose": [
+          "T-1"
+        ]
+      },
+      {
+        "at": 0,
+        "chosen": [],
+        "mode": "shadow",
+        "withheld": [
+          {
+            "detail": "Blocked by T-9.",
+            "reason": "blocked",
+            "ticketId": "T-2"
+          }
+        ],
+        "wouldChoose": []
+      },
+      {
+        "at": 1200000,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish"
+            ],
+            "score": 0,
+            "ticketId": "T-1"
+          },
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish"
+            ],
+            "score": 0,
+            "ticketId": "T-2"
+          }
+        ],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": [
+          "T-1",
+          "T-2"
+        ]
+      },
+      {
+        "at": 1200000,
+        "chosen": [],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": []
+      }
+    ],
+    "status": "drained",
+    "ticketState": [
+      {
+        "attempts": 1,
+        "ticketId": "T-1",
+        "touchedFiles": [
+          "src/core/a.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "T-2",
+        "touchedFiles": [
+          "src/core/b.ts"
+        ]
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 0,
+      "dispatched": 3,
+      "failed": 1,
+      "parked": 0,
+      "succeeded": 2,
+      "usd": 0.2
+    }
+  },
+  "reconciliations": [
+    {
+      "action": "wake_loop",
+      "applied": false,
+      "at": 1800000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": false,
+      "at": 1800000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    }
+  ],
+  "scenario": "loop-restart-replay",
+  "scorecard": {
+    "abandoned": 1,
+    "arm": "observe",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 0.1,
+    "costUsd": 0.2,
+    "elapsedMs": 1800000,
+    "falseCompletions": 0,
+    "halts": 0,
+    "interventions": 1,
+    "parks": 0,
+    "receipts": {
+      "agree": 2,
+      "disagree": 0,
+      "unknown": 0
+    },
+    "repeatedFailures": 0,
+    "retries": 1,
+    "scenario": "loop-restart-replay",
+    "selfReportedSuccess": 2,
+    "subject": "loop",
+    "subjects": 3,
+    "verifiedSuccess": 2
+  },
+  "signals": [
+    {
+      "at": 600000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 1,
+      "source": "user",
+      "taskId": "ticket:T-9"
+    },
+    {
+      "at": 600000,
+      "kind": "integration_ready",
+      "observer": "ticket.blockedBy",
+      "seq": 2,
+      "source": "user",
+      "taskId": "ticket:T-2"
+    },
+    {
+      "at": 1800000,
+      "kind": "work_completed",
+      "observer": "receipt",
+      "seq": 3,
+      "source": "host",
+      "taskId": "ticket:T-1"
+    },
+    {
+      "at": 1800000,
+      "kind": "work_completed",
+      "observer": "receipt",
+      "seq": 4,
+      "source": "host",
+      "taskId": "ticket:T-2"
+    }
+  ],
+  "ticketLog": [
+    {
+      "at": 600000,
+      "id": "T-9",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 600000,
+      "id": "T-1",
+      "kind": "attempt",
+      "note": "A loop lane was interrupted by an extension restart. Re-dispatched on resume."
+    },
+    {
+      "at": 1800000,
+      "id": "T-1",
+      "kind": "review",
+      "note": "Done after the restart."
+    },
+    {
+      "at": 1800000,
+      "id": "T-2",
+      "kind": "review",
+      "note": "Done."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-1",
+      "status": "review"
+    },
+    {
+      "id": "T-2",
+      "status": "review"
+    },
+    {
+      "id": "T-9",
+      "status": "done"
+    }
+  ]
+}

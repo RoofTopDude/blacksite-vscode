@@ -1,0 +1,160 @@
+{
+  "arm": "baseline",
+  "hooks": [
+    {
+      "at": 600000,
+      "detail": "",
+      "hook": "crash"
+    },
+    {
+      "at": 1800000,
+      "detail": "Every ticket in the queue has been worked.",
+      "hook": "settled:drained"
+    }
+  ],
+  "loop": {
+    "endedReason": "Every ticket in the queue has been worked.",
+    "executions": [
+      {
+        "reason": "Paused by an extension restart. Resume when ready.",
+        "status": "paused",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 1,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 0,
+          "usd": 0
+        }
+      },
+      {
+        "reason": "Every ticket in the queue has been worked.",
+        "status": "drained",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 2,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 2,
+          "usd": 0.2
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "detail": "The extension host restarted while this lane was running. Any work it completed is on disk; the lane itself could not be resumed.",
+        "endedAt": 600000,
+        "outcome": "abandoned",
+        "seq": 1,
+        "startedAt": 0,
+        "ticketId": "T-1"
+      },
+      {
+        "detail": "Done after the restart.",
+        "endedAt": 1800000,
+        "outcome": "succeeded",
+        "seq": 2,
+        "startedAt": 1200000,
+        "ticketId": "T-1",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 1800000,
+        "outcome": "succeeded",
+        "seq": 3,
+        "startedAt": 1200000,
+        "ticketId": "T-2",
+        "usd": 0.1
+      }
+    ],
+    "status": "drained",
+    "ticketState": [
+      {
+        "attempts": 1,
+        "ticketId": "T-1",
+        "touchedFiles": [
+          "src/core/a.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "T-2",
+        "touchedFiles": [
+          "src/core/b.ts"
+        ]
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 0,
+      "dispatched": 3,
+      "failed": 1,
+      "parked": 0,
+      "succeeded": 2,
+      "usd": 0.2
+    }
+  },
+  "scenario": "loop-restart-replay",
+  "scorecard": {
+    "abandoned": 1,
+    "arm": "baseline",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 0.1,
+    "costUsd": 0.2,
+    "elapsedMs": 1800000,
+    "falseCompletions": 0,
+    "halts": 0,
+    "interventions": 1,
+    "parks": 0,
+    "repeatedFailures": 0,
+    "retries": 1,
+    "scenario": "loop-restart-replay",
+    "selfReportedSuccess": 2,
+    "subject": "loop",
+    "subjects": 3,
+    "verifiedSuccess": 2
+  },
+  "ticketLog": [
+    {
+      "at": 600000,
+      "id": "T-9",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 600000,
+      "id": "T-1",
+      "kind": "attempt",
+      "note": "A loop lane was interrupted by an extension restart. Re-dispatched on resume."
+    },
+    {
+      "at": 1800000,
+      "id": "T-1",
+      "kind": "review",
+      "note": "Done after the restart."
+    },
+    {
+      "at": 1800000,
+      "id": "T-2",
+      "kind": "review",
+      "note": "Done."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-1",
+      "status": "review"
+    },
+    {
+      "id": "T-2",
+      "status": "review"
+    },
+    {
+      "id": "T-9",
+      "status": "done"
+    }
+  ]
+}

@@ -2194,6 +2194,7 @@ export const LOOP_TOOLS: ToolDefinition[] = [
       priorities: arr(enumStr("Ticket priority.", ["urgent", "high", "normal", "low"]), "Priorities to include"),
       areas: arr({ type: "string" }, "Ticket areas to include"),
       respectBlockedBy: bool("Withhold tickets while their open blockers remain; defaults true"),
+      dependencySatisfiedBy: enumStr("When a blocker counts as met. closed (default): only once the user closes it. verified_review: also once it is in review and its latest work receipt is verified (needs work contracts). Closing tickets stays the user's either way.", ["closed", "verified_review"]),
       concurrency: num("Requested worker count; clamped to the safe host maximum"),
       maxTickets: num("Stop after this many dispatches"),
       maxUsd: num("Stop when estimated model spend reaches this amount"),

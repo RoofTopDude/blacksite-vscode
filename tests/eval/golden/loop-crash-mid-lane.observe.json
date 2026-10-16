@@ -80,6 +80,86 @@
         "usd": 0.25
       }
     ],
+    "schedulingDecisions": [
+      {
+        "at": 0,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish"
+            ],
+            "score": 0,
+            "ticketId": "T-2"
+          }
+        ],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": [
+          "T-2"
+        ]
+      },
+      {
+        "at": 0,
+        "chosen": [],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": []
+      },
+      {
+        "at": 200000,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "large"
+            ],
+            "score": 0,
+            "ticketId": "T-1"
+          }
+        ],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": [
+          "T-1"
+        ]
+      },
+      {
+        "at": 200000,
+        "chosen": [],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": []
+      },
+      {
+        "at": 600000,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "large"
+            ],
+            "score": 0,
+            "ticketId": "T-1"
+          }
+        ],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": [
+          "T-1"
+        ]
+      },
+      {
+        "at": 600000,
+        "chosen": [],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": []
+      }
+    ],
     "status": "drained",
     "ticketState": [
       {
@@ -106,6 +186,22 @@
       "usd": 0.35
     }
   },
+  "reconciliations": [
+    {
+      "action": "wake_loop",
+      "applied": false,
+      "at": 200000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": false,
+      "at": 1000000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    }
+  ],
   "scenario": "loop-crash-mid-lane",
   "scorecard": {
     "abandoned": 1,
@@ -134,6 +230,24 @@
     "subjects": 2,
     "verifiedSuccess": 2
   },
+  "signals": [
+    {
+      "at": 200000,
+      "kind": "work_completed",
+      "observer": "receipt",
+      "seq": 1,
+      "source": "host",
+      "taskId": "ticket:T-2"
+    },
+    {
+      "at": 1000000,
+      "kind": "work_completed",
+      "observer": "receipt",
+      "seq": 2,
+      "source": "host",
+      "taskId": "ticket:T-1"
+    }
+  ],
   "ticketLog": [
     {
       "at": 200000,

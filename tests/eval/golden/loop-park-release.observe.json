@@ -81,6 +81,60 @@
         "usd": 0.08
       }
     ],
+    "schedulingDecisions": [
+      {
+        "at": 0,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish"
+            ],
+            "score": 0,
+            "ticketId": "T-1"
+          }
+        ],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": [
+          "T-1"
+        ]
+      },
+      {
+        "at": 0,
+        "chosen": [],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": []
+      },
+      {
+        "at": 400001,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish"
+            ],
+            "score": 0,
+            "ticketId": "T-1"
+          }
+        ],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": [
+          "T-1"
+        ]
+      },
+      {
+        "at": 400001,
+        "chosen": [],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": []
+      }
+    ],
     "status": "drained",
     "ticketState": [
       {
@@ -100,6 +154,15 @@
       "usd": 0.13
     }
   },
+  "reconciliations": [
+    {
+      "action": "wake_loop",
+      "applied": false,
+      "at": 550001,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    }
+  ],
   "scenario": "loop-park-release",
   "scorecard": {
     "abandoned": 0,
@@ -128,6 +191,16 @@
     "subjects": 1,
     "verifiedSuccess": 1
   },
+  "signals": [
+    {
+      "at": 550001,
+      "kind": "work_completed",
+      "observer": "receipt",
+      "seq": 1,
+      "source": "host",
+      "taskId": "ticket:T-1"
+    }
+  ],
   "ticketLog": [
     {
       "at": 90000,

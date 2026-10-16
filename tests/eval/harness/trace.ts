@@ -13,6 +13,7 @@ import type { LoopCeilings, LoopQueueSpec, LoopWorkerSpec } from "../../../src/l
 import type { LoopDispatchResult } from "../../../src/loops/loop-supervisor.js";
 import type { PlanStepStatus, StepEvidence } from "../../../src/planning-store.js";
 import type { ReceiptStatus } from "../../../src/orchestration/work-receipt.js";
+import type { TicketStatus } from "../../../src/ticket-store.js";
 
 export interface TraceTicket {
   id: string;
@@ -23,6 +24,10 @@ export interface TraceTicket {
   areas?: string[];
   blockedBy?: string[];
   acceptanceCriteria?: string[];
+  /** Defaults to backlog. A ticket outside the loop's queue (someone else's) is in_progress. */
+  status?: TicketStatus;
+  assignee?: "agent" | "user" | "unassigned";
+  children?: string[];
 }
 
 export interface LoopTraceHeader {
@@ -30,6 +35,8 @@ export interface LoopTraceHeader {
   scenario: string;
   subject: "loop";
   description: string;
+  /** Extra arms beyond baseline/observe/enforce, by name (run-scenarios EXTRA_ARMS). */
+  arms?: string[];
   setup: {
     tickets: TraceTicket[];
     loop: { title?: string; queue?: Partial<LoopQueueSpec>; workers?: Partial<LoopWorkerSpec>; ceilings?: Partial<LoopCeilings> };
@@ -41,6 +48,7 @@ export interface PlanRunTraceHeader {
   scenario: string;
   subject: "plan_run";
   description: string;
+  arms?: string[];
   setup: {
     plan: { id?: string; title?: string; phases: Array<{ id: string; title?: string; files?: string[]; steps: Array<{ id: string; title?: string }> }> };
     charter?: Record<string, unknown>;
@@ -68,6 +76,14 @@ export type LoopTraceEvent =
   | LaneEvent
   | { op: "user"; at: number; action: LoopUserAction; ticket?: string }
   | { op: "crash"; at: number }
+  /**
+   * Someone changes a ticket on the board (#14): a blocker closed, a dependency added. With
+   * `crashBeforeReconcile` the host dies after the change is journaled and before any consumer
+   * saw it, which is the restart case signals must survive without dispatching twice.
+   */
+  | { op: "ticket"; at: number; ticket: string; status?: TicketStatus; addBlockedBy?: string[]; actor?: "user" | "agent"; crashBeforeReconcile?: boolean }
+  /** Every source hands over everything it already reported, again. Repeats must change nothing. */
+  | { op: "redeliver"; at: number }
   | { op: "verifier"; subject: string; result: "pass" | "fail" };
 
 export type PlanRunTraceEvent =

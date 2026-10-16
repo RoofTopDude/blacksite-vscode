@@ -1,0 +1,197 @@
+{
+  "arm": "signals-act",
+  "hooks": [
+    {
+      "at": 3600000,
+      "detail": "Every ticket in the queue has been worked.",
+      "hook": "settled:drained"
+    }
+  ],
+  "loop": {
+    "endedReason": "Every ticket in the queue has been worked.",
+    "executions": [
+      {
+        "reason": "Every ticket in the queue has been worked.",
+        "status": "drained",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 2,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 2,
+          "usd": 0.30000000000000004
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "contractId": "contract_for_T-1_1",
+        "detail": "Request ids are propagated.",
+        "endedAt": 3600000,
+        "outcome": "succeeded",
+        "receiptId": "receipt_1",
+        "receiptStatus": "verified",
+        "seq": 1,
+        "startedAt": 0,
+        "ticketId": "T-1",
+        "usd": 0.2
+      },
+      {
+        "contractId": "contract_for_T-2_1",
+        "detail": "The retry budget reads the new header.",
+        "endedAt": 1800000,
+        "outcome": "succeeded",
+        "receiptId": "receipt_2",
+        "receiptStatus": "verified",
+        "seq": 2,
+        "startedAt": 1200000,
+        "ticketId": "T-2",
+        "usd": 0.1
+      }
+    ],
+    "status": "drained",
+    "ticketState": [
+      {
+        "attempts": 1,
+        "ticketId": "T-2",
+        "touchedFiles": [
+          "services/api/src/b.ts"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "T-1",
+        "touchedFiles": [
+          "services/api/src/a.ts"
+        ]
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 0,
+      "dispatched": 2,
+      "failed": 0,
+      "parked": 0,
+      "succeeded": 2,
+      "usd": 0.30000000000000004
+    }
+  },
+  "reconciliations": [
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 1200000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 1800000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 3600000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    }
+  ],
+  "scenario": "loop-dependency-chain-running",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "signals-act",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 0.15,
+    "costUsd": 0.3,
+    "elapsedMs": 3600000,
+    "falseCompletions": 0,
+    "halts": 0,
+    "interventions": 0,
+    "parks": 0,
+    "receipts": {
+      "agree": 2,
+      "disagree": 0,
+      "unknown": 0
+    },
+    "repeatedFailures": 0,
+    "retries": 0,
+    "scenario": "loop-dependency-chain-running",
+    "selfReportedSuccess": 2,
+    "subject": "loop",
+    "subjects": 3,
+    "verifiedSuccess": 2
+  },
+  "signals": [
+    {
+      "at": 1200000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 1,
+      "source": "user",
+      "taskId": "ticket:T-9"
+    },
+    {
+      "at": 1200000,
+      "kind": "integration_ready",
+      "observer": "ticket.blockedBy",
+      "seq": 2,
+      "source": "user",
+      "taskId": "ticket:T-2"
+    },
+    {
+      "at": 1800000,
+      "kind": "work_completed",
+      "observer": "receipt",
+      "seq": 3,
+      "source": "host",
+      "taskId": "ticket:T-2"
+    },
+    {
+      "at": 3600000,
+      "kind": "work_completed",
+      "observer": "receipt",
+      "seq": 4,
+      "source": "host",
+      "taskId": "ticket:T-1"
+    }
+  ],
+  "ticketLog": [
+    {
+      "at": 1200000,
+      "id": "T-9",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 1800000,
+      "id": "T-2",
+      "kind": "review",
+      "note": "The retry budget reads the new header."
+    },
+    {
+      "at": 3600000,
+      "id": "T-1",
+      "kind": "review",
+      "note": "Request ids are propagated."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-1",
+      "status": "review"
+    },
+    {
+      "id": "T-2",
+      "status": "review"
+    },
+    {
+      "id": "T-9",
+      "status": "done"
+    }
+  ]
+}

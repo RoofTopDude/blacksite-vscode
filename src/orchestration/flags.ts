@@ -11,6 +11,9 @@
  */
 
 export type WorkContractsMode = "off" | "observe" | "enforce";
+export type SignalsMode = "off" | "observe" | "act";
+export type ClaimsMode = "off" | "observe" | "enforce";
+export type SchedulerMode = "legacy" | "shadow" | "graph";
 
 export interface OrchestrationFlags {
   /** #11. `observe` records contracts and receipts without changing behaviour; `enforce` adds
@@ -18,6 +21,15 @@ export interface OrchestrationFlags {
   workContracts: WorkContractsMode;
   /** #12. Builds the derived work graph and exposes its read-only queries. */
   workGraph: boolean;
+  /** #14. Typed signals from what the host observes, and consumers that reconcile loops and runs
+   *  with them. `observe` journals signals and what consumers would do; `act` lets them do it. */
+  signals: SignalsMode;
+  /** #19. Short-lived claims on the files a delegated lane writes. `observe` records collisions;
+   *  `enforce` refuses a write into a file another lane holds. */
+  claims: ClaimsMode;
+  /** #15. How a ticket loop orders and admits work. `shadow` records what the graph-aware
+   *  scheduler would have chosen; `graph` uses it. Needs the work graph; legacy without it. */
+  scheduler: SchedulerMode;
 }
 
 export interface OrchestrationFlagSpec {
@@ -51,12 +63,47 @@ export const ORCHESTRATION_FLAGS: readonly OrchestrationFlagSpec[] = [
     issue: 12,
     rollback: "Set to false. The graph is derived and never written back, so nothing needs undoing.",
   },
+  {
+    id: "signals",
+    setting: "blacksite.orchestration.signals",
+    values: ["off", "observe", "act"],
+    baseline: "off",
+    shadow: "observe",
+    issue: 14,
+    rollback: "Set to off. The journal under .blacksite/orchestration/signals is no longer written or read, and loops and runs behave as before.",
+  },
+  {
+    id: "claims",
+    setting: "blacksite.orchestration.claims",
+    values: ["off", "observe", "enforce"],
+    baseline: "off",
+    shadow: "observe",
+    issue: 19,
+    rollback: "Set to off. Claims live in memory only, so nothing is left behind.",
+  },
+  {
+    id: "scheduler",
+    setting: "blacksite.orchestration.scheduler",
+    values: ["legacy", "shadow", "graph"],
+    baseline: "legacy",
+    shadow: "shadow",
+    issue: 15,
+    rollback: "Set to legacy. Scheduling decisions already recorded stay on the loop as history and are not read.",
+  },
 ];
 
 export const BASELINE_ORCHESTRATION_FLAGS: OrchestrationFlags = Object.freeze({
   workContracts: "off",
   workGraph: false,
+  signals: "off",
+  claims: "off",
+  scheduler: "legacy",
 });
+
+/** Every flag at its shadow value where it has one: records everything, changes nothing. */
+export const SHADOW_ORCHESTRATION_FLAGS: OrchestrationFlags = Object.freeze(Object.fromEntries(
+  ORCHESTRATION_FLAGS.map((spec) => [spec.id, spec.shadow ?? spec.baseline]),
+) as unknown as OrchestrationFlags);
 
 /** Read every flag, falling back to the baseline for anything missing or invalid. A mistyped
  *  setting must leave the product behaving as it did, never in a half-enabled state. */

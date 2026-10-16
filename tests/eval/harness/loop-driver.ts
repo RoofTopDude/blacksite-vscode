@@ -9,15 +9,22 @@
  */
 
 import { LoopStore } from "../../../src/loops/loop-store.js";
+import { schedulingGraphFrom } from "../../../src/loops/scheduling-graph.js";
+import { WorkGraph } from "../../../src/orchestration/work-graph/graph.js";
 import {
   LoopSupervisor,
+  type LoopSchedulingContext,
   type LoopDispatchRequest,
   type LoopDispatchResult,
   type LoopTicketGateway,
 } from "../../../src/loops/loop-supervisor.js";
 import type { LoopRecord } from "../../../src/loops/loop-model.js";
-import type { WorkContractsMode } from "../../../src/orchestration/flags.js";
-import type { ReceiptSummary } from "../../../src/orchestration/work-receipt.js";
+import type { OrchestrationFlags } from "../../../src/orchestration/flags.js";
+import type { ReceiptSummary, WorkReceipt } from "../../../src/orchestration/work-receipt.js";
+import { SignalJournal } from "../../../src/orchestration/signals/journal.js";
+import { createSignalPorts } from "../../../src/orchestration/signals/ports.js";
+import { SignalService } from "../../../src/orchestration/signals/service.js";
+import type { OrchestrationSignal } from "../../../src/orchestration/signals/model.js";
 import { failureSignature } from "../../../src/plans/run-tripwires.js";
 import type { Ticket, TicketStatus } from "../../../src/ticket-store.js";
 import { EPOCH, sequentialIds, settle, VirtualClock } from "./canonical.js";
@@ -32,13 +39,16 @@ export interface LoopReplay {
   ticketLog: Array<{ at: number; id: string; kind: string; note: string }>;
   hooks: Array<{ at: number; hook: string; detail: string }>;
   scorecard: Scorecard;
+  /** #14, when signals are on: what was journaled, and what consumers did (or would have). */
+  signals?: Array<{ seq: number; at: number; kind: string; taskId: string; source: string; observer: string }>;
+  reconciliations?: Array<{ at: number; consumer: string; action: string; target: string; applied: boolean }>;
 }
 
 function toTicket(input: TraceTicket, index: number): Ticket {
   return {
     id: input.id,
     title: input.title ?? `Ticket ${input.id}`,
-    status: "backlog",
+    status: input.status ?? "backlog",
     statusSource: "manual",
     priority: input.priority ?? "normal",
     complexity: input.complexity ?? "small",
@@ -50,8 +60,8 @@ function toTicket(input: TraceTicket, index: number): Ticket {
     blockedBy: input.blockedBy ?? [],
     blocks: [],
     relatedTo: [],
-    children: [],
-    assignee: "agent",
+    children: input.children ?? [],
+    assignee: input.assignee ?? "agent",
     origin: "user",
     events: [],
     createdAt: new Date(Date.parse("2025-12-31T00:00:00.000Z") + index * 1000).toISOString(),
@@ -62,12 +72,36 @@ function toTicket(input: TraceTicket, index: number): Ticket {
 /** The ticket board, in memory. Records every note the loop leaves, in order. */
 class ReplayTickets implements LoopTicketGateway {
   readonly log: LoopReplay["ticketLog"] = [];
+  /** Told after every change, as TicketStore.onDidChange would be. */
+  onChange: ((tickets: readonly Ticket[]) => void) | undefined;
   constructor(private _tickets: Ticket[], private readonly _clock: VirtualClock) {}
   tickets(): readonly Ticket[] { return this._tickets; }
   indexedFiles(): readonly string[] { return [...new Set(this._tickets.flatMap((ticket) => ticket.territory.files))].sort(); }
   private _set(id: string, status: TicketStatus): void {
     this._tickets = this._tickets.map((ticket) => (ticket.id === id ? { ...ticket, status } : ticket));
+    this.onChange?.(this._tickets);
   }
+  /** A person (or an agent) edits a ticket on the board, as the trace says. */
+  edit(id: string, change: { status?: TicketStatus; addBlockedBy?: string[]; actor: "user" | "agent" }): void {
+    const at = new Date(this._clock.now).toISOString();
+    this._tickets = this._tickets.map((ticket) => {
+      if (ticket.id !== id) return ticket;
+      const events = [...ticket.events];
+      if (change.status) events.push({ id: `evt_${events.length + 1}`, at, actor: change.actor, kind: "status", from: ticket.status, to: change.status });
+      if (change.addBlockedBy?.length) events.push({ id: `evt_${events.length + 1}`, at, actor: change.actor, kind: "link" });
+      return {
+        ...ticket,
+        ...(change.status ? { status: change.status } : {}),
+        ...(change.addBlockedBy?.length ? { blockedBy: [...new Set([...ticket.blockedBy, ...change.addBlockedBy])] } : {}),
+        events,
+        updatedAt: at,
+      };
+    });
+    this._note(id, "edited", `${change.actor}: ${change.status ?? ""}${change.addBlockedBy?.length ? ` blockedBy+${change.addBlockedBy.join(",")}` : ""}`.trim());
+    this.onChange?.(this._tickets);
+  }
+  /** A signal's note on an open ticket. */
+  signalNote(id: string, text: string): void { this._note(id, "signal_note", text); }
   private _note(id: string, kind: string, note: string): void {
     this.log.push({ at: this._clock.elapsed(this._clock.now) ?? 0, id, kind, note: note.slice(0, 200) });
   }
@@ -95,7 +129,7 @@ type Timed =
 
 export async function replayLoop(
   trace: Trace<LoopTraceHeader, LoopTraceEvent>,
-  options: { dir: string; arm: Arm; workContracts: WorkContractsMode },
+  options: { dir: string; arm: Arm; flags: OrchestrationFlags },
 ): Promise<LoopReplay> {
   const clock = new VirtualClock();
   const ids = sequentialIds();
@@ -112,13 +146,16 @@ export async function replayLoop(
   const receipts: Array<{ ticket: string; status: string }> = [];
   const failures = new Map<string, number>();
   let generation = 0;
+  /** Receipts the lanes produced, observed by the signal service when each lane ends. */
+  const fullReceipts = new Map<string, WorkReceipt>();
+  const delivered: WorkReceipt[] = [];
 
   const dispatcher = {
     dispatch: (request: LoopDispatchRequest): Promise<LoopDispatchResult> => {
       const attempt = (attempts.get(request.ticket.id) ?? 0) + 1;
       attempts.set(request.ticket.id, attempt);
       const script = lanes.get(`${request.ticket.id}#${attempt}`);
-      if (options.workContracts !== "off") request.onContract?.(ids("wc"));
+      if (options.flags.workContracts !== "off") request.onContract?.(ids("wc"));
       const startedAt = elapsed();
       const base: LoopDispatchResult = { ok: false, detail: "No lane was scripted for this attempt.", filesTouched: [], runIds: [] };
       const result: LoopDispatchResult = script ? { ...base, detail: script.result.ok ? "Done." : "Failed.", ...script.result } : base;
@@ -126,11 +163,11 @@ export async function replayLoop(
       if (script?.spend?.length && result.usd === undefined) {
         result.usd = Math.round(script.spend.reduce((sum, [, usd]) => sum + usd, 0) * 10_000) / 10_000;
       }
-      if (script?.receipt && options.workContracts !== "off") {
+      if (script?.receipt && options.flags.workContracts !== "off") {
         const summary: ReceiptSummary = {
           id: ids("receipt"),
           contractId: `contract_for_${request.ticket.id}_${attempt}`,
-          enforcement: options.workContracts === "enforce" ? "enforce" : "observe",
+          enforcement: options.flags.workContracts === "enforce" ? "enforce" : "observe",
           status: script.receipt,
           filesChanged: result.filesTouched.length,
           uncovered: script.receipt === "succeeded_unverified" ? [...result.filesTouched] : [],
@@ -139,6 +176,7 @@ export async function replayLoop(
         };
         result.receipt = summary;
         receipts.push({ ticket: request.ticket.id, status: script.receipt });
+        fullReceipts.set(summary.id, receiptFromSummary(summary, request.ticket.id, request.loopId, new Date(clock.now).toISOString()));
       }
       return new Promise<LoopDispatchResult>((resolve) => {
         const entry: Pending = {
@@ -163,31 +201,105 @@ export async function replayLoop(
     },
   };
 
+  // The graph-aware scheduler (#15) reads a real work graph built over the replay's board.
+  const workGraph = new WorkGraph();
+  const latestReceiptOf = (ticketId: string): string | undefined => [...receipts].reverse().find((entry) => entry.ticket === ticketId)?.status;
+  const scheduling = (): LoopSchedulingContext => {
+    if (options.flags.scheduler === "legacy" || !options.flags.workGraph) return { mode: "legacy", latestReceipt: latestReceiptOf };
+    workGraph.update({ tickets: tickets.tickets(), plans: [], receipts: [] });
+    return { mode: options.flags.scheduler, graph: schedulingGraphFrom(workGraph), latestReceipt: latestReceiptOf };
+  };
+
   const makeSupervisor = (): LoopSupervisor => new LoopSupervisor(store, tickets, dispatcher, {
     notify: (_loopId, message) => hooks.push({ at: elapsed(), hook: "notify", detail: message.slice(0, 160) }),
     onSettled: (_loopId, _title, status, reason) => hooks.push({ at: elapsed(), hook: `settled:${status}`, detail: reason.slice(0, 160) }),
     onParked: (_loopId, _title, ticketId, gate) => hooks.push({ at: elapsed(), hook: "parked", detail: `${ticketId}:${gate}` }),
     onReleased: (_loopId, ticketId) => hooks.push({ at: elapsed(), hook: "released", detail: ticketId }),
     onAbandonedContract: (contractId, subject) => hooks.push({ at: elapsed(), hook: "abandoned_contract", detail: `${contractId}:${subject.ticketId}` }),
-  }, clock.read, ids);
+  }, clock.read, ids, { scheduling });
 
   const loopRecord = store.create({ title: trace.header.setup.loop.title ?? trace.header.scenario, ...trace.header.setup.loop });
   const loopId = loopRecord.definition.id;
   let supervisor = makeSupervisor();
   let interventions = 0;
 
+  // ── Signals (#14): the real service, its journal on disk in the replay's directory. ──
+  const makeSignals = (): SignalService | undefined => {
+    if (options.flags.signals === "off") return undefined;
+    const service = new SignalService({
+      mode: () => options.flags.signals,
+      journal: new SignalJournal(options.dir),
+      tickets: () => tickets.tickets(),
+      reads: {
+        loops: () => store.read().loops.map((record) => ({
+          id: record.definition.id,
+          title: record.definition.title,
+          status: record.definition.status,
+          ...(record.definition.blockedOn ? { blockedOn: record.definition.blockedOn } : {}),
+          ...(record.resumeOffer ? { resumeOffer: { ready: record.resumeOffer.ready } } : {}),
+          ticketIds: record.ticketState.map((state) => state.ticketId),
+        })),
+        isRunning: (id) => supervisor.isRunning(id),
+        wouldDispatch: (id) => supervisor.previewReady(id),
+        ticketOpen: (id) => tickets.tickets().some((ticket) => ticket.id === id && ticket.status !== "done" && ticket.status !== "cancelled"),
+      },
+      ports: createSignalPorts({
+        loops: store,
+        supervisor: { wake: (id) => supervisor.wake(id) },
+        attention: () => ({
+          raise: (item) => { hooks.push({ at: elapsed(), hook: `attention:${item.kind}`, detail: (item.detail ?? item.title).slice(0, 160) }); return true; },
+          resolve: (id) => { hooks.push({ at: elapsed(), hook: "attention_resolved", detail: id }); },
+        }),
+        noteTicket: (id, _signalId, text) => tickets.signalNote(id, text),
+        now: clock.read,
+      }),
+      now: clock.read,
+      // Coalesced to the end of the current step: deterministic, and a burst is one batch.
+      schedule: (run) => {
+        let live = true;
+        queueMicrotask(() => { if (live) run(); });
+        return { cancel: () => { live = false; } };
+      },
+    });
+    service.observeTickets(tickets.tickets());
+    for (const record of store.read().loops) service.observeLoopIterations(record.definition.id, record.iterations);
+    return service;
+  };
+  let signals = makeSignals();
+  tickets.onChange = (list) => signals?.observeTickets(list);
+  store.onDidChange((document) => {
+    for (const record of document.loops) signals?.observeLoopIterations(record.definition.id, record.iterations);
+  });
+  const crash = (): void => {
+    // The host died: every lane in flight is gone with it, and so is anything not yet reconciled.
+    generation += 1;
+    pending.splice(0, pending.length);
+    signals?.dispose();
+    supervisor = makeSupervisor();
+    supervisor.restore();
+    signals = makeSignals();
+    signals?.replayPending();
+    hooks.push({ at: elapsed(), hook: "crash", detail: "" });
+  };
+
+  type External = Extract<LoopTraceEvent, { op: "user" | "crash" | "ticket" | "redeliver" }>;
   const external = trace.events
-    .filter((event): event is Extract<LoopTraceEvent, { op: "user" | "crash" }> => event.op === "user" || event.op === "crash")
+    .filter((event): event is External => event.op === "user" || event.op === "crash" || event.op === "ticket" || event.op === "redeliver")
     .sort((a, b) => a.at - b.at);
 
-  const applyExternal = (event: Extract<LoopTraceEvent, { op: "user" | "crash" }>): void => {
+  const applyExternal = (event: External): void => {
     if (event.op === "crash") {
-      // The host died: every lane in flight is gone with it.
-      generation += 1;
-      pending.splice(0, pending.length);
-      supervisor = makeSupervisor();
-      supervisor.restore();
-      hooks.push({ at: elapsed(), hook: "crash", detail: "" });
+      crash();
+      return;
+    }
+    if (event.op === "ticket") {
+      tickets.edit(event.ticket, { ...(event.status ? { status: event.status } : {}), ...(event.addBlockedBy ? { addBlockedBy: event.addBlockedBy } : {}), actor: event.actor ?? "user" });
+      if (event.crashBeforeReconcile) crash();
+      return;
+    }
+    if (event.op === "redeliver") {
+      for (const receipt of delivered) signals?.observeReceipt(receipt);
+      signals?.observeTickets(tickets.tickets());
       return;
     }
     if (event.action !== "start") interventions += 1;
@@ -228,6 +340,12 @@ export async function replayLoop(
           failures.set(signature, (failures.get(signature) ?? 0) + 1);
         }
         lane.resolve(lane.result);
+        // The receipt is written as the lane ends, which is when the store would announce it.
+        const written = lane.result.receipt ? fullReceipts.get(lane.result.receipt.id) : undefined;
+        if (written) {
+          delivered.push(written);
+          signals?.observeReceipt(written);
+        }
       } });
     }
     const next = external[0];
@@ -287,6 +405,8 @@ export async function replayLoop(
     ...(receipts.length ? { receipts: agreement } : {}),
   };
 
+  signals?.dispose();
+  const journal = options.flags.signals === "off" ? undefined : new SignalJournal(options.dir).lines();
   store.dispose();
   return {
     scenario: trace.header.scenario,
@@ -296,7 +416,38 @@ export async function replayLoop(
     ticketLog: tickets.log,
     hooks,
     scorecard,
+    ...(journal ? {
+      signals: journal.filter((line) => line.type === "signal").map((line) => {
+        const value = line as unknown as OrchestrationSignal;
+        return { seq: value.seq, at: clock.elapsed(value.at) ?? 0, kind: value.kind, taskId: value.taskId, source: value.provenance.source, observer: value.provenance.observer };
+      }),
+      reconciliations: journal.filter((line) => line.type === "reconcile").map((line) => {
+        const value = line as unknown as { at: string; consumer: string; action: string; target: string; applied: boolean };
+        return { at: clock.elapsed(value.at) ?? 0, consumer: value.consumer, action: value.action, target: value.target, applied: value.applied };
+      }),
+    } : {}),
   };
+}
+
+/** The receipt a scripted lane's summary stands for, as the receipt store would hold it. */
+function receiptFromSummary(summary: ReceiptSummary, ticketId: string, loopId: string, createdAt: string): WorkReceipt {
+  return {
+    schema: 1,
+    id: summary.id,
+    contractId: summary.contractId,
+    contractSchema: 1,
+    enforcement: summary.enforcement,
+    subject: { ticketId, loopId },
+    status: summary.status,
+    basis: [],
+    observed: { filesChanged: [], coverage: "tool_edits", outOfScope: [...summary.outOfScope], granted: [], refused: [] },
+    evidence: [],
+    verification: { required: true, result: summary.status === "failed" ? "failed" : summary.status === "verified" ? "passed" : "not_run", uncovered: [...summary.uncovered] },
+    usage: { spendPartial: false, toolRounds: 0, elapsedMs: 0 },
+    selfReport: { answerExcerpt: "" },
+    next: { guidance: summary.next, retryable: summary.status === "failed" },
+    createdAt,
+  } as WorkReceipt;
 }
 
 function describeLoop(record: LoopRecord, clock: VirtualClock): Record<string, unknown> {
@@ -316,7 +467,9 @@ function describeLoop(record: LoopRecord, clock: VirtualClock): Record<string, u
       contractId: iteration.contractId,
       receiptId: iteration.receiptId,
       receiptStatus: iteration.receiptStatus,
+      scheduledBecause: iteration.scheduledBecause,
     })),
     ticketState: record.ticketState,
+    schedulingDecisions: record.decisions?.map((decision) => ({ ...decision, at: clock.elapsed(decision.at) })),
   };
 }

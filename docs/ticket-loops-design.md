@@ -229,6 +229,38 @@ Ordering within the ready set is delegated to `rankTickets`
 the product's explainable "what should I pick up next" ranking, and a loop that
 ordered work differently from the board would be a second opinion nobody asked for.
 
+### Graph-aware scheduling, signals and verified dependencies (Orchestration 2.0 P1)
+
+Three later additions change §4 and §5. Each is behind an experimental setting that defaults to
+the behaviour described above. See
+[`orchestration-p1-implementation-plan.md`](./orchestration-p1-implementation-plan.md).
+
+- **Waking (`blacksite.orchestration.signals: act`).** A running loop re-checks its queue as soon as
+  something it waits on changes, for example a blocker being closed. Without this it notices only
+  when one of its own lanes finishes.
+  - A loop that stopped itself as `blocked` only because of dependencies raises a "can continue"
+    item when they clear. **It never restarts itself;** Resume stays the user's.
+  - Anything that needs judgment is listed under "Flagged for you" on the loop: a failing check,
+    a collision, stalled progress, or a claim only the agent made.
+- **Ranking and admission (`blacksite.orchestration.scheduler: graph`, needs the work graph).**
+  - **Withholding:** the same rules as above. In addition, a dependency cycle or a dependency on a
+    ticket that does not exist is held back as `incoherent`; legacy treats a missing blocker as met.
+  - **Ranking:** the board's score, plus bounded credit for each open ticket a ticket unblocks and
+    for sitting on the critical path. A ticket also earns credit for every pass it waited while ready,
+    so fresh work cannot starve it.
+  - **Ties:** broken by priority, recency, then id.
+  - **Admission:** large tickets, and tickets whose last lane collided with another, run alone.
+    Tickets whose files another lane holds a claim on wait. With enough history, a lane is not
+    started when the spend left is below what similar lanes cost.
+  - **Records:** each decision is kept on the loop, and each lane shows why it was picked.
+  - **`shadow`:** dispatches as legacy and records what graph mode would have picked.
+- **Verified dependencies (per loop, `queue.dependencySatisfiedBy: "verified_review"`).** Rule 2
+  above requires a closed blocker, and a loop's own finished tickets sit in `review` until the user
+  closes them. So a chain inside one loop otherwise waits for a human at every link. With this
+  option, a blocker in review whose latest work receipt is `verified` also counts as met. It needs
+  work contracts, because without them no receipt exists. Closing tickets stays the user's either
+  way.
+
 ### A loop finishes what it started
 
 One rule discovered while building, and it is load-bearing enough to state here: a

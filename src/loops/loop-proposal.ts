@@ -175,7 +175,12 @@ export function analyzeQueue(
       suggestion: outsideQueue.length
         ? "The loop cannot unblock these. Widen the queue to include the blockers, close them by "
           + "hand first, or the loop will end \"blocked\" with real work left."
-        : "Expected — the loop will order them correctly.",
+        : spec.dependencySatisfiedBy === "verified_review"
+          ? "Expected: each starts once its blocker is in review and its work was verified."
+          // A blocker the loop finishes goes to review, which is still open: its dependents wait for
+          // the user to close it. Saying "the loop will order them" would promise what it cannot do.
+          : "Each waits until you close its blocker after review. To let them start as soon as a "
+            + "blocker's work is verified, create the loop with dependencySatisfiedBy: verified_review.",
     });
   }
 

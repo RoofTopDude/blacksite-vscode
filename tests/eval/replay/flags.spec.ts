@@ -32,10 +32,11 @@ describe.each(ORCHESTRATION_FLAGS)("flag $setting", (spec) => {
   });
 
   it("has its shadow value replayed against the baseline", () => {
+    // The baseline arm holds every flag at its baseline; the observe arm turns every shadow value on
+    // at once, and replay.spec.ts holds it equal to the baseline.
+    expect(ARMS[0]!.flags[spec.id]).toBe(spec.baseline);
     if (spec.shadow === undefined) return;
-    // The replay arms are keyed to work contracts today; a new flag with a shadow mode needs an arm.
-    expect(spec.id).toBe("workContracts");
-    expect(ARMS.map((arm) => arm.workContracts)).toContain(spec.shadow);
-    expect(ARMS[0]!.workContracts).toBe(spec.baseline);
+    expect(ARMS[1]!.arm).toBe("observe");
+    expect(ARMS[1]!.flags[spec.id]).toBe(spec.shadow);
   });
 });

@@ -46,6 +46,10 @@ import { SubagentLoopDispatcher } from "./loops/loop-dispatcher.js";
 import { registerEvalCommands } from "./eval/eval-commands.js";
 import { WorkGraphService } from "./orchestration/work-graph/service.js";
 import { readOrchestrationFlags } from "./orchestration/flags.js";
+import { SignalJournal } from "./orchestration/signals/journal.js";
+import { schedulingGraphFrom } from "./loops/scheduling-graph.js";
+import { SignalService } from "./orchestration/signals/service.js";
+import { createSignalPorts, signalNoteMarker } from "./orchestration/signals/ports.js";
 import { TicketStoreLoopGateway } from "./loops/loop-ticket-gateway.js";
 import { LoopToolService } from "./loops/loop-tool-provider.js";
 import { reviewLoopApproval } from "./continuation/approval-review.js";
@@ -605,6 +609,8 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   const loopViewRef: { current: LoopProvider | undefined } = { current: undefined };
   /** The attention center is created with the plan run service, further down. */
   const loopAttention: { current: AttentionCenter | undefined } = { current: undefined };
+  /** The work graph is built further down; the loop scheduler reads it through this. */
+  const workGraphRef: { current: WorkGraphService | undefined } = { current: undefined };
   const loopSupervisor = new LoopSupervisor(
     loops,
     new TicketStoreLoopGateway(tickets, () => graphIndexer.indexedFiles()),
@@ -664,6 +670,28 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
       onStarted: (loopId) => loopAttention.current?.resolveWhere((item) => item.id.startsWith(`loop:${loopId}:`)),
       onReleased: (loopId, ticketId) => loopAttention.current?.resolve(`loop:${loopId}:park:${ticketId}`),
     },
+    undefined,
+    undefined,
+    {
+      /* How each pass schedules (blacksite.orchestration.scheduler, #15). Legacy unless the work
+         graph is on; the receipt lookup serves a loop's opt-in `verified_review` dependencies. */
+      scheduling: () => {
+        const flags = readOrchestrationFlags((key) => vscode.workspace.getConfiguration().get(key));
+        const latest = new Map<string, { status: string; at: string }>();
+        for (const entry of chat.receiptStore().index()) {
+          const ticketId = entry.subject.ticketId;
+          if (!ticketId) continue;
+          const seen = latest.get(ticketId);
+          if (!seen || entry.createdAt > seen.at) latest.set(ticketId, { status: entry.status, at: entry.createdAt });
+        }
+        const latestReceipt = (ticketId: string) => latest.get(ticketId)?.status;
+        const graphService = workGraphRef.current;
+        if (!flags.workGraph || flags.scheduler === "legacy" || !graphService) return { mode: "legacy", latestReceipt };
+        const held = new Map<string, string>();
+        for (const [file, holder] of chat.claimRegistry().held()) held.set(file, holder.ticketId ? `${holder.ticketId}'s lane` : holder.label);
+        return { mode: flags.scheduler, graph: schedulingGraphFrom(graphService.graph()), held, latestReceipt };
+      },
+    },
   );
   const loopView = new LoopProvider(
     context,
@@ -716,7 +744,12 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   const attention = new AttentionCenter();
   loopAttention.current = attention;
   const planRunStore = new PlanRunStore(workspaceRoot);
-  const planRuns = new PlanRunService(planRunStore, planning, chat.planRunHost(), attention);
+  /** Set just below, once the stores it reads exist; plan-run events reach it through this. */
+  const signalsRef: { current: SignalService | undefined } = { current: undefined };
+  const planRuns = new PlanRunService(planRunStore, planning, chat.planRunHost(), attention, {
+    onEvent: (run, event) => signalsRef.current?.observePlanRunEvent(run.id, run.planId, event),
+    onStalled: (runId, since) => signalsRef.current?.observeRunStalled(runId, since),
+  });
   // ── Work graph (blacksite.orchestration.workGraph) ─────────
   /* Derived and read-only: built on the first work_graph question, refreshed incrementally when
      a store changes, never written back. The tool is offered only while the setting is on. */
@@ -744,12 +777,77 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     },
   });
   chat.setWorkGraph(workGraph);
+  workGraphRef.current = workGraph;
+  // ── Orchestration signals (blacksite.orchestration.signals) ─
+  /* What the host observes — receipts, ticket transitions, loop lanes, plan-run events, contracts
+     — becomes typed signals, journaled under .blacksite/orchestration/signals. Consumers re-read
+     state and may only wake a running loop, offer the user a resume, flag, or note a ticket.
+     Nothing here starts a loop. Off: nothing is derived and nothing is written. */
+  const signalJournal = new SignalJournal(workspaceRoot);
+  const signals = new SignalService({
+    mode: () => readOrchestrationFlags((key) => vscode.workspace.getConfiguration().get(key)).signals,
+    journal: signalJournal,
+    tickets: () => tickets.read().tickets,
+    reads: {
+      loops: () => loops.read().loops.map((record) => ({
+        id: record.definition.id,
+        title: record.definition.title,
+        status: record.definition.status,
+        ...(record.definition.blockedOn ? { blockedOn: record.definition.blockedOn } : {}),
+        ...(record.resumeOffer ? { resumeOffer: { ready: record.resumeOffer.ready } } : {}),
+        ticketIds: record.ticketState.map((state) => state.ticketId),
+      })),
+      isRunning: (loopId) => loopSupervisor.isRunning(loopId),
+      wouldDispatch: (loopId) => loopSupervisor.previewReady(loopId),
+      ticketOpen: (ticketId) => {
+        const ticket = tickets.read().tickets.find((candidate) => candidate.id === ticketId);
+        return !!ticket && ticket.status !== "done" && ticket.status !== "cancelled";
+      },
+    },
+    ports: createSignalPorts({
+      loops,
+      supervisor: loopSupervisor,
+      attention: () => attention,
+      planRuns: () => planRuns,
+      noteTicket: (ticketId, signalId, text) => {
+        const marker = signalNoteMarker(signalId);
+        const ticket = tickets.read().tickets.find((candidate) => candidate.id === ticketId);
+        if (!ticket || ticket.status === "done" || ticket.status === "cancelled") return;
+        if (ticket.events.some((event) => event.body?.includes(marker))) return;
+        try {
+          tickets.updateTicket({ ticketId, comment: `${text} ${marker}` }, { sessionId: "signals" });
+        } catch { /* a note is bookkeeping */ }
+      },
+    }),
+    onError: (error) => console.warn("[Blacksite] orchestration signal error:", error),
+  });
+  signalsRef.current = signals;
+  chat.setSignals(signals);
+  // The first read of each store only learns how things stand; changes after it are signals.
+  signals.observeTickets(tickets.read().tickets);
+  for (const record of loops.read().loops) signals.observeLoopIterations(record.definition.id, record.iterations);
+  context.subscriptions.push(
+    tickets.onDidChange((document) => signals.observeTickets(document.tickets)),
+    loops.onDidChange((document) => {
+      for (const record of document.loops) signals.observeLoopIterations(record.definition.id, record.iterations);
+    }),
+    chat.receiptStore().onDidPut((entry) => {
+      if (signals.mode === "off") return;
+      const receipt = chat.receiptStore().getReceipt(entry.id);
+      if (receipt) signals.observeReceipt(receipt);
+    }),
+    { dispose: () => signals.dispose() },
+  );
+  // After a restart: anything journaled but not yet reconciled. Loops were restored to paused
+  // above, and no consumer can start one, so this cannot dispatch work.
+  signals.replayPending();
   /* Old receipts and contracts follow the plan-run retention setting. Pruned once, after
      activation has settled, so a large store never slows start-up. */
   const receiptPrune = setTimeout(() => {
     try {
       const days = vscode.workspace.getConfiguration("blacksite.planRuns").get<number>("retentionDays", 30);
       chat.receiptStore().prune(Math.max(1, Math.min(365, days)));
+      signalJournal.prune(Math.max(1, Math.min(365, days)), Date.now());
     } catch { /* retention is housekeeping; it never blocks anything */ }
   }, 60_000);
   context.subscriptions.push({ dispose: () => clearTimeout(receiptPrune) });

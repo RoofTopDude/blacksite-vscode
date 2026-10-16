@@ -18,12 +18,20 @@ describe("orchestration flags", () => {
     const settings: Record<string, unknown> = {
       "blacksite.orchestration.workContracts": "enforce",
       "blacksite.orchestration.workGraph": true,
+      "blacksite.orchestration.signals": "act",
+      "blacksite.orchestration.claims": "observe",
+      "blacksite.orchestration.scheduler": "graph",
     };
-    expect(readOrchestrationFlags((key) => settings[key])).toEqual({ workContracts: "enforce", workGraph: true });
+    expect(readOrchestrationFlags((key) => settings[key])).toEqual({
+      workContracts: "enforce", workGraph: true, signals: "act", claims: "observe", scheduler: "graph",
+    });
 
     const bad: Record<string, unknown> = {
       "blacksite.orchestration.workContracts": "ENFORCE",
       "blacksite.orchestration.workGraph": "yes",
+      "blacksite.orchestration.signals": true,
+      "blacksite.orchestration.claims": "on",
+      "blacksite.orchestration.scheduler": "smart",
     };
     expect(readOrchestrationFlags((key) => bad[key])).toEqual(BASELINE_ORCHESTRATION_FLAGS);
   });

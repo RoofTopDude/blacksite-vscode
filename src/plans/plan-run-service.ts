@@ -108,6 +108,10 @@ export interface DeferRequest {
 export interface PlanRunServiceOptions {
   now?: () => number;
   newId?: () => string;
+  /** Every ledger event as it is recorded (#14 signals). Never thrown from. */
+  onEvent?: (run: { id: string; planId: string }, event: PlanRunEvent) => void;
+  /** The run went quiet while a turn was live (the "may be stalled" attention). */
+  onStalled?: (runId: string, since: number) => void;
 }
 
 /** The turn-level facts the chat provider hands over when a turn ends. */
@@ -163,6 +167,8 @@ export class PlanRunService {
   private _pendingPauseReason: { text: string; handoff: HandoffReason } | undefined;
   private readonly _now: () => number;
   private readonly _newId: () => string;
+  private readonly _onEvent: PlanRunServiceOptions["onEvent"];
+  private readonly _onStalled: PlanRunServiceOptions["onStalled"];
 
   constructor(
     private readonly _store: PlanRunStore,
@@ -173,6 +179,8 @@ export class PlanRunService {
   ) {
     this._now = options.now ?? (() => Date.now());
     this._newId = options.newId ?? (() => `run_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`);
+    this._onEvent = options.onEvent;
+    this._onStalled = options.onStalled;
   }
 
   dispose(): void {
@@ -884,7 +892,14 @@ export class PlanRunService {
         const run = this.active;
         return !!run && (run.status !== "running" || this._pauseRequested);
       },
-      digest: () => this._lastDigest,
+      digest: () => {
+        // Flags raised since the last conductor decision: things the host saw that may change the plan.
+        const since = this._run?.conductorDecisions?.at(-1)?.at ?? 0;
+        const flags = (this._run?.reassessments ?? []).filter((entry) => entry.at > since).slice(-5);
+        if (!flags.length) return this._lastDigest;
+        const lines = flags.map((entry) => `- ${entry.detail}${entry.source === "model" ? " (the agent's own account, not observed)" : ""}`);
+        return [this._lastDigest, `Flagged by the host for a second look:\n${lines.join("\n")}`].filter(Boolean).join("\n\n");
+      },
       priorDecisions: () => (this._run?.conductorDecisions ?? [])
         .filter((entry) => entry.decision !== "halt")
         .slice(-MAX_PRIOR_DECISIONS)
@@ -972,6 +987,24 @@ export class PlanRunService {
     applyPlanRunEvent(run, event);
     this._store.appendEvent(run.id, event);
     this._dirty = true;
+    if (this._onEvent && event.type !== "reassessment") {
+      try {
+        this._onEvent({ id: run.id, planId: run.planId }, event);
+      } catch { /* a listener must never disturb the ledger */ }
+    }
+  }
+
+  /**
+   * A signal flagged something for a second look while this run is going (#14). Recorded on the
+   * ledger and shown to the conductor with its digest. Changes nothing about the run by itself.
+   */
+  noteReassessment(runId: string, entry: { signalId: string; kind: string; taskId: string; detail: string; source: string }): void {
+    const run = this._run;
+    if (!run || run.id !== runId || isTerminalRunStatus(run.status)) return;
+    if ((run.reassessments ?? []).some((existing) => existing.signalId === entry.signalId)) return;
+    this._event({ type: "reassessment", at: this._now(), ...entry, detail: entry.detail.slice(0, 400) });
+    this._scheduleSave();
+    this._publishSoon();
   }
 
   private _event(event: PlanRunEvent): void {
@@ -1236,6 +1269,9 @@ export class PlanRunService {
     }
     if (run.status === "running" && this._host.isTurnLive() && this._lastProgressAt && now - this._lastProgressAt >= QUIET_ATTENTION_MS && !this._stallRaised) {
       this._stallRaised = true;
+      try {
+        this._onStalled?.(run.id, this._lastProgressAt);
+      } catch { /* a listener must never disturb the run */ }
       this._raise({
         id: `run:${run.id}:stalled`,
         kind: "run_stalled",

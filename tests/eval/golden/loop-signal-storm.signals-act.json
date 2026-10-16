@@ -1,0 +1,708 @@
+{
+  "arm": "signals-act",
+  "hooks": [
+    {
+      "at": 420000,
+      "detail": "Every ticket in the queue has been worked.",
+      "hook": "settled:drained"
+    }
+  ],
+  "loop": {
+    "endedReason": "Every ticket in the queue has been worked.",
+    "executions": [
+      {
+        "reason": "Every ticket in the queue has been worked.",
+        "status": "drained",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 3,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 3,
+          "usd": 0.30000000000000004
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "contractId": "contract_for_T-1_1",
+        "detail": "Done.",
+        "endedAt": 300000,
+        "outcome": "succeeded",
+        "receiptId": "receipt_1",
+        "receiptStatus": "verified",
+        "seq": 1,
+        "startedAt": 0,
+        "ticketId": "T-1",
+        "usd": 0.1
+      },
+      {
+        "contractId": "contract_for_T-2_1",
+        "detail": "Done.",
+        "endedAt": 360000,
+        "outcome": "succeeded",
+        "receiptId": "receipt_2",
+        "receiptStatus": "verified",
+        "seq": 2,
+        "startedAt": 0,
+        "ticketId": "T-2",
+        "usd": 0.1
+      },
+      {
+        "contractId": "contract_for_T-3_1",
+        "detail": "Done.",
+        "endedAt": 420000,
+        "outcome": "succeeded",
+        "receiptId": "receipt_3",
+        "receiptStatus": "verified",
+        "seq": 3,
+        "startedAt": 0,
+        "ticketId": "T-3",
+        "usd": 0.1
+      }
+    ],
+    "status": "drained",
+    "ticketState": [
+      {
+        "attempts": 1,
+        "ticketId": "T-1",
+        "touchedFiles": [
+          "app/models/a.rb"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "T-2",
+        "touchedFiles": [
+          "app/models/b.rb"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "T-3",
+        "touchedFiles": [
+          "app/models/c.rb"
+        ]
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 0,
+      "dispatched": 3,
+      "failed": 0,
+      "parked": 0,
+      "succeeded": 3,
+      "usd": 0.30000000000000004
+    }
+  },
+  "reconciliations": [
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 300000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 360000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": true,
+      "at": 420000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    }
+  ],
+  "scenario": "loop-signal-storm",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "signals-act",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 0.1,
+    "costUsd": 0.3,
+    "elapsedMs": 420000,
+    "falseCompletions": 0,
+    "halts": 0,
+    "interventions": 0,
+    "parks": 0,
+    "receipts": {
+      "agree": 3,
+      "disagree": 0,
+      "unknown": 0
+    },
+    "repeatedFailures": 0,
+    "retries": 0,
+    "scenario": "loop-signal-storm",
+    "selfReportedSuccess": 3,
+    "subject": "loop",
+    "subjects": 23,
+    "verifiedSuccess": 3
+  },
+  "signals": [
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 1,
+      "source": "user",
+      "taskId": "ticket:X-1"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 2,
+      "source": "user",
+      "taskId": "ticket:X-2"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 3,
+      "source": "user",
+      "taskId": "ticket:X-3"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 4,
+      "source": "user",
+      "taskId": "ticket:X-4"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 5,
+      "source": "user",
+      "taskId": "ticket:X-5"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 6,
+      "source": "user",
+      "taskId": "ticket:X-6"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 7,
+      "source": "user",
+      "taskId": "ticket:X-7"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 8,
+      "source": "user",
+      "taskId": "ticket:X-8"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 9,
+      "source": "user",
+      "taskId": "ticket:X-9"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 10,
+      "source": "user",
+      "taskId": "ticket:X-10"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 11,
+      "source": "user",
+      "taskId": "ticket:X-11"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 12,
+      "source": "user",
+      "taskId": "ticket:X-12"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 13,
+      "source": "user",
+      "taskId": "ticket:X-13"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 14,
+      "source": "user",
+      "taskId": "ticket:X-14"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 15,
+      "source": "user",
+      "taskId": "ticket:X-15"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 16,
+      "source": "user",
+      "taskId": "ticket:X-16"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 17,
+      "source": "user",
+      "taskId": "ticket:X-17"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 18,
+      "source": "user",
+      "taskId": "ticket:X-18"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 19,
+      "source": "user",
+      "taskId": "ticket:X-19"
+    },
+    {
+      "at": 120000,
+      "kind": "work_completed",
+      "observer": "ticket.status",
+      "seq": 20,
+      "source": "user",
+      "taskId": "ticket:X-20"
+    },
+    {
+      "at": 300000,
+      "kind": "work_completed",
+      "observer": "receipt",
+      "seq": 21,
+      "source": "host",
+      "taskId": "ticket:T-1"
+    },
+    {
+      "at": 360000,
+      "kind": "work_completed",
+      "observer": "receipt",
+      "seq": 22,
+      "source": "host",
+      "taskId": "ticket:T-2"
+    },
+    {
+      "at": 420000,
+      "kind": "work_completed",
+      "observer": "receipt",
+      "seq": 23,
+      "source": "host",
+      "taskId": "ticket:T-3"
+    }
+  ],
+  "ticketLog": [
+    {
+      "at": 120000,
+      "id": "X-1",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-2",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-3",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-4",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-5",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-6",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-7",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-8",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-9",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-10",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-11",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-12",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-13",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-14",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-15",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-16",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-17",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-18",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-19",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-20",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 300000,
+      "id": "T-1",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 360000,
+      "id": "T-2",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 420000,
+      "id": "T-3",
+      "kind": "review",
+      "note": "Done."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-1",
+      "status": "review"
+    },
+    {
+      "id": "T-2",
+      "status": "review"
+    },
+    {
+      "id": "T-3",
+      "status": "review"
+    },
+    {
+      "id": "X-1",
+      "status": "done"
+    },
+    {
+      "id": "X-2",
+      "status": "done"
+    },
+    {
+      "id": "X-3",
+      "status": "done"
+    },
+    {
+      "id": "X-4",
+      "status": "done"
+    },
+    {
+      "id": "X-5",
+      "status": "done"
+    },
+    {
+      "id": "X-6",
+      "status": "done"
+    },
+    {
+      "id": "X-7",
+      "status": "done"
+    },
+    {
+      "id": "X-8",
+      "status": "done"
+    },
+    {
+      "id": "X-9",
+      "status": "done"
+    },
+    {
+      "id": "X-10",
+      "status": "done"
+    },
+    {
+      "id": "X-11",
+      "status": "done"
+    },
+    {
+      "id": "X-12",
+      "status": "done"
+    },
+    {
+      "id": "X-13",
+      "status": "done"
+    },
+    {
+      "id": "X-14",
+      "status": "done"
+    },
+    {
+      "id": "X-15",
+      "status": "done"
+    },
+    {
+      "id": "X-16",
+      "status": "done"
+    },
+    {
+      "id": "X-17",
+      "status": "done"
+    },
+    {
+      "id": "X-18",
+      "status": "done"
+    },
+    {
+      "id": "X-19",
+      "status": "done"
+    },
+    {
+      "id": "X-20",
+      "status": "done"
+    }
+  ]
+}

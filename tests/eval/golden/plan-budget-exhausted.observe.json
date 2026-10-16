@@ -6,6 +6,7 @@
       "origin": "run"
     }
   ],
+  "reconciliations": [],
   "run": {
     "activeMs": 400000,
     "compactions": 0,
@@ -92,5 +93,15 @@
     "subject": "plan_run",
     "subjects": 3,
     "verifiedSuccess": 1
-  }
+  },
+  "signals": [
+    {
+      "at": 1000,
+      "kind": "work_completed",
+      "observer": "step.evidence",
+      "seq": 1,
+      "source": "host",
+      "taskId": "step:plan-1/p1/s1"
+    }
+  ]
 }

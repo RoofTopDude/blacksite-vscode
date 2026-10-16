@@ -6,7 +6,8 @@
  * the verifier rejected — is reported on its own line rather than folded into either.
  */
 
-export type Arm = "baseline" | "observe" | "enforce";
+/** "baseline", "observe" and "enforce" run for every scenario; a trace can ask for more by name. */
+export type Arm = "baseline" | "observe" | "enforce" | "signals-act" | "scheduler-graph";
 
 export interface Scorecard {
   scenario: string;

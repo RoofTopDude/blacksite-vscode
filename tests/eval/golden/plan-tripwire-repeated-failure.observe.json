@@ -10,6 +10,15 @@
       "origin": "resume"
     }
   ],
+  "reconciliations": [
+    {
+      "action": "flag",
+      "applied": false,
+      "at": 401000,
+      "consumer": "reassess",
+      "target": "planrun:run_1"
+    }
+  ],
   "run": {
     "activeMs": 406000,
     "compactions": 0,
@@ -86,5 +95,23 @@
     "subject": "plan_run",
     "subjects": 1,
     "verifiedSuccess": 1
-  }
+  },
+  "signals": [
+    {
+      "at": 1000,
+      "kind": "progress_stalled",
+      "observer": "tripwire",
+      "seq": 1,
+      "source": "host",
+      "taskId": "planrun:run_1"
+    },
+    {
+      "at": 905000,
+      "kind": "work_completed",
+      "observer": "step.evidence",
+      "seq": 2,
+      "source": "host",
+      "taskId": "step:plan-1/p1/s1"
+    }
+  ]
 }

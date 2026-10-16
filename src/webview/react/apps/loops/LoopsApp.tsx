@@ -51,6 +51,52 @@ import {
 
 type DetailTab = "lanes" | "queue" | "executions";
 
+/** Why the scheduler is holding a ticket back, in words. */
+const WITHHELD_LABEL: Record<string, string> = {
+  blocked: "Waiting on another ticket",
+  parked: "Waiting on an approval",
+  exhausted: "Out of attempts",
+  territory: "Shares files with running work",
+  incoherent: "Dependency cycle or missing dependency",
+  waiting_input: "Waiting on an input another ticket produces",
+  budget: "Not enough of the spend ceiling left",
+};
+
+function ResumeOffer({ loop }: { loop: LoopRecord }) {
+  if (!loop.resumeOffer || loop.definition.status !== "blocked") return null;
+  return (
+    <div className="loop-resume-offer reveal-in" role="status">
+      <Play />
+      <div>
+        <strong>Ready to continue</strong>
+        <p>{loop.resumeOffer.because}</p>
+      </div>
+      <Button size="xs" onClick={() => post({ type: "start_loop", loopId: loop.definition.id })}><Play />Resume</Button>
+    </div>
+  );
+}
+
+function Flags({ loop }: { loop: LoopRecord }) {
+  const flags = loop.reassessments ?? [];
+  if (!flags.length) return null;
+  return (
+    <section className="loop-flags" aria-label="Flagged for you">
+      <header>
+        <span><AlertTriangle />Flagged for you <small>{flags.length}</small></span>
+        <Button size="xs" variant="ghost" onClick={() => post({ type: "clear_reassessments", loopId: loop.definition.id })}>Clear</Button>
+      </header>
+      <ul>
+        {[...flags].reverse().slice(0, 5).map((flag) => (
+          <li key={flag.signalId} title={`${flag.kind.replace(/_/g, " ")} · ${flag.taskId}`}>
+            <span>{flag.detail}</span>
+            <small>{flag.source === "model" ? "the agent's account, not observed" : time(flag.at)}</small>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 const initialUi = readUiState("loops", { tab: "lanes" as DetailTab, composerOpen: false });
 
 function money(value: number | undefined): string {
@@ -231,6 +277,9 @@ function LaneCard({
         ) : (
           <div className="loop-inline-empty"><Activity />Detailed activity will appear as this lane uses tools.</div>
         )}
+        {iteration.scheduledBecause?.length ? (
+          <div className="loop-lane-why"><strong>Picked because</strong><p>{iteration.scheduledBecause.join(" · ")}</p></div>
+        ) : null}
         {iteration.detail && <div className="loop-lane-result"><strong>Lane report</strong><p>{iteration.detail}</p></div>}
       </div>
     </details>
@@ -241,6 +290,10 @@ function QueueView({ loop }: { loop: LoopRecord }) {
   const stateById = new Map(loop.ticketState.map((state) => [state.ticketId, state]));
   const latestById = new Map<string, LoopIteration>();
   for (const iteration of loop.iterations) latestById.set(iteration.ticketId, iteration);
+  // The scheduler's own last word on each ticket, when it records one; otherwise the proposal's.
+  const heldById = new Map<string, { reason: string; detail: string }>();
+  for (const entry of loop.proposal?.withheld ?? []) heldById.set(entry.ticketId, entry);
+  for (const entry of loop.decisions?.at(-1)?.withheld ?? []) heldById.set(entry.ticketId, entry);
   const tickets = [...loop.tickets].sort((left, right) => {
     const leftBlocked = stateById.get(left.id)?.parkedOnGate ? 0 : 1;
     const rightBlocked = stateById.get(right.id)?.parkedOnGate ? 0 : 1;
@@ -253,12 +306,16 @@ function QueueView({ loop }: { loop: LoopRecord }) {
         const state = stateById.get(ticket.id);
         const latest = latestById.get(ticket.id);
         const blocked = state?.parkedOnGate;
+        const held = heldById.get(ticket.id);
+        const line = blocked ? `Review blocked · ${blocked}`
+          : held && !latest ? `${WITHHELD_LABEL[held.reason] ?? "Held back"}`
+            : latest ? `Latest: ${latest.outcome}` : "Waiting to dispatch";
         return (
           <article className={cn("loop-ticket", blocked && "is-blocked")} key={ticket.id}>
             <div className="loop-ticket-main">
               <span className="loop-ticket-id">{ticket.id}</span>
               <strong>{ticket.title}</strong>
-              <span>{blocked ? `Review blocked · ${blocked}` : latest ? `Latest: ${latest.outcome}` : "Waiting to dispatch"}</span>
+              <span title={held?.detail}>{line}</span>
             </div>
             <div className="loop-ticket-meta">
               <StatusBadge status={blocked ? "blocked" : ticket.status} />
@@ -306,6 +363,7 @@ function Composer({ state, onClose }: { state: LoopsStateMessage; onClose: () =>
   const [maxTickets, setMaxTickets] = useState("");
   const [maxUsd, setMaxUsd] = useState("");
   const [maxMinutes, setMaxMinutes] = useState("");
+  const [startOnVerified, setStartOnVerified] = useState(false);
   const visible = state.availableTickets.filter((ticket) => {
     const query = search.toLowerCase().trim();
     return !query || `${ticket.id} ${ticket.title} ${ticket.labels.join(" ")}`.toLowerCase().includes(query);
@@ -321,6 +379,7 @@ function Composer({ state, onClose }: { state: LoopsStateMessage; onClose: () =>
       maxUsd: maxUsd || undefined,
       maxWallClockMinutes: maxMinutes || undefined,
       maxConsecutiveFailures: 3,
+      ...(startOnVerified ? { dependencySatisfiedBy: "verified_review" } : {}),
     });
     onClose();
   };
@@ -346,6 +405,10 @@ function Composer({ state, onClose }: { state: LoopsStateMessage; onClose: () =>
           );
         })}
       </div>
+      <label className="loop-composer-check" title="A ticket that waits on another normally starts only after you close that one. With this on, it can start once the other is in review and its work was verified by a check. Closing tickets stays yours.">
+        <input type="checkbox" checked={startOnVerified} disabled={!state.workContracts} onChange={(event) => setStartOnVerified(event.target.checked)} />
+        <span>Start waiting tickets when a blocker's work is verified{state.workContracts ? "" : " (needs work contracts)"}</span>
+      </label>
       <div className="loop-composer-note"><ShieldCheck />The continuation reviewer resolves lane approvals. Unsafe work becomes a ticket-level block.</div>
       <Button className="loop-create-submit" disabled={!title.trim()} onClick={submit}><Zap />Create draft</Button>
     </section>
@@ -448,6 +511,8 @@ export function LoopsApp() {
             <ReviewerBanner running={selected.definition.status === "running"} />
 
             {selected.definition.endedReason && <div className="loop-ended-reason"><AlertTriangle />{selected.definition.endedReason}</div>}
+            <ResumeOffer loop={selected} />
+            <Flags loop={selected} />
 
             <section className="loop-detail">
               <nav className="loop-tabs" aria-label="Loop details" role="tablist">

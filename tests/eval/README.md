@@ -6,19 +6,28 @@ Measures Blacksite's orchestration before and after each Orchestration 2.0 addit
 
 `npm run test:eval:replay`
 
-Synthetic traces in `traces/` are replayed through the real `LoopSupervisor`, `LoopStore`, scheduler, `PlanRunService` and `PlanRunStore`. Only the lanes, the model turns and the user are scripted. Each trace runs under three arms:
+Synthetic traces in `traces/` are replayed through the real `LoopSupervisor`, `LoopStore`, scheduler, `SignalService`, `PlanRunService` and `PlanRunStore`. Only the lanes, the model turns and the user are scripted. Every trace runs under three arms, and can ask for more by name in its header (`"arms": [...]`):
 
-| Arm | `blacksite.orchestration.workContracts` |
-| --- | --- |
-| `baseline` | `off`: the behaviour before work contracts existed |
-| `observe` | `observe`: contracts and receipts are recorded and nothing else changes |
-| `enforce` | `enforce`: receipts decide loop outcomes |
+| Arm | Flags | Runs for |
+| --- | --- | --- |
+| `baseline` | every flag at its baseline: the behaviour before Orchestration 2.0 | every trace |
+| `observe` | every flag at its shadow value at once: contracts and receipts, signals, the shadow scheduler. Records everything, changes nothing | every trace |
+| `enforce` | `workContracts: enforce`: receipts decide loop outcomes | every trace |
+| `signals-act` | `workContracts: observe`, `signals: act` | traces that ask |
+| `scheduler-graph` | `workGraph: true`, `scheduler: graph` | traces that ask |
+
+A new flag with a shadow value is covered by the `observe` arm automatically (`replay/flags.spec.ts` checks that). Concurrency claims (#19) have no replay arm: scripted lanes write no files. They are covered by `tests/unit/orchestration-claims.spec.ts`, which drives real sessions and includes a seeded stress test.
+
+Besides `lane`, `user`, `crash` and `verifier`, a loop trace can script:
+
+- `ticket`: a person (or an agent) changes a ticket: closes a blocker, adds a dependency. With `crashBeforeReconcile`, the host dies after the change is journaled and before any consumer saw it.
+- `redeliver`: every source hands over everything again; repeats must change nothing.
 
 Every replay:
 
 - runs three times and must be byte-identical;
 - must match its file in `golden/`;
-- in `observe`, must equal `baseline` once the records contracts add are removed (shadow parity).
+- in `observe`, must equal `baseline` once the records shadow modes add are removed (shadow parity).
 
 `replay/outcomes.spec.ts` asserts what each scenario is for, so a golden file regenerated over a regression still fails.
 

@@ -41,6 +41,7 @@ function queueFromPayload(payload: Record<string, unknown>): LoopQueueSpec {
     areas: stringList(payload.areas),
     ids: stringList(payload.ticketIds),
     respectBlockedBy: payload.respectBlockedBy !== false,
+    ...(payload.dependencySatisfiedBy === "verified_review" ? { dependencySatisfiedBy: "verified_review" as const } : {}),
   };
 }
 

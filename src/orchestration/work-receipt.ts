@@ -27,7 +27,8 @@ export const RECEIPT_STATUSES: readonly ReceiptStatus[] = [
   "verified", "succeeded_unverified", "partial", "blocked", "failed", "cancelled", "abandoned",
 ];
 
-export type ObservationCoverage = "tool_edits" | "tool_edits+snapshot" | "none";
+/** tool_edits+shell_delta: shell commands were diffed too (concurrency claims on, #19). */
+export type ObservationCoverage = "tool_edits" | "tool_edits+snapshot" | "tool_edits+shell_delta" | "none";
 
 export interface ObservedChange {
   path: string;
@@ -85,6 +86,10 @@ export interface WorkReceipt {
     granted: string[];
     /** Calls stopped before they ran. */
     refused: Array<{ toolName: string; reason: string }>;
+    /** Files another lane was working on when this one wrote them, or meant to (#19 claims). */
+    conflicts?: string[];
+    /** Files that changed while this lane's command and another lane's ran together: not attributed. */
+    unattributed?: string[];
   };
   evidence: ReceiptEvidence[];
   verification: {
@@ -129,6 +134,9 @@ export interface ReceiptFacts {
   missingOutputs: string[];
   /** The lane left something usable (a partial answer) even though it did not finish. */
   partialAnswer?: boolean;
+  /** Files this lane collided with another lane on (#19). Under an enforcing contract the work goes back. */
+  conflicts?: string[];
+  unattributed?: string[];
   verificationRequired: boolean;
   /**
    * Out-of-territory changes are recorded but do not fail the work. True for an observing contract:
@@ -188,6 +196,16 @@ export function deriveReceiptStatus(facts: ReceiptFacts): DerivedStatus {
       failure: { kind: "scope_violation", detail: `Changed outside its territory: ${facts.outOfScope.slice(0, 8).join(", ")}` },
       verification,
       next: { guidance: "Review the changes outside the contract's territory before retrying; widen the territory if they were intended.", retryable: false },
+    };
+  }
+  if ((facts.conflicts?.length ?? 0) > 0 && !facts.scopeAdvisory) {
+    // Another lane was writing the same files: whatever this lane left may have been overwritten,
+    // or may have overwritten theirs. Nothing failed as such; it is not ready for review either.
+    return {
+      status: "partial",
+      basis: ["concurrent_write"],
+      verification,
+      next: { guidance: `Another lane was working on ${facts.conflicts!.slice(0, 8).join(", ")} at the same time. Check those files, then continue.`, retryable: true },
     };
   }
   if (failedCheck) {
@@ -284,6 +302,8 @@ export function buildReceipt(input: BuildReceiptInput): WorkReceipt {
       outOfScope: input.facts.outOfScope.slice(0, MAX_FILES),
       granted: (input.facts.granted ?? []).slice(0, MAX_FILES),
       refused: (input.facts.refused ?? []).slice(0, 50),
+      ...(input.facts.conflicts?.length ? { conflicts: input.facts.conflicts.slice(0, MAX_FILES) } : {}),
+      ...(input.facts.unattributed?.length ? { unattributed: input.facts.unattributed.slice(0, MAX_FILES) } : {}),
     },
     evidence: [...input.facts.checks.slice(-20), ...(input.evidence ?? [])],
     verification: derived.verification,
@@ -306,6 +326,8 @@ export interface ReceiptSummary {
   uncovered: string[];
   outOfScope: string[];
   next: string;
+  /** Files another lane was working on at the same time (#19 claims). */
+  conflicts?: string[];
 }
 
 export function summarizeReceipt(receipt: WorkReceipt): ReceiptSummary {
@@ -318,6 +340,7 @@ export function summarizeReceipt(receipt: WorkReceipt): ReceiptSummary {
     uncovered: receipt.verification.uncovered.slice(0, 10),
     outOfScope: receipt.observed.outOfScope.slice(0, 10),
     next: receipt.next.guidance,
+    ...(receipt.observed.conflicts?.length ? { conflicts: receipt.observed.conflicts.slice(0, 10) } : {}),
   };
 }
 

@@ -1,0 +1,7 @@
+{"trace":1,"scenario":"loop-dependency-chain-running","subject":"loop","arms":["signals-act"],"description":"T-2 waits on T-9, which someone else is doing. While T-1's long lane runs, the user closes T-9. Without signals the loop only notices when T-1 finishes; with signals acting it re-checks its queue at once and starts T-2 then, exactly once.","setup":{"tickets":[{"id":"T-1","files":["services/api/src/a.ts"]},{"id":"T-2","files":["services/api/src/b.ts"],"blockedBy":["T-9"]},{"id":"T-9","files":["services/api/src/c.ts"],"status":"in_progress","assignee":"user"}],"loop":{"workers":{"concurrency":2}}}}
+{"op":"user","at":0,"action":"start"}
+{"op":"lane","ticket":"T-1","attempt":1,"durationMs":3600000,"spend":[[60000,0.2]],"result":{"ok":true,"detail":"Request ids are propagated.","filesTouched":["services/api/src/a.ts"]},"receipt":"verified"}
+{"op":"ticket","at":1200000,"ticket":"T-9","status":"done","actor":"user"}
+{"op":"lane","ticket":"T-2","attempt":1,"durationMs":600000,"spend":[[60000,0.1]],"result":{"ok":true,"detail":"The retry budget reads the new header.","filesTouched":["services/api/src/b.ts"]},"receipt":"verified"}
+{"op":"verifier","subject":"T-1","result":"pass"}
+{"op":"verifier","subject":"T-2","result":"pass"}

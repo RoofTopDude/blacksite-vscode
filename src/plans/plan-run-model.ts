@@ -245,6 +245,17 @@ export interface PlanRun {
   /** Operations approved without asking. */
   autoAllowed?: AutoAllowedRecord[];
   tripwireHits?: TripwireRecord[];
+  /** #14: signals flagged for a second look while this run went on. The conductor sees them. */
+  reassessments?: RunReassessment[];
+}
+
+export interface RunReassessment {
+  at: number;
+  signalId: string;
+  kind: string;
+  taskId: string;
+  detail: string;
+  source: string;
 }
 
 export type PlanRunEvent =
@@ -270,13 +281,15 @@ export type PlanRunEvent =
   | { type: "decision_resolved"; at: number; id: string; status: Exclude<DeferredDecisionStatus, "open">; answer?: string }
   | { type: "auto_allowed"; at: number; by: AutoAllowedBy; toolName: string; description: string; reason: string }
   | { type: "tripwire"; at: number; kind: string; detail: string; examples?: string[] }
-  | { type: "receipt"; at: number; phaseId: string; stepId: string; receiptId: string; status: string };
+  | { type: "receipt"; at: number; phaseId: string; stepId: string; receiptId: string; status: string }
+  | { type: "reassessment"; at: number; signalId: string; kind: string; taskId: string; detail: string; source: string };
 
 const MAX_TURN_RECORDS = 400;
 const MAX_CONDUCTOR_RECORDS = 200;
 const MAX_DECISION_RECORDS = 200;
 const MAX_AUTO_ALLOWED_RECORDS = 300;
 const MAX_TRIPWIRE_RECORDS = 50;
+const MAX_REASSESSMENT_RECORDS = 50;
 /** Answered decisions shown after the open ones. */
 const RESOLVED_DECISIONS_SHOWN = 5;
 
@@ -525,6 +538,13 @@ export function applyPlanRunEvent(run: PlanRun, event: PlanRunEvent): PlanRun {
       if (step && !(step.receiptIds ?? []).includes(event.receiptId)) step.receiptIds = [...(step.receiptIds ?? []), event.receiptId].slice(-10);
       break;
     }
+    case "reassessment":
+      if (!(run.reassessments ?? []).some((entry) => entry.signalId === event.signalId)) {
+        run.reassessments = capped([...(run.reassessments ?? []), {
+          at: event.at, signalId: event.signalId, kind: event.kind, taskId: event.taskId, detail: event.detail, source: event.source,
+        }], MAX_REASSESSMENT_RECORDS);
+      }
+      break;
   }
   return run;
 }

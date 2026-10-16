@@ -1,0 +1,92 @@
+{
+  "arm": "enforce",
+  "launches": [
+    {
+      "at": 0,
+      "origin": "run"
+    }
+  ],
+  "run": {
+    "activeMs": 700000,
+    "compactions": 0,
+    "conductorDecisions": [],
+    "decisions": [],
+    "endReason": "Stopped by you.",
+    "gatesAnswered": 0,
+    "lastHandoff": "Stopped: Paused by a tripwire: The same failure keeps coming back. shell_exec has failed the same way 6 times during this step.",
+    "retries": 0,
+    "spentUsd": 0.6,
+    "status": "stopped",
+    "steps": [
+      {
+        "attempts": 1,
+        "evidence": {
+          "checks": [
+            "make test"
+          ],
+          "filesChanged": [
+            "src/net/dial.c"
+          ],
+          "unverified": []
+        },
+        "phaseId": "p1",
+        "receiptIds": [
+          "receipt_1"
+        ],
+        "status": "completed",
+        "stepId": "s1"
+      },
+      {
+        "attempts": 1,
+        "phaseId": "p1",
+        "status": "in_progress",
+        "stepId": "s2"
+      }
+    ],
+    "tripwires": [
+      "repeated_failure"
+    ],
+    "turns": [
+      {
+        "origin": "run",
+        "stepTransitions": 2,
+        "stopReason": "end_turn"
+      },
+      {
+        "origin": "run",
+        "stepTransitions": 1,
+        "stopReason": "end_turn"
+      }
+    ],
+    "waitingProviderMs": 0,
+    "waitingUserMs": 0
+  },
+  "scenario": "plan-cancelled-signals",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "enforce",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 0.6,
+    "costUsd": 0.6,
+    "elapsedMs": 800000,
+    "falseCompletions": 0,
+    "halts": 1,
+    "interventions": 1,
+    "parks": 0,
+    "receipts": {
+      "agree": 1,
+      "disagree": 0,
+      "unknown": 0
+    },
+    "repeatedFailures": 1,
+    "retries": 0,
+    "scenario": "plan-cancelled-signals",
+    "selfReportedSuccess": 1,
+    "subject": "plan_run",
+    "subjects": 2,
+    "verifiedSuccess": 1
+  }
+}

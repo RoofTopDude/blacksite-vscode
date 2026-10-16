@@ -8,6 +8,7 @@ import { defaultApprovalPosture, defaultQueueSpec, type LoopRecord } from "./loo
 import { proposeLoop } from "./loop-proposal.js";
 import { computeReadySet } from "./loop-scheduler.js";
 import { MAX_LOOP_CONCURRENCY, type LoopStore } from "./loop-store.js";
+import { readOrchestrationFlags } from "../orchestration/flags.js";
 import type { LoopSupervisor } from "./loop-supervisor.js";
 
 export interface LoopProviderCallbacks {
@@ -27,6 +28,7 @@ type LoopOperation =
   | "confirm_loop_action"
   | "cancel_loop_action"
   | "release_ticket"
+  | "clear_reassessments"
   | "open_ticket"
   | "ask_agent";
 
@@ -212,6 +214,10 @@ export class LoopProvider implements vscode.WebviewViewProvider, vscode.Disposab
         case "cancel_loop_action":
           this._cancelAction(text(value.token, 160));
           return;
+        case "clear_reassessments":
+          // The user has looked: flags are notes for a person and leave nothing else behind.
+          this._store.clearReassessments(this._target(value).loopId);
+          return;
         case "release_ticket":
           {
             const target = this._target(value, true);
@@ -383,6 +389,7 @@ export class LoopProvider implements vscode.WebviewViewProvider, vscode.Disposab
       ...defaultQueueSpec(),
       ...(ids.length ? { ids } : {}),
       ...(!ids.length && requestedStatuses.length ? { statuses: requestedStatuses } : {}),
+      ...(value.dependencySatisfiedBy === "verified_review" ? { dependencySatisfiedBy: "verified_review" as const } : {}),
     };
     const concurrency = Math.max(1, Math.min(
       MAX_LOOP_CONCURRENCY,
@@ -445,6 +452,8 @@ export class LoopProvider implements vscode.WebviewViewProvider, vscode.Disposab
       selectedLoopId: this._selectedLoopId,
       availableTickets: tickets.filter((ticket) => isOpenStatus(ticket.status)).map(ticketSummary),
       maxConcurrency: MAX_LOOP_CONCURRENCY,
+      // Whether receipts exist to say a blocker's work was verified (the verified_review option).
+      workContracts: readOrchestrationFlags((key) => vscode.workspace.getConfiguration().get(key)).workContracts !== "off",
       reviewer: {
         mode: "continuation_review",
         label: "Continuation review",

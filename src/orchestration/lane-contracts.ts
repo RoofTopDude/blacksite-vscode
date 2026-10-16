@@ -81,6 +81,15 @@ export interface LaneEndFacts {
   };
   /** Files the parent saw change through the lane's edit diffs. */
   filesTouched: readonly string[];
+  /** What concurrency claims saw (#19), when they were on. */
+  claims?: {
+    /** Files the lane's own shell commands changed (git status before and after each one). */
+    shellChanged: readonly string[];
+    /** Every shell command was diffed, so the receipt can say shell writes were covered. */
+    shellCovered: boolean;
+    conflicts: readonly string[];
+    unattributed: readonly string[];
+  };
   answer: string;
   toolRounds: number;
   elapsedMs: number;
@@ -97,11 +106,15 @@ export interface LaneContractsOptions {
   planning?: () => PlanningDocument | undefined;
   now?: () => number;
   newId?: (prefix: string) => string;
+  /** A contract was issued; `live` is every other contract still running (#14 overlap signals). */
+  onIssued?: (contract: WorkContract, live: readonly WorkContract[]) => void;
 }
 
 export class LaneContracts {
   private readonly _now: () => number;
   private readonly _newId: (prefix: string) => string;
+  /** Contracts issued and not yet settled by a receipt, by id. */
+  private readonly _live = new Map<string, WorkContract>();
 
   constructor(private readonly _options: LaneContractsOptions) {
     this._now = _options.now ?? (() => Date.now());
@@ -178,16 +191,21 @@ export class LaneContracts {
     } catch {
       // A contract that cannot be recorded still bounds the lane; the receipt says so.
     }
+    try {
+      this._options.onIssued?.(contract, [...this._live.values()]);
+    } catch { /* a listener must never stop a lane starting */ }
+    this._live.set(contract.id, contract);
     return { ok: true, active: activateContract(contract), budget: boundBudget(request.budget, contract.budget) };
   }
 
   /** Write the receipt for a lane that ran under `active`. Never throws. */
   complete(active: ActiveWorkContract, facts: LaneEndFacts): WorkReceipt | undefined {
+    this._live.delete(active.contract.id);
     try {
       const contract = active.contract;
       const changes = new Map<string, ObservedChange>();
       for (const change of facts.observation.filesChanged) changes.set(change.path, { ...change });
-      for (const file of facts.filesTouched) {
+      for (const file of [...facts.filesTouched, ...(facts.claims?.shellChanged ?? [])]) {
         const key = this._relative(file);
         if (key && !changes.has(key)) changes.set(key, { path: key, change: "M" });
       }
@@ -214,8 +232,10 @@ export class LaneContracts {
           ...(facts.endDetail ? { endDetail: facts.endDetail } : {}),
           ...(facts.gate ? { gate: facts.gate } : {}),
           filesChanged,
-          coverage: "tool_edits",
+          coverage: facts.claims?.shellCovered ? "tool_edits+shell_delta" : "tool_edits",
           outOfScope: [...outOfScope],
+          ...(facts.claims?.conflicts.length ? { conflicts: [...facts.claims.conflicts] } : {}),
+          ...(facts.claims?.unattributed.length ? { unattributed: [...facts.claims.unattributed] } : {}),
           granted: [...granted],
           refused: facts.observation.refused,
           checks: facts.observation.checks,
@@ -305,6 +325,7 @@ export class LaneContracts {
 
   /** The receipt for a lane lost to a host restart: nothing about it could be observed. */
   recordAbandoned(contractId: string, subject: ReceiptSubject): WorkReceipt | undefined {
+    this._live.delete(contractId);
     try {
       const contract = this._options.store.getContract(contractId);
       if (!contract) return undefined;

@@ -1,0 +1,345 @@
+{
+  "arm": "baseline",
+  "hooks": [
+    {
+      "at": 420000,
+      "detail": "Every ticket in the queue has been worked.",
+      "hook": "settled:drained"
+    }
+  ],
+  "loop": {
+    "endedReason": "Every ticket in the queue has been worked.",
+    "executions": [
+      {
+        "reason": "Every ticket in the queue has been worked.",
+        "status": "drained",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 3,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 3,
+          "usd": 0.30000000000000004
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "detail": "Done.",
+        "endedAt": 300000,
+        "outcome": "succeeded",
+        "seq": 1,
+        "startedAt": 0,
+        "ticketId": "T-1",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 360000,
+        "outcome": "succeeded",
+        "seq": 2,
+        "startedAt": 0,
+        "ticketId": "T-2",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 420000,
+        "outcome": "succeeded",
+        "seq": 3,
+        "startedAt": 0,
+        "ticketId": "T-3",
+        "usd": 0.1
+      }
+    ],
+    "status": "drained",
+    "ticketState": [
+      {
+        "attempts": 1,
+        "ticketId": "T-1",
+        "touchedFiles": [
+          "app/models/a.rb"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "T-2",
+        "touchedFiles": [
+          "app/models/b.rb"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "T-3",
+        "touchedFiles": [
+          "app/models/c.rb"
+        ]
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 0,
+      "dispatched": 3,
+      "failed": 0,
+      "parked": 0,
+      "succeeded": 3,
+      "usd": 0.30000000000000004
+    }
+  },
+  "scenario": "loop-signal-storm",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "baseline",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 0.1,
+    "costUsd": 0.3,
+    "elapsedMs": 420000,
+    "falseCompletions": 0,
+    "halts": 0,
+    "interventions": 0,
+    "parks": 0,
+    "repeatedFailures": 0,
+    "retries": 0,
+    "scenario": "loop-signal-storm",
+    "selfReportedSuccess": 3,
+    "subject": "loop",
+    "subjects": 23,
+    "verifiedSuccess": 3
+  },
+  "ticketLog": [
+    {
+      "at": 120000,
+      "id": "X-1",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-2",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-3",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-4",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-5",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-6",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-7",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-8",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-9",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-10",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-11",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-12",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-13",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-14",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-15",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-16",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-17",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-18",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-19",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 120000,
+      "id": "X-20",
+      "kind": "edited",
+      "note": "user: done"
+    },
+    {
+      "at": 300000,
+      "id": "T-1",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 360000,
+      "id": "T-2",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 420000,
+      "id": "T-3",
+      "kind": "review",
+      "note": "Done."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "T-1",
+      "status": "review"
+    },
+    {
+      "id": "T-2",
+      "status": "review"
+    },
+    {
+      "id": "T-3",
+      "status": "review"
+    },
+    {
+      "id": "X-1",
+      "status": "done"
+    },
+    {
+      "id": "X-2",
+      "status": "done"
+    },
+    {
+      "id": "X-3",
+      "status": "done"
+    },
+    {
+      "id": "X-4",
+      "status": "done"
+    },
+    {
+      "id": "X-5",
+      "status": "done"
+    },
+    {
+      "id": "X-6",
+      "status": "done"
+    },
+    {
+      "id": "X-7",
+      "status": "done"
+    },
+    {
+      "id": "X-8",
+      "status": "done"
+    },
+    {
+      "id": "X-9",
+      "status": "done"
+    },
+    {
+      "id": "X-10",
+      "status": "done"
+    },
+    {
+      "id": "X-11",
+      "status": "done"
+    },
+    {
+      "id": "X-12",
+      "status": "done"
+    },
+    {
+      "id": "X-13",
+      "status": "done"
+    },
+    {
+      "id": "X-14",
+      "status": "done"
+    },
+    {
+      "id": "X-15",
+      "status": "done"
+    },
+    {
+      "id": "X-16",
+      "status": "done"
+    },
+    {
+      "id": "X-17",
+      "status": "done"
+    },
+    {
+      "id": "X-18",
+      "status": "done"
+    },
+    {
+      "id": "X-19",
+      "status": "done"
+    },
+    {
+      "id": "X-20",
+      "status": "done"
+    }
+  ]
+}

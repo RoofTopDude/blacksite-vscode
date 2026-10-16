@@ -134,6 +134,40 @@ receipt lists every path an approval let it write.
 A shell command's targets cannot be known before it runs, so commands keep their usual gates.
 Changes a command makes outside the contract show up afterwards on the receipt.
 
+### Concurrency claims: two lanes, one file
+
+With `blacksite.orchestration.claims` set to `enforce`, a delegated lane takes a short claim on each
+file at the moment it writes it, and holds it until the lane ends. A second lane that tries to write
+a file the first one holds is refused, and the refusal names the lane that holds it. The lane can work
+on other files, wait, or report that it needs that file. Nothing waits on anything, so lanes cannot
+deadlock.
+
+- **Stale copies.** A lane about to overwrite a whole file (`file_write`) or insert at a line
+  position (`code_insert`) is also refused when someone else changed that file after the lane read
+  it. It is told to read the file again. Edits that match text are already safe: they fail when the
+  text they expect is gone.
+- **Reads are never blocked.** Only writes take claims.
+- **Your own chat agent is never refused.** When it writes to a file a lane is working on, the tool
+  result carries a warning naming the lane. Its write still counts as a change, so the lane is told
+  if its copy went stale.
+- **Shell commands.** With claims on, each shell command a lane runs is diffed afterwards (`git status`
+  before and after). Files it changed inside another lane's claims are reported as a collision. Files
+  it changed outside the lane's contract appear on the receipt like any other out-of-territory
+  change, and under an enforcing contract they fail it. Nothing is reverted. Limits:
+  - Files git ignores are invisible to the diff.
+  - A background process keeps writing after the command that started it returns.
+  - When two lanes' commands run at the same time, their changes are recorded as unattributed
+    rather than pinned on either lane.
+  - On a very large tree a diff that takes over two seconds is skipped, and the receipt says shell
+    writes were not covered.
+- **Ending.** Claims end when the lane does, however it ends. A claim not renewed for 15 minutes
+  lapses, and none lasts more than two hours. Claims are kept in memory, so a restart leaves nothing
+  behind.
+
+Under an enforcing work contract, a lane that collided with another one gets a `partial` receipt.
+In a loop that sends the ticket back for another attempt instead of to review, and the next attempt
+runs alone. `observe` records every collision and refuses nothing.
+
 ---
 
 ## The three lists

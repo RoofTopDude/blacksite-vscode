@@ -7,7 +7,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { afterAll, describe, expect, it } from "vitest";
 import { canonicalJson } from "../harness/canonical.js";
-import { ARMS, EVAL_ROOT, goldenPath, loadTraces, replay, withoutContractRecords } from "../harness/run-scenarios.js";
+import { ARMS, armsFor, EVAL_ROOT, goldenPath, loadTraces, replay, withoutContractRecords } from "../harness/run-scenarios.js";
 import { compareScorecards, formatComparison, type Scorecard } from "../harness/scorecard.js";
 
 const UPDATE = process.env.UPDATE_EVAL_GOLDEN === "1";
@@ -16,7 +16,7 @@ const scorecards: Scorecard[] = [];
 describe.each(loadTraces())("$file", ({ trace }) => {
   const results = new Map<string, unknown>();
 
-  it.each(ARMS)("replays deterministically under $arm and matches its golden file", async (arm) => {
+  it.each(armsFor(trace))("replays deterministically under $arm and matches its golden file", async (arm) => {
     const runs = [] as string[];
     for (let i = 0; i < 3; i += 1) runs.push(canonicalJson(await replay(trace, arm)));
     expect(runs[1]).toBe(runs[0]);

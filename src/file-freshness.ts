@@ -120,6 +120,11 @@ export class FileFreshnessLedger {
     return out;
   }
 
+  /** The files a call reads and writes, as this ledger classifies them. Used by concurrency claims. */
+  touchedPaths(toolName: string, input: Record<string, unknown> | undefined): { reads: string[]; writes: string[] } {
+    return this._touched(toolName, input);
+  }
+
   /** True when the session has changed this file at all, re-read or not. */
   changedThisSession(path: string): boolean {
     return (this._files.get(this._key(path))?.writeSeq ?? 0) > 0;

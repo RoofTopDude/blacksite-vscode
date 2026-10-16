@@ -17,8 +17,13 @@ import {
   defaultCeilings,
   defaultQueueSpec,
   emptyTotals,
+  MAX_LOOP_DECISIONS,
+  MAX_LOOP_REASSESSMENTS,
   TERMINAL_LOOP_STATUSES,
   type LoopApprovalPosture,
+  type LoopReassessment,
+  type LoopResumeOffer,
+  type LoopSchedulingDecision,
   type LoopCeilings,
   type LoopDefinition,
   type LoopActivityEntry,
@@ -110,7 +115,67 @@ function normalizeQueue(value: unknown): LoopQueueSpec {
     areas: stringList(raw.areas),
     ids: stringList(raw.ids, 500),
     respectBlockedBy: raw.respectBlockedBy !== false,
+    // Absent means closed: only the opt-in is stored, so older loops read exactly as they did.
+    ...(raw.dependencySatisfiedBy === "verified_review" ? { dependencySatisfiedBy: "verified_review" as const } : {}),
   };
+}
+
+function normalizeResumeOffer(value: unknown): LoopResumeOffer | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const ready = stringList(raw.ready, 200);
+  const because = text(raw.because, 500);
+  if (!ready.length || !because) return undefined;
+  return { at: text(raw.at, 40) || nowIso(), ready, because, signalIds: stringList(raw.signalIds, 100) };
+}
+
+function normalizeReassessments(value: unknown): LoopReassessment[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: LoopReassessment[] = [];
+  for (const item of value.slice(-MAX_LOOP_REASSESSMENTS)) {
+    const raw = (item ?? {}) as Record<string, unknown>;
+    const signalId = text(raw.signalId, 80);
+    const detail = text(raw.detail, 500);
+    if (!signalId || !detail || out.some((entry) => entry.signalId === signalId)) continue;
+    out.push({
+      signalId,
+      kind: text(raw.kind, 40),
+      taskId: text(raw.taskId, 200),
+      detail,
+      at: text(raw.at, 40) || nowIso(),
+      source: text(raw.source, 20),
+    });
+  }
+  return out.length ? out : undefined;
+}
+
+function normalizeDecisions(value: unknown): LoopSchedulingDecision[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: LoopSchedulingDecision[] = [];
+  for (const item of value.slice(-MAX_LOOP_DECISIONS)) {
+    const raw = (item ?? {}) as Record<string, unknown>;
+    const mode = raw.mode === "shadow" ? "shadow" : raw.mode === "graph" ? "graph" : null;
+    if (!mode) continue;
+    const chosen = Array.isArray(raw.chosen) ? raw.chosen.slice(0, 20).flatMap((entry) => {
+      const value = (entry ?? {}) as Record<string, unknown>;
+      const ticketId = text(value.ticketId, 60);
+      return ticketId ? [{ ticketId, score: Number.isFinite(Number(value.score)) ? Number(value.score) : 0, reasons: stringList(value.reasons, 12) }] : [];
+    }) : [];
+    const withheld = Array.isArray(raw.withheld) ? raw.withheld.slice(0, 50).flatMap((entry) => {
+      const value = (entry ?? {}) as Record<string, unknown>;
+      const ticketId = text(value.ticketId, 60);
+      return ticketId ? [{ ticketId, reason: text(value.reason, 40), detail: text(value.detail, 300) }] : [];
+    }) : [];
+    out.push({
+      at: text(raw.at, 40) || nowIso(),
+      mode,
+      chosen,
+      withheld,
+      ...(Array.isArray(raw.wouldChoose) ? { wouldChoose: stringList(raw.wouldChoose, 20) } : {}),
+      ...(Array.isArray(raw.signalIds) && raw.signalIds.length ? { signalIds: stringList(raw.signalIds, 50) } : {}),
+    });
+  }
+  return out.length ? out : undefined;
 }
 
 function normalizeWorkers(value: unknown): LoopWorkerSpec {
@@ -188,6 +253,8 @@ function normalizeTicketState(value: unknown): LoopTicketState[] {
       ...(text(raw.parkedAt, 40) ? { parkedAt: text(raw.parkedAt, 40) } : {}),
       ...(text(raw.parkedSubRequestId, 80) ? { parkedSubRequestId: text(raw.parkedSubRequestId, 80) } : {}),
       touchedFiles: stringList(raw.touchedFiles, 200),
+      ...(positiveInt(raw.passedOver, 0, 0, 1_000_000) > 0 ? { passedOver: positiveInt(raw.passedOver, 0, 0, 1_000_000) } : {}),
+      ...(text(raw.lastClaimConflict, 300) ? { lastClaimConflict: text(raw.lastClaimConflict, 300) } : {}),
     });
   }
   return out;
@@ -236,6 +303,7 @@ function normalizeIterations(value: unknown, loopId: string): LoopIteration[] {
       ...(text(raw.contractId, 120) ? { contractId: text(raw.contractId, 120) } : {}),
       ...(text(raw.receiptId, 120) ? { receiptId: text(raw.receiptId, 120) } : {}),
       ...(text(raw.receiptStatus, 40) ? { receiptStatus: text(raw.receiptStatus, 40) } : {}),
+      ...(Array.isArray(raw.scheduledBecause) && raw.scheduledBecause.length ? { scheduledBecause: stringList(raw.scheduledBecause, 12) } : {}),
     });
   }
   return out;
@@ -278,6 +346,7 @@ function normalizeExecutions(value: unknown, iterations: readonly LoopIteration[
       status: (LOOP_STATUSES.has(status) ? status : "stopped") as LoopStatus,
       ...(text(raw.reason, 500) ? { reason: text(raw.reason, 500) } : {}),
       totals: normalizeTotals(raw.totals) ?? totalsForIterations(iterations.filter((entry) => entry.executionId === id)),
+      ...(Array.isArray(raw.offeredBy) && raw.offeredBy.length ? { offeredBy: stringList(raw.offeredBy, 100) } : {}),
     });
   }
   const missingIds = [...new Set(iterations.map((entry) => entry.executionId))]
@@ -374,12 +443,18 @@ function normalizeRecord(value: unknown, index: number): LoopRecord | null {
     ...(text(rawDefinition.startedAt, 40) ? { startedAt: text(rawDefinition.startedAt, 40) } : {}),
     ...(text(rawDefinition.endedAt, 40) ? { endedAt: text(rawDefinition.endedAt, 40) } : {}),
     ...(text(rawDefinition.endedReason, 500) ? { endedReason: text(rawDefinition.endedReason, 500) } : {}),
+    ...(status === "blocked" && (rawDefinition.blockedOn === "dependencies" || rawDefinition.blockedOn === "mixed")
+      ? { blockedOn: rawDefinition.blockedOn }
+      : {}),
     createdAt: text(rawDefinition.createdAt, 40) || nowIso(),
     updatedAt: text(rawDefinition.updatedAt, 40) || nowIso(),
   };
 
   const iterations = normalizeIterations(raw.iterations, id);
   const retired = normalizeTotals(raw.retired);
+  const resumeOffer = definition.status === "blocked" ? normalizeResumeOffer(raw.resumeOffer) : undefined;
+  const reassessments = normalizeReassessments(raw.reassessments);
+  const decisions = normalizeDecisions(raw.decisions);
   return {
     definition,
     executions: normalizeExecutions(raw.executions, iterations),
@@ -389,6 +464,9 @@ function normalizeRecord(value: unknown, index: number): LoopRecord | null {
     // retired window, and a stored total that disagrees with those is always the wrong one.
     totals: foldTotals(iterations, retired),
     ...(retired ? { retired } : {}),
+    ...(resumeOffer ? { resumeOffer } : {}),
+    ...(reassessments ? { reassessments } : {}),
+    ...(decisions ? { decisions } : {}),
   };
 }
 
@@ -515,6 +593,11 @@ export class LoopStore implements vscode.Disposable {
       if (record.definition.status === status) return false;
       const wasRunning = record.definition.status === "running";
       record.definition.status = status;
+      // An offer to continue, and why the loop was blocked, describe a blocked loop only.
+      if (status !== "blocked") {
+        delete record.definition.blockedOn;
+        delete record.resumeOffer;
+      }
       if (status === "running" && !record.definition.startedAt) record.definition.startedAt = this._nowIso();
       if (TERMINAL_LOOP_STATUSES.has(status)) {
         record.definition.endedAt = this._nowIso();
@@ -543,9 +626,13 @@ export class LoopStore implements vscode.Disposable {
         startedAt: at,
         status: "running",
         totals: emptyTotals(),
+        // Resumed by the user while signals were offering it: say which facts prompted that.
+        ...(record.resumeOffer ? { offeredBy: [...record.resumeOffer.signalIds] } : {}),
       };
       record.executions.push(created);
       record.definition.status = "running";
+      delete record.definition.blockedOn;
+      delete record.resumeOffer;
       if (!record.definition.startedAt) record.definition.startedAt = at;
       delete record.definition.endedAt;
       delete record.definition.endedReason;
@@ -617,6 +704,50 @@ export class LoopStore implements vscode.Disposable {
         record.ticketState.push(state);
       }
       mutate(state);
+    });
+  }
+
+  /** Why a blocked loop is blocked. Ignored unless the loop is blocked. */
+  setBlockedOn(loopId: string, blockedOn: "dependencies" | "mixed"): void {
+    this.update(loopId, (record) => {
+      if (record.definition.status !== "blocked" || record.definition.blockedOn === blockedOn) return false;
+      record.definition.blockedOn = blockedOn;
+    });
+  }
+
+  /** Offer (or withdraw, with undefined) a resume to the user. Only a blocked loop holds an offer. */
+  setResumeOffer(loopId: string, offer: LoopResumeOffer | undefined): LoopRecord | undefined {
+    return this.update(loopId, (record) => {
+      if (!offer) {
+        if (!record.resumeOffer) return false;
+        delete record.resumeOffer;
+        return;
+      }
+      if (record.definition.status !== "blocked") return false;
+      record.resumeOffer = offer;
+    });
+  }
+
+  /** Record a flag for a person to look at. A signal already flagged on this loop is not added again. */
+  addReassessment(loopId: string, entry: LoopReassessment): void {
+    this.update(loopId, (record) => {
+      const list = record.reassessments ?? [];
+      if (list.some((existing) => existing.signalId === entry.signalId)) return false;
+      record.reassessments = [...list, entry].slice(-MAX_LOOP_REASSESSMENTS);
+    });
+  }
+
+  clearReassessments(loopId: string): void {
+    this.update(loopId, (record) => {
+      if (!record.reassessments?.length) return false;
+      delete record.reassessments;
+    });
+  }
+
+  /** Record a scheduling decision. The caller decides whether it differs from the last one. */
+  appendDecision(loopId: string, decision: LoopSchedulingDecision): void {
+    this.update(loopId, (record) => {
+      record.decisions = [...(record.decisions ?? []), decision].slice(-MAX_LOOP_DECISIONS);
     });
   }
 

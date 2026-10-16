@@ -15,6 +15,8 @@ import {
   computeReadySet,
   nextSupervisorAction,
   type ReadyEntry,
+  type SchedulerResult,
+  type SchedulingGraph,
 } from "./loop-scheduler.js";
 import {
   laneComplexityFor,
@@ -26,6 +28,7 @@ import {
   type LoopTicketState,
 } from "./loop-model.js";
 import type { LoopStore } from "./loop-store.js";
+import type { SchedulerMode } from "../orchestration/flags.js";
 import type { Ticket } from "../ticket-store.js";
 import { describeReceiptSummary, type ReceiptSummary } from "../orchestration/work-receipt.js";
 
@@ -117,6 +120,27 @@ export interface LoopSupervisorHooks {
   onAbandonedContract?(contractId: string, subject: { loopId: string; ticketId: string; iterationSeq: number }): void;
 }
 
+/**
+ * How a loop schedules this pass (#15), read fresh before every pass. `legacy` (or no graph) is
+ * exactly the scheduler as it was. `shadow` dispatches as legacy and records what the graph-aware
+ * scheduler would have chosen. `graph` uses it.
+ */
+export interface LoopSchedulingContext {
+  mode: SchedulerMode;
+  graph?: SchedulingGraph;
+  /** Paths other lanes hold claims on (#19), path → who. */
+  held?: ReadonlyMap<string, string>;
+  /** Latest receipt status per ticket, for `dependencySatisfiedBy: "verified_review"`. */
+  latestReceipt?: (ticketId: string) => string | undefined;
+}
+
+export interface LoopSupervisorOptions {
+  scheduling?: (record: LoopRecord) => LoopSchedulingContext;
+}
+
+/** Past lanes needed before their median spend is trusted to hold a ticket back. */
+const BUDGET_SAMPLES = 3;
+
 interface InFlight {
   ticketId: string;
   territory: ReadonlySet<string>;
@@ -137,6 +161,10 @@ export class LoopSupervisor {
   /** Spend by lanes still running, per loop and ticket. Counted toward the spend ceiling so a
    *  loop does not start another lane while the ones it has are already past it. */
   private readonly _liveUsd = new Map<string, Map<string, number>>();
+  /** Per running loop: resolves the cycle's wait early, so it re-schedules now (#14 signals). */
+  private readonly _wakers = new Map<string, () => void>();
+  /** A wake that arrived while the cycle was not waiting: honoured at its next wait. */
+  private readonly _wokenEarly = new Set<string>();
 
   constructor(
     private readonly _store: LoopStore,
@@ -146,10 +174,30 @@ export class LoopSupervisor {
     private readonly _now: () => number = () => Date.now(),
     /** Injected for deterministic replays (tests/eval); receives the id's prefix. */
     private readonly _newId: (prefix: string) => string = (prefix) => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+    private readonly _options: LoopSupervisorOptions = {},
   ) {}
+
+  /** The last decision recorded per loop, so a loop waiting on the same state does not churn its file. */
+  private readonly _lastDecision = new Map<string, string>();
 
   isRunning(loopId: string): boolean {
     return this._running.has(loopId);
+  }
+
+  /**
+   * Re-check a running loop's queue now instead of when one of its lanes next finishes — a blocker
+   * closed, a ticket became ready. Does nothing for a loop that is not running: waking never starts
+   * a loop. Safe to call any number of times; the scheduling pass it causes reads current state.
+   */
+  wake(loopId: string): void {
+    if (!this._running.has(loopId)) return;
+    const waker = this._wakers.get(loopId);
+    if (waker) {
+      this._wakers.delete(loopId);
+      waker();
+    } else {
+      this._wokenEarly.add(loopId);
+    }
   }
 
   /**
@@ -219,6 +267,8 @@ export class LoopSupervisor {
       .finally(() => {
         this._running.delete(loopId);
         this._liveUsd.delete(loopId);
+        this._wakers.delete(loopId);
+        this._wokenEarly.delete(loopId);
       });
   }
 
@@ -275,15 +325,8 @@ export class LoopSupervisor {
         return;
       }
 
-      const state = new Map(record.ticketState.map((entry) => [entry.ticketId, entry] as const));
-      const scheduled = computeReadySet({
-        tickets: this._tickets.tickets(),
-        spec: record.definition.queue,
-        state,
-        inFlight: [...inFlight.values()].map((entry) => entry.territory),
-        indexedFiles: this._tickets.indexedFiles(),
-        now: this._now(),
-      });
+      const pass = this._schedulePass(record, [...inFlight.values()].map((entry) => entry.territory));
+      const scheduled = pass.result;
 
       const freeSlots = Math.max(record.definition.workers.concurrency - inFlight.size, 0);
       const action = nextSupervisorAction(scheduled, inFlight.size, freeSlots);
@@ -298,23 +341,138 @@ export class LoopSupervisor {
             + scheduled.withheld.slice(0, 3).map((entry) => `${entry.ticket.id} (${entry.reason})`).join(", ")
           : "No dispatchable tickets remain.";
         this._settle(loopId, "blocked", detail);
+        // Blocked only on other tickets is the one kind of block a closed blocker can clear by
+        // itself, so signals may tell the user when it could continue (they never resume it).
+        const onlyDependencies = scheduled.withheld.length > 0
+          && scheduled.withheld.every((entry) => entry.reason === "blocked" || entry.reason === "incoherent");
+        this._store.setBlockedOn(loopId, onlyDependencies ? "dependencies" : "mixed");
         return;
       }
+      if (pass.mode !== "legacy") this._recordDecision(loopId, pass, freeSlots, new Set(inFlight.keys()));
       if (action === "dispatch") {
-        for (const entry of scheduled.ready.slice(0, freeSlots)) {
-          inFlight.set(entry.ticket.id, this._launch(loopId, record, entry, controllers, inFlight));
+        const dispatched = scheduled.ready.slice(0, freeSlots);
+        if (pass.mode === "graph") this._notePassedOver(loopId, dispatched, scheduled.ready.slice(freeSlots));
+        for (const entry of dispatched) {
+          inFlight.set(entry.ticket.id, this._launch(loopId, record, entry, controllers, inFlight, pass.mode === "graph"));
         }
         continue;
       }
 
       // action === "wait": nothing dispatchable right now, but lanes are running. Wake on the
-      // first to settle rather than polling.
+      // first to settle rather than polling — or on a wake, when a blocker closed meanwhile.
       if (!inFlight.size) break;
-      await Promise.race([...inFlight.values()].map((entry) => entry.promise));
+      if (this._wokenEarly.delete(loopId)) continue;
+      const woken = new Promise<void>((resolve) => this._wakers.set(loopId, resolve));
+      await Promise.race([...[...inFlight.values()].map((entry) => entry.promise), woken]);
+      this._wakers.delete(loopId);
     }
 
     // Paused or stopped: let whatever is still running record its own outcome.
     await Promise.allSettled([...inFlight.values()].map((entry) => entry.promise));
+  }
+
+  /** One scheduling pass over current state. Pure apart from reading the stores. */
+  private _schedule(record: LoopRecord, inFlight: ReadonlyArray<ReadonlySet<string>>): SchedulerResult {
+    return this._schedulePass(record, inFlight).result;
+  }
+
+  private _schedulePass(
+    record: LoopRecord,
+    inFlight: ReadonlyArray<ReadonlySet<string>>,
+  ): { result: SchedulerResult; mode: SchedulerMode; shadow?: SchedulerResult } {
+    let context: LoopSchedulingContext = { mode: "legacy" };
+    try {
+      context = this._options.scheduling?.(record) ?? context;
+    } catch (error) {
+      // A graph that cannot be read must not stop a loop: schedule as before.
+      this._hooks.onError?.(record.definition.id, error);
+    }
+    const state = new Map(record.ticketState.map((entry) => [entry.ticketId, entry] as const));
+    const base = {
+      tickets: this._tickets.tickets(),
+      spec: record.definition.queue,
+      state,
+      inFlight,
+      indexedFiles: this._tickets.indexedFiles(),
+      now: this._now(),
+      ...(context.latestReceipt ? { latestReceipt: context.latestReceipt } : {}),
+    };
+    if (context.mode === "legacy" || !context.graph) return { result: computeReadySet(base), mode: "legacy" };
+    const budget = this._budget(record, base.tickets);
+    const graphResult = computeReadySet({
+      ...base,
+      graph: context.graph,
+      ...(context.held ? { held: context.held } : {}),
+      ...(budget ? { budget } : {}),
+    });
+    if (context.mode === "graph") return { result: graphResult, mode: "graph" };
+    return { result: computeReadySet(base), mode: "shadow", shadow: graphResult };
+  }
+
+  /** What is left of the spend ceiling, and what past lanes of each size cost (median, enough samples only). */
+  private _budget(record: LoopRecord, tickets: readonly Ticket[]): { remainingUsd: number; medianUsd: Partial<Record<"small" | "medium" | "large", number>> } | undefined {
+    const remainingUsd = this._remainingUsd(record);
+    if (remainingUsd === undefined) return undefined;
+    const complexity = new Map(tickets.map((ticket) => [ticket.id, ticket.complexity ?? "small"] as const));
+    const samples: Record<string, number[]> = {};
+    for (const iteration of record.iterations) {
+      if (!iteration.endedAt || iteration.usd === undefined || iteration.outcome === "running") continue;
+      const size = complexity.get(iteration.ticketId) ?? "small";
+      (samples[size] ??= []).push(iteration.usd);
+    }
+    const medianUsd: Partial<Record<"small" | "medium" | "large", number>> = {};
+    for (const [size, values] of Object.entries(samples)) {
+      if (values.length < BUDGET_SAMPLES) continue;
+      const sorted = [...values].sort((a, b) => a - b);
+      medianUsd[size as "small" | "medium" | "large"] = sorted[Math.floor(sorted.length / 2)]!;
+    }
+    return { remainingUsd, medianUsd };
+  }
+
+  /** Record the pass when it decided something different from the last one recorded. */
+  private _recordDecision(loopId: string, pass: { result: SchedulerResult; mode: SchedulerMode; shadow?: SchedulerResult }, freeSlots: number, running: ReadonlySet<string>): void {
+    const chosen = pass.result.ready.slice(0, freeSlots).map((entry) => ({ ticketId: entry.ticket.id, score: entry.score ?? 0, reasons: entry.reasons.slice(0, 8) }));
+    const withheld = pass.result.withheld.filter((entry) => !running.has(entry.ticket.id)).map((entry) => ({ ticketId: entry.ticket.id, reason: entry.reason, detail: entry.detail.slice(0, 300) }));
+    const wouldChoose = pass.shadow?.ready.slice(0, freeSlots).map((entry) => entry.ticket.id);
+    const fingerprint = JSON.stringify([chosen.map((entry) => entry.ticketId), withheld.map((entry) => `${entry.ticketId}:${entry.reason}`), wouldChoose]);
+    if (this._lastDecision.get(loopId) === fingerprint) return;
+    this._lastDecision.set(loopId, fingerprint);
+    this._store.appendDecision(loopId, {
+      at: new Date(this._now()).toISOString(),
+      mode: pass.mode === "graph" ? "graph" : "shadow",
+      chosen,
+      withheld,
+      ...(wouldChoose ? { wouldChoose } : {}),
+    });
+  }
+
+  /** Ready tickets left waiting while others ran earn starvation credit; dispatched ones start over. */
+  private _notePassedOver(loopId: string, dispatched: readonly ReadyEntry[], waiting: readonly ReadyEntry[]): void {
+    if (!waiting.length && !dispatched.some((entry) => entry.reasons.some((reason) => reason.startsWith("passed over")))) return;
+    this._store.update(loopId, (record) => {
+      for (const entry of dispatched) {
+        const state = record.ticketState.find((candidate) => candidate.ticketId === entry.ticket.id);
+        if (state) delete state.passedOver;
+      }
+      for (const entry of waiting) {
+        let state = record.ticketState.find((candidate) => candidate.ticketId === entry.ticket.id);
+        if (!state) {
+          state = { ticketId: entry.ticket.id, attempts: 0, touchedFiles: [] };
+          record.ticketState.push(state);
+        }
+        state.passedOver = (state.passedOver ?? 0) + 1;
+      }
+    });
+  }
+
+  /**
+   * The tickets a loop would dispatch if it were started now, nothing in flight. Dispatches
+   * nothing and changes nothing: signals use it to tell the user a blocked loop could continue.
+   */
+  previewReady(loopId: string): string[] {
+    const record = this._store.get(loopId);
+    if (!record) return [];
+    return this._schedule(record, []).ready.map((entry) => entry.ticket.id);
   }
 
   private _launch(
@@ -323,6 +481,7 @@ export class LoopSupervisor {
     entry: ReadyEntry,
     controllers: LoopControllers,
     inFlight: Map<string, InFlight>,
+    explain = false,
   ): InFlight {
     const ticket = entry.ticket;
     const state = record.ticketState.find((candidate) => candidate.ticketId === ticket.id);
@@ -338,6 +497,7 @@ export class LoopSupervisor {
       outcome: "running",
       detail: "In flight.",
       startedAt,
+      ...(explain && entry.reasons.length ? { scheduledBecause: entry.reasons.slice(0, 8) } : {}),
     });
 
     const promise = (async (): Promise<void> => {
@@ -473,6 +633,10 @@ export class LoopSupervisor {
       for (const file of result.filesTouched) {
         if (!state.touchedFiles.includes(file)) state.touchedFiles.push(file);
       }
+      // Collided with another lane over files (#19 claims): the scheduler runs it alone next time.
+      const conflicts = result.receipt?.conflicts ?? [];
+      if (conflicts.length) state.lastClaimConflict = conflicts.slice(0, 3).join(", ");
+      else if (result.ok) delete state.lastClaimConflict;
       if (result.parkedOnGate) {
         state.parkedOnGate = result.parkedOnGate;
         state.parkedAt = new Date(this._now()).toISOString();

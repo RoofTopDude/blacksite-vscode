@@ -14,8 +14,12 @@ import type { PlanRun } from "../../../src/plans/plan-run-model.js";
 import type { PlanningDocument, PlanStepStatus, StepEvidence, TaskPlan } from "../../../src/planning-store.js";
 import { LaneContracts } from "../../../src/orchestration/lane-contracts.js";
 import { ReceiptStore } from "../../../src/orchestration/receipt-store.js";
-import type { WorkContractsMode } from "../../../src/orchestration/flags.js";
+import type { OrchestrationFlags } from "../../../src/orchestration/flags.js";
 import { failureSignature } from "../../../src/plans/run-tripwires.js";
+import { SignalJournal } from "../../../src/orchestration/signals/journal.js";
+import { createSignalPorts } from "../../../src/orchestration/signals/ports.js";
+import { SignalService } from "../../../src/orchestration/signals/service.js";
+import type { OrchestrationSignal } from "../../../src/orchestration/signals/model.js";
 import { EPOCH, sequentialIds, settle, VirtualClock } from "./canonical.js";
 import { costPer, receiptAgreement, type Arm, type Scorecard } from "./scorecard.js";
 import { verdicts, type PlanRunTraceEvent, type PlanRunTraceHeader, type Trace } from "./trace.js";
@@ -26,6 +30,8 @@ export interface PlanRunReplay {
   run: Record<string, unknown>;
   launches: Array<{ at: number; origin: string }>;
   scorecard: Scorecard;
+  signals?: Array<{ seq: number; at: number; kind: string; taskId: string; source: string; observer: string }>;
+  reconciliations?: Array<{ at: number; consumer: string; action: string; target: string; applied: boolean }>;
 }
 
 function buildPlan(header: PlanRunTraceHeader): TaskPlan {
@@ -49,7 +55,7 @@ function buildPlan(header: PlanRunTraceHeader): TaskPlan {
 
 export async function replayPlanRun(
   trace: Trace<PlanRunTraceHeader, PlanRunTraceEvent>,
-  options: { dir: string; arm: Arm; workContracts: WorkContractsMode },
+  options: { dir: string; arm: Arm; flags: OrchestrationFlags },
 ): Promise<PlanRunReplay> {
   const clock = new VirtualClock();
   const ids = sequentialIds();
@@ -68,7 +74,7 @@ export async function replayPlanRun(
   const contracts = new LaneContracts({
     store: new ReceiptStore(options.dir, clock.read),
     workspaceRoot: options.dir,
-    mode: () => options.workContracts,
+    mode: () => options.flags.workContracts,
     now: clock.read,
     newId: ids,
   });
@@ -93,8 +99,34 @@ export async function replayPlanRun(
     publish: () => undefined,
   };
   const store = new PlanRunStore(options.dir);
-  const make = (): PlanRunService => new PlanRunService(store, planning, host, new AttentionCenter(), { now: clock.read, newId: () => "run_1" });
+  // Signals (#14): plan-run events in, flags back onto the run. No loops in a plan replay.
+  let signals: SignalService | undefined;
+  const makeSignals = (): SignalService | undefined => (options.flags.signals === "off" ? undefined : new SignalService({
+    mode: () => options.flags.signals,
+    journal: new SignalJournal(options.dir),
+    reads: { loops: () => [], isRunning: () => false, wouldDispatch: () => [], ticketOpen: () => false },
+    ports: createSignalPorts({
+      loops: { get: () => undefined, setResumeOffer: () => undefined, addReassessment: () => undefined },
+      supervisor: { wake: () => undefined },
+      planRuns: () => service,
+      noteTicket: () => undefined,
+      now: clock.read,
+    }),
+    now: clock.read,
+    schedule: (run) => {
+      let live = true;
+      queueMicrotask(() => { if (live) run(); });
+      return { cancel: () => { live = false; } };
+    },
+  }));
+  const make = (): PlanRunService => new PlanRunService(store, planning, host, new AttentionCenter(), {
+    now: clock.read,
+    newId: () => "run_1",
+    onEvent: (run, event) => signals?.observePlanRunEvent(run.id, run.planId, event),
+    onStalled: (runId, since) => signals?.observeRunStalled(runId, since),
+  });
   let service = make();
+  signals = makeSignals();
   service.notePlanChanged(structuredClone(doc));
 
   const setStep = (phaseId: string, stepId: string, status: PlanStepStatus): void => {
@@ -169,9 +201,12 @@ export async function replayPlanRun(
         break;
       case "crash":
         crashes += 1;
+        signals?.dispose();
         service.dispose();
         service = make();
         service.recover();
+        signals = makeSignals();
+        signals?.replayPending();
         break;
     }
     await settle(3);
@@ -206,12 +241,24 @@ export async function replayPlanRun(
     ...(receipts.size ? { receipts: agreement } : {}),
   };
   service.dispose();
+  signals?.dispose();
+  const journal = options.flags.signals === "off" ? undefined : new SignalJournal(options.dir).lines();
   return {
     scenario: trace.header.scenario,
     arm: options.arm,
     run: describeRun(run),
     launches,
     scorecard,
+    ...(journal ? {
+      signals: journal.filter((line) => line.type === "signal").map((line) => {
+        const value = line as unknown as OrchestrationSignal;
+        return { seq: value.seq, at: clock.elapsed(value.at) ?? 0, kind: value.kind, taskId: value.taskId, source: value.provenance.source, observer: value.provenance.observer };
+      }),
+      reconciliations: journal.filter((line) => line.type === "reconcile").map((line) => {
+        const value = line as unknown as { at: string; consumer: string; action: string; target: string; applied: boolean };
+        return { at: clock.elapsed(value.at) ?? 0, consumer: value.consumer, action: value.action, target: value.target, applied: value.applied };
+      }),
+    } : {}),
   };
 }
 
@@ -239,6 +286,7 @@ function describeRun(run: PlanRun): Record<string, unknown> {
     conductorDecisions: run.conductorDecisions.map((entry) => ({ decision: entry.decision, trigger: entry.trigger })),
     decisions: (run.decisions ?? []).map((decision) => ({ id: decision.id, status: decision.status })),
     tripwires: (run.tripwireHits ?? []).map((hit) => hit.kind),
+    ...(run.reassessments?.length ? { reassessments: run.reassessments.map((entry) => ({ kind: entry.kind, source: entry.source, taskId: entry.taskId })) } : {}),
     lastHandoff: run.lastHandoff?.split("\n")[0],
   };
 }

@@ -37,8 +37,29 @@ export interface ReadyEntry {
   ticket: Ticket;
   /** Effective territory: declared ∪ already-touched, resolved against the map index. */
   territory: ReadonlySet<string>;
-  /** Why this ticket ranked where it did, straight from rankTickets. */
+  /** Why this ticket ranked where it did, straight from rankTickets (plus the graph's terms in graph mode). */
   reasons: string[];
+  /** Graph mode: the score it was ranked by. */
+  score?: number;
+}
+
+/**
+ * What the graph-aware scheduler reads from the work graph (#15). Built by the host once per
+ * scheduling pass; pure to consume. Ticket ids are bare ("BLK-12"), not graph node ids.
+ */
+export interface SchedulingGraph {
+  /** Dependencies of this ticket that are not done: declared or observed ones, and ones whose target does not exist. */
+  hardBlockers(ticketId: string): Array<{ id: string; missing: boolean; source: string }>;
+  /** Open tickets that wait on this one, directly or further down the chain. */
+  downstreamOpen(ticketId: string): string[];
+  /** On the longest chain of open work, and that chain's weight. */
+  criticalPath(): { ids: ReadonlySet<string>; weight: number };
+  /** The dependency cycle this ticket is part of, if any. */
+  cycleOf(ticketId: string): string[] | undefined;
+  /** Inputs this ticket consumes that open work has yet to produce (#17 fills these in). */
+  waitingInputs(ticketId: string): string[];
+  /** Files receipts saw this ticket's lanes change, across attempts. */
+  observedFiles(ticketId: string): string[];
 }
 
 export interface SchedulerInputs {
@@ -52,6 +73,14 @@ export interface SchedulerInputs {
   indexedFiles: readonly string[];
   maxAttempts?: number;
   now?: number;
+  /** The latest receipt status per ticket, for `dependencySatisfiedBy: "verified_review"` (D6). */
+  latestReceipt?: (ticketId: string) => string | undefined;
+  /** Present: rank and admit with the work graph (#15). Absent: exactly the legacy behaviour. */
+  graph?: SchedulingGraph;
+  /** Graph mode: paths other lanes hold claims on right now (#19), path → who. */
+  held?: ReadonlyMap<string, string>;
+  /** Graph mode: spend left under the loop's ceiling, and the median spend of its past lanes by complexity (≥ 3 samples). */
+  budget?: { remainingUsd: number; medianUsd: Partial<Record<"small" | "medium" | "large", number>> };
 }
 
 /** Whether a ticket is in this loop's queue at all, before any readiness question. */
@@ -112,7 +141,9 @@ export function territoryConflicts(a: ReadonlySet<string>, b: ReadonlySet<string
  *  situations and a loop that cannot tell them apart will report the wrong one. */
 export interface WithheldEntry {
   ticket: Ticket;
-  reason: "blocked" | "parked" | "exhausted" | "territory";
+  /** `incoherent` (a dependency cycle or a dependency that does not exist), `waiting_input` and
+   *  `budget` come only from the graph-aware scheduler (#15). */
+  reason: "blocked" | "parked" | "exhausted" | "territory" | "incoherent" | "waiting_input" | "budget";
   detail: string;
 }
 
@@ -140,12 +171,23 @@ function loopRetains(ticket: Ticket, state: ReadonlyMap<string, LoopTicketState>
   return ticket.status !== "review";
 }
 
+/**
+ * Whether a dependency counts as met. Closed is always met. With the loop's opt-in (D6), a blocker
+ * in review whose latest receipt is `verified` is met too — the user still closes it.
+ */
+function dependencyMet(id: string, byId: ReadonlyMap<string, Ticket>, spec: LoopQueueSpec, latestReceipt?: (ticketId: string) => string | undefined): boolean {
+  const blocker = byId.get(id);
+  if (!blocker || !isOpenStatus(blocker.status)) return true;
+  return spec.dependencySatisfiedBy === "verified_review" && blocker.status === "review" && latestReceipt?.(id) === "verified";
+}
+
 export function computeReadySet(inputs: SchedulerInputs): SchedulerResult {
+  if (inputs.graph) return computeGraphReadySet(inputs, inputs.graph);
   const { tickets, spec, state, inFlight, indexedFiles } = inputs;
   const maxAttempts = inputs.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
 
   const inQueue = tickets.filter((ticket) => matchesQueue(ticket, spec) || loopRetains(ticket, state));
-  const openIds = new Set(tickets.filter((t) => isOpenStatus(t.status)).map((t) => t.id));
+  const byId = new Map(tickets.map((ticket) => [ticket.id, ticket] as const));
 
   // rankTickets only ranks open tickets and already scores blocked ones last; the ordering it
   // produces is what the board would show, so the loop and the board agree on priority.
@@ -179,7 +221,7 @@ export function computeReadySet(inputs: SchedulerInputs): SchedulerResult {
       continue;
     }
     if (spec.respectBlockedBy) {
-      const blockers = ticket.blockedBy.filter((id) => openIds.has(id));
+      const blockers = ticket.blockedBy.filter((id) => !dependencyMet(id, byId, spec, inputs.latestReceipt));
       if (blockers.length) {
         withheld.push({ ticket, reason: "blocked", detail: `Blocked by ${blockers.join(", ")}.` });
         continue;
@@ -204,6 +246,150 @@ export function computeReadySet(inputs: SchedulerInputs): SchedulerResult {
 
     claimed.push(territory);
     ready.push({ ticket, territory, reasons: rankOrder.get(ticket.id)?.reasons ?? [] });
+  }
+
+  return { ready, withheld, queueSize: inQueue.length };
+}
+
+/** Graph-mode score terms (#15). Bounded, except the starvation credit, which is what guarantees
+ *  every ready ticket eventually outranks any graph-favoured rival. */
+export const GRAPH_SCORE = {
+  unblockPerTicket: 8,
+  unblockMax: 40,
+  criticalPath: 25,
+  passedOver: 10,
+  recentConflict: -30,
+} as const;
+
+const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
+
+/**
+ * The graph-aware ready set (#15). The same withholding as legacy — parked, out of attempts,
+ * blocked — plus what only the graph can see: a dependency that does not exist or a dependency
+ * cycle (shown as `incoherent`, never silently run or dropped), inputs still being produced, live
+ * claims held by other lanes, and spend. Ranked by the board's own score plus how much open work
+ * each ticket unblocks and whether it sits on the critical path, with a starvation credit for
+ * every pass a ready ticket waited. Ties break by priority, recency, then id: the same inputs in
+ * any order give the same decision.
+ */
+export function computeGraphReadySet(inputs: SchedulerInputs, graph: SchedulingGraph): SchedulerResult {
+  const { tickets, spec, state, inFlight, indexedFiles } = inputs;
+  const maxAttempts = inputs.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  const byId = new Map(tickets.map((ticket) => [ticket.id, ticket] as const));
+  const inQueue = tickets.filter((ticket) => matchesQueue(ticket, spec) || loopRetains(ticket, state));
+  const ranked = new Map(rankTickets(tickets, inputs.now).map((entry) => [entry.ticket.id, entry] as const));
+  const critical = graph.criticalPath();
+  const resolver = createTerritoryResolver(indexedFiles);
+  const heldKeys = new Map<string, string>();
+  for (const [file, who] of inputs.held ?? []) heldKeys.set(file.toLowerCase(), who);
+
+  const withheld: WithheldEntry[] = [];
+  const candidates: Array<{ ticket: Ticket; score: number; reasons: string[] }> = [];
+
+  for (const ticket of inQueue) {
+    const ticketState = state.get(ticket.id);
+    if (ticketState?.parkedOnGate) {
+      withheld.push({ ticket, reason: "parked", detail: `Waiting on approval: ${ticketState.parkedOnGate}` });
+      continue;
+    }
+    if ((ticketState?.attempts ?? 0) >= maxAttempts) {
+      withheld.push({ ticket, reason: "exhausted", detail: `${ticketState?.attempts ?? 0} attempts, none succeeded.` });
+      continue;
+    }
+    if (spec.respectBlockedBy) {
+      const cycle = graph.cycleOf(ticket.id);
+      if (cycle) {
+        withheld.push({ ticket, reason: "incoherent", detail: `In a dependency cycle: ${[...cycle, cycle[0]].join(" → ")}.` });
+        continue;
+      }
+      const blockers = graph.hardBlockers(ticket.id);
+      const missing = blockers.filter((entry) => entry.missing).map((entry) => entry.id);
+      if (missing.length) {
+        withheld.push({ ticket, reason: "incoherent", detail: `Depends on ${missing.join(", ")}, which ${missing.length === 1 ? "does" : "do"} not exist.` });
+        continue;
+      }
+      const unmet = blockers.filter((entry) => !dependencyMet(entry.id, byId, spec, inputs.latestReceipt)).map((entry) => entry.id);
+      if (unmet.length) {
+        withheld.push({ ticket, reason: "blocked", detail: `Blocked by ${unmet.join(", ")}.` });
+        continue;
+      }
+    }
+    if (ticket.status === "blocked") {
+      withheld.push({ ticket, reason: "blocked", detail: "Marked blocked." });
+      continue;
+    }
+    const inputsPending = graph.waitingInputs(ticket.id);
+    if (inputsPending.length) {
+      withheld.push({ ticket, reason: "waiting_input", detail: `Waiting on ${inputsPending.slice(0, 3).join(", ")} to be produced.` });
+      continue;
+    }
+
+    const base = ranked.get(ticket.id);
+    let score = base?.score ?? 0;
+    // The board's own reasons, minus a "blocked by" that the dependency check has just ruled met.
+    const reasons = (base?.reasons ?? []).filter((reason) => !reason.startsWith("blocked by"));
+    if (base && base.blockedByOpen.length) score += 1000;
+    const downstream = graph.downstreamOpen(ticket.id);
+    if (downstream.length) {
+      score += Math.min(GRAPH_SCORE.unblockMax, GRAPH_SCORE.unblockPerTicket * downstream.length);
+      reasons.push(`unblocks ${downstream.length} ticket${downstream.length === 1 ? "" : "s"} (${downstream.slice(0, 3).join(", ")}${downstream.length > 3 ? ", …" : ""})`);
+    }
+    if (critical.ids.has(ticket.id)) {
+      score += GRAPH_SCORE.criticalPath;
+      reasons.push(`on the critical path (weight ${critical.weight})`);
+    }
+    const waited = ticketState?.passedOver ?? 0;
+    if (waited > 0) {
+      score += GRAPH_SCORE.passedOver * waited;
+      reasons.push(`passed over ${waited} time${waited === 1 ? "" : "s"}`);
+    }
+    if (ticketState?.lastClaimConflict) {
+      score += GRAPH_SCORE.recentConflict;
+      reasons.push(`collided last time (${ticketState.lastClaimConflict})`);
+    }
+    candidates.push({ ticket, score, reasons });
+  }
+
+  candidates.sort((a, b) => b.score - a.score
+    || (PRIORITY_ORDER[a.ticket.priority] ?? 9) - (PRIORITY_ORDER[b.ticket.priority] ?? 9)
+    || b.ticket.updatedAt.localeCompare(a.ticket.updatedAt)
+    || a.ticket.id.localeCompare(b.ticket.id));
+
+  const ready: ReadyEntry[] = [];
+  const claimed: Array<ReadonlySet<string>> = [...inFlight];
+  for (const { ticket, score, reasons } of candidates) {
+    const ticketState = state.get(ticket.id);
+    const territory = territoryOf(ticket, resolver, [...(ticketState?.touchedFiles ?? []), ...graph.observedFiles(ticket.id)]);
+    if (claimed.some((held) => territoryConflicts(territory, held))) {
+      withheld.push({
+        ticket,
+        reason: "territory",
+        detail: territory.has(UNTENANTED)
+          ? "No declared territory, so it cannot run beside anything else."
+          : "Territory overlaps a lane already running.",
+      });
+      continue;
+    }
+    const heldBy = territory.has(UNTENANTED)
+      ? (heldKeys.size ? [...heldKeys.values()][0] : undefined)
+      : [...territory].map((file) => heldKeys.get(file.toLowerCase())).find((who) => who !== undefined);
+    if (heldBy) {
+      withheld.push({ ticket, reason: "territory", detail: `${heldBy} is writing files this ticket covers.` });
+      continue;
+    }
+    // Large work, and work that collided last time, runs alone (plan §4.5 tier 2).
+    const runsAlone = ticket.complexity === "large" || !!ticketState?.lastClaimConflict;
+    if (runsAlone && (claimed.length > 0)) {
+      withheld.push({ ticket, reason: "territory", detail: ticket.complexity === "large" ? "Large: runs only when nothing else is running." : "Collided with another lane last time: runs alone." });
+      continue;
+    }
+    const median = inputs.budget?.medianUsd[ticket.complexity ?? "small"];
+    if (inputs.budget && median !== undefined && inputs.budget.remainingUsd < median) {
+      withheld.push({ ticket, reason: "budget", detail: `About $${median.toFixed(2)} for a lane like this; $${inputs.budget.remainingUsd.toFixed(2)} of the ceiling is left.` });
+      continue;
+    }
+    claimed.push(runsAlone ? new Set([UNTENANTED]) : territory);
+    ready.push({ ticket, territory, reasons, score });
   }
 
   return { ready, withheld, queueSize: inQueue.length };

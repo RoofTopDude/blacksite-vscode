@@ -54,6 +54,12 @@ export interface LoopQueueSpec {
    * that can actually act on them, so this is opt-out rather than absent.
    */
   respectBlockedBy: boolean;
+  /**
+   * When a dependency counts as met. `closed` (the default, and what absent means): the blocker is
+   * done or cancelled. `verified_review`: also when it is in review and its latest work receipt is
+   * `verified` — closing it stays the user's. Needs work contracts, or no receipt ever qualifies.
+   */
+  dependencySatisfiedBy?: "closed" | "verified_review";
 }
 
 export interface LoopWorkerSpec {
@@ -134,6 +140,9 @@ export interface LoopDefinition {
   endedAt?: string;
   /** Why the loop left `running`. Free text aimed at the user, not a code. */
   endedReason?: string;
+  /** Set while `blocked`: whether only unmet dependencies held it (signals can then offer a resume)
+   *  or something else too (parks, exhausted retries, territory). */
+  blockedOn?: "dependencies" | "mixed";
   createdAt: string;
   updatedAt: string;
 }
@@ -202,6 +211,8 @@ export interface LoopIteration {
    *  reads an unknown outcome as "failed". */
   receiptId?: string;
   receiptStatus?: string;
+  /** #15: why the scheduler picked this ticket when it did. */
+  scheduledBecause?: string[];
 }
 
 export interface LoopExecution {
@@ -211,7 +222,29 @@ export interface LoopExecution {
   status: LoopStatus;
   reason?: string;
   totals: LoopTotals;
+  /** The user resumed from a "can continue" offer; the signals that prompted it. */
+  offeredBy?: string[];
 }
+
+/** Signals said a blocked loop could continue. Shown to the user; never acted on by itself. */
+export interface LoopResumeOffer {
+  at: string;
+  ready: string[];
+  because: string;
+  signalIds: string[];
+}
+
+/** Something a signal flagged for a person to look at. Never changes anything by itself. */
+export interface LoopReassessment {
+  signalId: string;
+  kind: string;
+  taskId: string;
+  detail: string;
+  at: string;
+  source: string;
+}
+
+export const MAX_LOOP_REASSESSMENTS = 50;
 
 /** Per-ticket state the scheduler needs and the ticket itself should not carry — retry counts
  *  and parks belong to this loop's attempt at the ticket, not to the ticket. */
@@ -226,7 +259,25 @@ export interface LoopTicketState {
   /** Files the lane actually touched, unioned into the ticket's declared territory for the
    *  remainder of the loop. Territory is declared, not enforced — this narrows the gap. */
   touchedFiles: string[];
+  /** #15: scheduling passes that left this ready ticket waiting. Reset when it is dispatched. */
+  passedOver?: number;
+  /** #15: the ticket's last lane was refused a write another lane held. */
+  lastClaimConflict?: string;
 }
+
+/** #15: one scheduling decision, recorded when it differs from the previous one. */
+export interface LoopSchedulingDecision {
+  at: string;
+  mode: "graph" | "shadow";
+  chosen: Array<{ ticketId: string; score: number; reasons: string[] }>;
+  withheld: Array<{ ticketId: string; reason: string; detail: string }>;
+  /** Shadow mode: what the graph-aware scheduler would have dispatched instead. */
+  wouldChoose?: string[];
+  /** The signals that woke the pass, when it was woken. */
+  signalIds?: string[];
+}
+
+export const MAX_LOOP_DECISIONS = 100;
 
 export interface LoopRecord {
   definition: LoopDefinition;
@@ -247,6 +298,12 @@ export interface LoopRecord {
    * windowed and its arithmetic is preserved here rather than lost.
    */
   retired?: LoopTotals;
+  /** #14: a blocked loop that could continue. Cleared when it is started, stopped or no longer true. */
+  resumeOffer?: LoopResumeOffer;
+  /** #14: signals that need a person's judgment, newest last, at most {@link MAX_LOOP_REASSESSMENTS}. */
+  reassessments?: LoopReassessment[];
+  /** #15: recorded scheduling decisions, newest last, at most {@link MAX_LOOP_DECISIONS}. */
+  decisions?: LoopSchedulingDecision[];
 }
 
 export interface LoopTotals {

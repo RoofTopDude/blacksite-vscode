@@ -49,6 +49,60 @@
         "usd": 0.08
       }
     ],
+    "schedulingDecisions": [
+      {
+        "at": 0,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish"
+            ],
+            "score": 0,
+            "ticketId": "T-1"
+          }
+        ],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": [
+          "T-1"
+        ]
+      },
+      {
+        "at": 0,
+        "chosen": [],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": []
+      },
+      {
+        "at": 120000,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish"
+            ],
+            "score": 0,
+            "ticketId": "T-2"
+          }
+        ],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": [
+          "T-2"
+        ]
+      },
+      {
+        "at": 120000,
+        "chosen": [],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": []
+      }
+    ],
     "status": "drained",
     "ticketState": [
       {
@@ -75,6 +129,36 @@
       "usd": 0.2
     }
   },
+  "reconciliations": [
+    {
+      "action": "wake_loop",
+      "applied": false,
+      "at": 120000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "flag",
+      "applied": false,
+      "at": 120000,
+      "consumer": "reassess",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "note_ticket",
+      "applied": false,
+      "at": 120000,
+      "consumer": "ticket-notes",
+      "target": "ticket:T-1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": false,
+      "at": 210000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    }
+  ],
   "scenario": "loop-false-completion",
   "scorecard": {
     "abandoned": 0,
@@ -103,6 +187,24 @@
     "subjects": 2,
     "verifiedSuccess": 1
   },
+  "signals": [
+    {
+      "at": 120000,
+      "kind": "verification_failed",
+      "observer": "receipt",
+      "seq": 1,
+      "source": "host",
+      "taskId": "ticket:T-1"
+    },
+    {
+      "at": 210000,
+      "kind": "work_completed",
+      "observer": "receipt",
+      "seq": 2,
+      "source": "host",
+      "taskId": "ticket:T-2"
+    }
+  ],
   "ticketLog": [
     {
       "at": 120000,

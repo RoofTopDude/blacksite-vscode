@@ -73,6 +73,92 @@
         "usd": 0.1
       }
     ],
+    "schedulingDecisions": [
+      {
+        "at": 0,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish"
+            ],
+            "score": 0,
+            "ticketId": "T-1"
+          },
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish"
+            ],
+            "score": 0,
+            "ticketId": "T-3"
+          },
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish"
+            ],
+            "score": 0,
+            "ticketId": "T-4"
+          }
+        ],
+        "mode": "shadow",
+        "withheld": [
+          {
+            "detail": "Territory overlaps a lane already running.",
+            "reason": "territory",
+            "ticketId": "T-2"
+          }
+        ],
+        "wouldChoose": [
+          "T-1",
+          "T-3",
+          "T-4"
+        ]
+      },
+      {
+        "at": 0,
+        "chosen": [],
+        "mode": "shadow",
+        "withheld": [
+          {
+            "detail": "Territory overlaps a lane already running.",
+            "reason": "territory",
+            "ticketId": "T-2"
+          }
+        ],
+        "wouldChoose": []
+      },
+      {
+        "at": 200000,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish"
+            ],
+            "score": 0,
+            "ticketId": "T-2"
+          }
+        ],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": [
+          "T-2"
+        ]
+      },
+      {
+        "at": 200000,
+        "chosen": [],
+        "mode": "shadow",
+        "withheld": [],
+        "wouldChoose": []
+      }
+    ],
     "status": "drained",
     "ticketState": [
       {
@@ -115,6 +201,36 @@
       "usd": 0.4
     }
   },
+  "reconciliations": [
+    {
+      "action": "wake_loop",
+      "applied": false,
+      "at": 100000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": false,
+      "at": 100000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": false,
+      "at": 200000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    },
+    {
+      "action": "wake_loop",
+      "applied": false,
+      "at": 350000,
+      "consumer": "loop-wake",
+      "target": "loop:loop_1"
+    }
+  ],
   "scenario": "loop-territory-overlap",
   "scorecard": {
     "abandoned": 0,
@@ -143,6 +259,40 @@
     "subjects": 4,
     "verifiedSuccess": 3
   },
+  "signals": [
+    {
+      "at": 100000,
+      "kind": "work_completed",
+      "observer": "receipt",
+      "seq": 1,
+      "source": "host",
+      "taskId": "ticket:T-3"
+    },
+    {
+      "at": 100000,
+      "kind": "work_completed",
+      "observer": "receipt",
+      "seq": 2,
+      "source": "host",
+      "taskId": "ticket:T-4"
+    },
+    {
+      "at": 200000,
+      "kind": "work_completed",
+      "observer": "receipt",
+      "seq": 3,
+      "source": "host",
+      "taskId": "ticket:T-1"
+    },
+    {
+      "at": 350000,
+      "kind": "work_completed",
+      "observer": "receipt",
+      "seq": 4,
+      "source": "host",
+      "taskId": "ticket:T-2"
+    }
+  ],
   "ticketLog": [
     {
       "at": 100000,

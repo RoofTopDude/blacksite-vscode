@@ -6,6 +6,7 @@
       "origin": "run"
     }
   ],
+  "reconciliations": [],
   "run": {
     "activeMs": 2900000,
     "compactions": 1,
@@ -146,5 +147,39 @@
     "subject": "plan_run",
     "subjects": 4,
     "verifiedSuccess": 4
-  }
+  },
+  "signals": [
+    {
+      "at": 1000,
+      "kind": "work_completed",
+      "observer": "step.evidence",
+      "seq": 1,
+      "source": "host",
+      "taskId": "step:plan-1/p1/s1"
+    },
+    {
+      "at": 2700000,
+      "kind": "work_completed",
+      "observer": "step.evidence",
+      "seq": 2,
+      "source": "host",
+      "taskId": "step:plan-1/p1/s2"
+    },
+    {
+      "at": 3100000,
+      "kind": "work_completed",
+      "observer": "step.evidence",
+      "seq": 3,
+      "source": "host",
+      "taskId": "step:plan-1/p2/s1"
+    },
+    {
+      "at": 3100000,
+      "kind": "work_completed",
+      "observer": "step.evidence",
+      "seq": 4,
+      "source": "host",
+      "taskId": "step:plan-1/p2/s2"
+    }
+  ]
 }

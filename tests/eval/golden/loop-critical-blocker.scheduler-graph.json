@@ -1,0 +1,430 @@
+{
+  "arm": "scheduler-graph",
+  "hooks": [
+    {
+      "at": 2400000,
+      "detail": "3 ticket(s) remain, none dispatchable: D-1 (blocked), D-2 (blocked), D-3 (blocked)",
+      "hook": "settled:blocked"
+    }
+  ],
+  "loop": {
+    "executions": [
+      {
+        "reason": "3 ticket(s) remain, none dispatchable: D-1 (blocked), D-2 (blocked), D-3 (blocked)",
+        "status": "blocked",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 4,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 4,
+          "usd": 0.4
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "detail": "Done.",
+        "endedAt": 600000,
+        "outcome": "succeeded",
+        "scheduledBecause": [
+          "normal priority",
+          "assigned to you",
+          "small enough to finish",
+          "unblocks 3 tickets (D-1, D-2, D-3)",
+          "on the critical path (weight 2)"
+        ],
+        "seq": 1,
+        "startedAt": 0,
+        "ticketId": "H-1",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 1200000,
+        "outcome": "succeeded",
+        "scheduledBecause": [
+          "high priority",
+          "assigned to you",
+          "small enough to finish",
+          "passed over 1 time"
+        ],
+        "seq": 2,
+        "startedAt": 600000,
+        "ticketId": "S-1",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 1800000,
+        "outcome": "succeeded",
+        "scheduledBecause": [
+          "high priority",
+          "assigned to you",
+          "small enough to finish",
+          "passed over 2 times"
+        ],
+        "seq": 3,
+        "startedAt": 1200000,
+        "ticketId": "S-2",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 2400000,
+        "outcome": "succeeded",
+        "scheduledBecause": [
+          "high priority",
+          "assigned to you",
+          "small enough to finish",
+          "passed over 3 times"
+        ],
+        "seq": 4,
+        "startedAt": 1800000,
+        "ticketId": "S-3",
+        "usd": 0.1
+      }
+    ],
+    "schedulingDecisions": [
+      {
+        "at": 0,
+        "chosen": [
+          {
+            "reasons": [
+              "normal priority",
+              "assigned to you",
+              "small enough to finish",
+              "unblocks 3 tickets (D-1, D-2, D-3)",
+              "on the critical path (weight 2)"
+            ],
+            "score": 142,
+            "ticketId": "H-1"
+          }
+        ],
+        "mode": "graph",
+        "withheld": [
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-1"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-2"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-3"
+          }
+        ]
+      },
+      {
+        "at": 0,
+        "chosen": [],
+        "mode": "graph",
+        "withheld": [
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-1"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-2"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-3"
+          }
+        ]
+      },
+      {
+        "at": 600000,
+        "chosen": [
+          {
+            "reasons": [
+              "high priority",
+              "assigned to you",
+              "small enough to finish",
+              "passed over 1 time"
+            ],
+            "score": 133,
+            "ticketId": "S-1"
+          }
+        ],
+        "mode": "graph",
+        "withheld": [
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-1"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-2"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-3"
+          }
+        ]
+      },
+      {
+        "at": 600000,
+        "chosen": [],
+        "mode": "graph",
+        "withheld": [
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-1"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-2"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-3"
+          }
+        ]
+      },
+      {
+        "at": 1200000,
+        "chosen": [
+          {
+            "reasons": [
+              "high priority",
+              "assigned to you",
+              "small enough to finish",
+              "passed over 2 times"
+            ],
+            "score": 143,
+            "ticketId": "S-2"
+          }
+        ],
+        "mode": "graph",
+        "withheld": [
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-1"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-2"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-3"
+          }
+        ]
+      },
+      {
+        "at": 1200000,
+        "chosen": [],
+        "mode": "graph",
+        "withheld": [
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-1"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-2"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-3"
+          }
+        ]
+      },
+      {
+        "at": 1800000,
+        "chosen": [
+          {
+            "reasons": [
+              "high priority",
+              "assigned to you",
+              "small enough to finish",
+              "passed over 3 times"
+            ],
+            "score": 153,
+            "ticketId": "S-3"
+          }
+        ],
+        "mode": "graph",
+        "withheld": [
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-1"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-2"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-3"
+          }
+        ]
+      },
+      {
+        "at": 1800000,
+        "chosen": [],
+        "mode": "graph",
+        "withheld": [
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-1"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-2"
+          },
+          {
+            "detail": "Blocked by H-1.",
+            "reason": "blocked",
+            "ticketId": "D-3"
+          }
+        ]
+      }
+    ],
+    "status": "blocked",
+    "ticketState": [
+      {
+        "attempts": 1,
+        "ticketId": "S-1",
+        "touchedFiles": [
+          "pkg/s1.py"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "S-2",
+        "touchedFiles": [
+          "pkg/s2.py"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "S-3",
+        "touchedFiles": [
+          "pkg/s3.py"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "H-1",
+        "touchedFiles": [
+          "pkg/core.py"
+        ]
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 0,
+      "dispatched": 4,
+      "failed": 0,
+      "parked": 0,
+      "succeeded": 4,
+      "usd": 0.4
+    }
+  },
+  "scenario": "loop-critical-blocker",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "scheduler-graph",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": null,
+    "costUsd": 0.4,
+    "elapsedMs": 2400000,
+    "falseCompletions": 4,
+    "halts": 0,
+    "interventions": 0,
+    "parks": 0,
+    "repeatedFailures": 0,
+    "retries": 0,
+    "scenario": "loop-critical-blocker",
+    "selfReportedSuccess": 4,
+    "subject": "loop",
+    "subjects": 7,
+    "verifiedSuccess": 0
+  },
+  "ticketLog": [
+    {
+      "at": 600000,
+      "id": "H-1",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 1200000,
+      "id": "S-1",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 1800000,
+      "id": "S-2",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 2400000,
+      "id": "S-3",
+      "kind": "review",
+      "note": "Done."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "S-1",
+      "status": "review"
+    },
+    {
+      "id": "S-2",
+      "status": "review"
+    },
+    {
+      "id": "S-3",
+      "status": "review"
+    },
+    {
+      "id": "H-1",
+      "status": "review"
+    },
+    {
+      "id": "D-1",
+      "status": "backlog"
+    },
+    {
+      "id": "D-2",
+      "status": "backlog"
+    },
+    {
+      "id": "D-3",
+      "status": "backlog"
+    }
+  ]
+}

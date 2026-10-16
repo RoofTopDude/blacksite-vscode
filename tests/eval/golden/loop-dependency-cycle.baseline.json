@@ -1,0 +1,130 @@
+{
+  "arm": "baseline",
+  "hooks": [
+    {
+      "at": 600000,
+      "detail": "3 ticket(s) remain, none dispatchable: A-1 (blocked), B-1 (blocked), C-1 (blocked)",
+      "hook": "settled:blocked"
+    }
+  ],
+  "loop": {
+    "executions": [
+      {
+        "reason": "3 ticket(s) remain, none dispatchable: A-1 (blocked), B-1 (blocked), C-1 (blocked)",
+        "status": "blocked",
+        "totals": {
+          "consecutiveFailures": 0,
+          "dispatched": 2,
+          "failed": 0,
+          "parked": 0,
+          "succeeded": 2,
+          "usd": 0.2
+        }
+      }
+    ],
+    "iterations": [
+      {
+        "detail": "Done.",
+        "endedAt": 600000,
+        "outcome": "succeeded",
+        "seq": 1,
+        "startedAt": 0,
+        "ticketId": "E-1",
+        "usd": 0.1
+      },
+      {
+        "detail": "Done.",
+        "endedAt": 600000,
+        "outcome": "succeeded",
+        "seq": 2,
+        "startedAt": 0,
+        "ticketId": "F-1",
+        "usd": 0.1
+      }
+    ],
+    "status": "blocked",
+    "ticketState": [
+      {
+        "attempts": 1,
+        "ticketId": "E-1",
+        "touchedFiles": [
+          "lib/e.rs"
+        ]
+      },
+      {
+        "attempts": 1,
+        "ticketId": "F-1",
+        "touchedFiles": [
+          "lib/f.rs"
+        ]
+      }
+    ],
+    "totals": {
+      "consecutiveFailures": 0,
+      "dispatched": 2,
+      "failed": 0,
+      "parked": 0,
+      "succeeded": 2,
+      "usd": 0.2
+    }
+  },
+  "scenario": "loop-dependency-cycle",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "baseline",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": null,
+    "costUsd": 0.2,
+    "elapsedMs": 600000,
+    "falseCompletions": 2,
+    "halts": 0,
+    "interventions": 0,
+    "parks": 0,
+    "repeatedFailures": 0,
+    "retries": 0,
+    "scenario": "loop-dependency-cycle",
+    "selfReportedSuccess": 2,
+    "subject": "loop",
+    "subjects": 5,
+    "verifiedSuccess": 0
+  },
+  "ticketLog": [
+    {
+      "at": 600000,
+      "id": "E-1",
+      "kind": "review",
+      "note": "Done."
+    },
+    {
+      "at": 600000,
+      "id": "F-1",
+      "kind": "review",
+      "note": "Done."
+    }
+  ],
+  "tickets": [
+    {
+      "id": "A-1",
+      "status": "backlog"
+    },
+    {
+      "id": "B-1",
+      "status": "backlog"
+    },
+    {
+      "id": "C-1",
+      "status": "backlog"
+    },
+    {
+      "id": "E-1",
+      "status": "review"
+    },
+    {
+      "id": "F-1",
+      "status": "review"
+    }
+  ]
+}

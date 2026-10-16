@@ -1,0 +1,6 @@
+{"trace":1,"scenario":"loop-dependency-chain-blocked","subject":"loop","arms":["signals-act"],"description":"Everything in the queue waits on T-9, so the loop stops itself as blocked. The user closes T-9. With signals acting the loop offers to continue but does not restart by itself; it runs T-2 only when the user resumes it, exactly as without signals.","setup":{"tickets":[{"id":"T-2","files":["lib/parse/b.go"],"blockedBy":["T-9"]},{"id":"T-9","files":["lib/parse/c.go"],"status":"in_progress","assignee":"user"}],"loop":{"workers":{"concurrency":1}}}}
+{"op":"user","at":0,"action":"start"}
+{"op":"ticket","at":600000,"ticket":"T-9","status":"done","actor":"user"}
+{"op":"user","at":1800000,"action":"resume"}
+{"op":"lane","ticket":"T-2","attempt":1,"durationMs":600000,"spend":[[60000,0.1]],"result":{"ok":true,"detail":"Parser accepts the new token.","filesTouched":["lib/parse/b.go"]},"receipt":"verified"}
+{"op":"verifier","subject":"T-2","result":"pass"}

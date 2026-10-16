@@ -24,7 +24,11 @@ export type AttentionKind =
   | "provider_wait"
   | "budget"
   | "loop_parked"
-  | "loop_ended";
+  | "loop_ended"
+  /** A loop that stopped on blocked tickets could continue: the user resumes it (never automatic). */
+  | "loop_can_continue"
+  /** Something a signal flagged for a person to look at in a loop. */
+  | "loop_reassess";
 
 /**
  * needs_you: the work cannot go on without a person. error: it stopped badly. success: it

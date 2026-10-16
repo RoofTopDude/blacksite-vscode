@@ -244,12 +244,15 @@ itself always lives in SecretStorage — these settings only name where it is al
 
 ## Orchestration (experimental)
 
-Both settings default to the previous behaviour. Setting either back to its default is the rollback: nothing they wrote is read again.
+Every setting here defaults to the previous behaviour. Setting one back to its default is the rollback: nothing it wrote is read again.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `blacksite.orchestration.workContracts` | `off` | Work contracts for delegated lanes and loop tickets. `observe` gives each lane a contract (what it may change, its budget, its definition of done) and writes a receipt of what was actually observed — files changed, checks run — kept apart from what the lane said. Nothing about how work runs changes. `enforce` also asks before a lane writes outside its contract's files (you, the reviewer, or **Allow all** can grant it) and lets the receipt decide a loop ticket's outcome: a lane whose check failed goes back for another attempt instead of to review. Stored under `.blacksite/orchestration/` |
 | `blacksite.orchestration.workGraph` | `false` | Builds a read-only work graph linking tickets, plan steps, code, runs and receipts, and gives the agent the `work_graph` tool for dependency, blocker, impact and critical-path questions. Derived from the existing stores, never written back |
+| `blacksite.orchestration.signals` | `off` | Typed signals about what the host observed: work completed, a check failing, scope growing, two pieces of work colliding, progress stalling, work becoming ready. `observe` journals them under `.blacksite/orchestration/signals/` with what would have been done about each. `act` also lets a running loop re-check its queue the moment a blocker closes, and tells you when a loop that stopped on blocked tickets can continue. Signals never start or resume a loop, create work, close a ticket or change a limit; anything that needs judgment is flagged for you instead |
+| `blacksite.orchestration.claims` | `off` | Short-lived claims on the files a delegated lane is writing, checked at the moment of each write. `observe` records collisions: two lanes writing one file, or a lane overwriting a file another lane changed after it read it. `enforce` refuses those writes and names the other lane. Read-only work is never blocked, your own chat agent is warned rather than refused, and claims end with the lane. With claims on, a lane's shell commands are also checked afterwards for files they changed outside the lane's contract or inside another lane's claims |
+| `blacksite.orchestration.scheduler` | `legacy` | How ticket loops choose what runs next. `shadow` chooses as before and records what the graph-aware scheduler would have chosen. `graph` runs tickets that unblock the most other work and sit on the critical path first, holds back tickets with a dependency cycle or a missing dependency, never starves a ticket, and records why each ticket ran. Needs `blacksite.orchestration.workGraph`; without it, behaves as `legacy` |
 
 ---
 

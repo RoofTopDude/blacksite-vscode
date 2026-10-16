@@ -1,0 +1,9 @@
+{"trace":1,"scenario":"loop-restart-replay","subject":"loop","arms":["signals-act"],"description":"The user closes T-9, and the host dies after the change is journaled but before any consumer saw it. On restart the loop is paused, the journal is replayed, and nothing is dispatched until the user resumes; then each ticket runs exactly once, as without signals.","setup":{"tickets":[{"id":"T-1","files":["src/core/a.ts"]},{"id":"T-2","files":["src/core/b.ts"],"blockedBy":["T-9"]},{"id":"T-9","files":["src/core/c.ts"],"status":"in_progress","assignee":"user"}],"loop":{"workers":{"concurrency":2}}}}
+{"op":"user","at":0,"action":"start"}
+{"op":"lane","ticket":"T-1","attempt":1,"durationMs":1800000,"spend":[[60000,0.2]],"result":{"ok":true,"detail":"Done.","filesTouched":["src/core/a.ts"]},"receipt":"verified"}
+{"op":"ticket","at":600000,"ticket":"T-9","status":"done","actor":"user","crashBeforeReconcile":true}
+{"op":"user","at":1200000,"action":"resume"}
+{"op":"lane","ticket":"T-1","attempt":2,"durationMs":600000,"spend":[[60000,0.1]],"result":{"ok":true,"detail":"Done after the restart.","filesTouched":["src/core/a.ts"]},"receipt":"verified"}
+{"op":"lane","ticket":"T-2","attempt":1,"durationMs":600000,"spend":[[60000,0.1]],"result":{"ok":true,"detail":"Done.","filesTouched":["src/core/b.ts"]},"receipt":"verified"}
+{"op":"verifier","subject":"T-1","result":"pass"}
+{"op":"verifier","subject":"T-2","result":"pass"}

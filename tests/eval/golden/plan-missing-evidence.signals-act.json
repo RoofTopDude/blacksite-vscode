@@ -1,0 +1,126 @@
+{
+  "arm": "signals-act",
+  "launches": [
+    {
+      "at": 0,
+      "origin": "run"
+    }
+  ],
+  "reconciliations": [
+    {
+      "action": "flag",
+      "applied": true,
+      "at": 301000,
+      "consumer": "reassess",
+      "target": "planrun:run_1"
+    }
+  ],
+  "run": {
+    "activeMs": 400000,
+    "compactions": 0,
+    "conductorDecisions": [],
+    "decisions": [],
+    "endReason": "Every step is done.",
+    "gatesAnswered": 0,
+    "reassessments": [
+      {
+        "kind": "work_completed",
+        "source": "model",
+        "taskId": "step:plan-1/p1/s1"
+      }
+    ],
+    "retries": 0,
+    "spentUsd": 0.8,
+    "status": "completed",
+    "steps": [
+      {
+        "attempts": 1,
+        "phaseId": "p1",
+        "receiptIds": [
+          "receipt_1"
+        ],
+        "status": "completed",
+        "stepId": "s1"
+      },
+      {
+        "attempts": 1,
+        "evidence": {
+          "checks": [
+            "pytest"
+          ],
+          "filesChanged": [
+            "pkg/queue/ring.py"
+          ],
+          "unverified": []
+        },
+        "phaseId": "p1",
+        "receiptIds": [
+          "receipt_2"
+        ],
+        "status": "completed",
+        "stepId": "s2"
+      }
+    ],
+    "tripwires": [],
+    "turns": [
+      {
+        "origin": "run",
+        "stepTransitions": 2,
+        "stopReason": "end_turn"
+      },
+      {
+        "origin": "run",
+        "stepTransitions": 2,
+        "stopReason": "end_turn"
+      }
+    ],
+    "waitingProviderMs": 0,
+    "waitingUserMs": 0
+  },
+  "scenario": "plan-missing-evidence",
+  "scorecard": {
+    "abandoned": 0,
+    "arm": "signals-act",
+    "budgetStops": 0,
+    "conflicts": {
+      "occurred": 0
+    },
+    "costPerVerifiedSuccess": 0.8,
+    "costUsd": 0.8,
+    "elapsedMs": 400000,
+    "falseCompletions": 1,
+    "halts": 0,
+    "interventions": 0,
+    "parks": 0,
+    "receipts": {
+      "agree": 1,
+      "disagree": 0,
+      "unknown": 1
+    },
+    "repeatedFailures": 0,
+    "retries": 0,
+    "scenario": "plan-missing-evidence",
+    "selfReportedSuccess": 2,
+    "subject": "plan_run",
+    "subjects": 2,
+    "verifiedSuccess": 1
+  },
+  "signals": [
+    {
+      "at": 1000,
+      "kind": "work_completed",
+      "observer": "plan.step",
+      "seq": 1,
+      "source": "model",
+      "taskId": "step:plan-1/p1/s1"
+    },
+    {
+      "at": 400000,
+      "kind": "work_completed",
+      "observer": "step.evidence",
+      "seq": 2,
+      "source": "host",
+      "taskId": "step:plan-1/p1/s2"
+    }
+  ]
+}
