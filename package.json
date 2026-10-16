@@ -1141,6 +1141,26 @@
           "maximum": 365,
           "markdownDescription": "How many days a finished plan run's record (its ledger and event log under `.blacksite/plan-runs`) is kept. Runs that have not finished are never removed."
         },
+        "blacksite.orchestration.workContracts": {
+          "type": "string",
+          "enum": [
+            "off",
+            "observe",
+            "enforce"
+          ],
+          "enumDescriptions": [
+            "Delegated work runs exactly as before.",
+            "Each delegated lane and loop ticket gets a work contract and a receipt of what was observed. Nothing about how work runs changes.",
+            "As observe, and a lane that writes outside its contract's files asks for approval first. Loop outcomes follow the receipt: a lane whose checks failed is not sent for review."
+          ],
+          "default": "off",
+          "markdownDescription": "**Experimental.** Work contracts bound what a delegated lane may change and how much it may spend; receipts record what the host actually observed (files changed, checks run) separately from what the lane said. Stored under `.blacksite/orchestration`. Set to `off` to return to the previous behaviour."
+        },
+        "blacksite.orchestration.workGraph": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Experimental.** Builds a read-only work graph linking tickets, plan steps, code, runs and receipts, and gives the agent the `work_graph` tool for dependency, blocker, impact and critical-path questions. Derived from the existing stores and never written back."
+        },
         "blacksite.notifications.runEvents": {
           "type": "string",
           "enum": [

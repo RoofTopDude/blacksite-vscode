@@ -13,7 +13,8 @@
 
 import { inlineCodeSnippet, normalizeCommandName } from "@blacksite/local-runtime";
 
-export type ApprovalCategory = "edit" | "command" | "service" | "sequence" | "mcp";
+/** `scope`: a write outside a delegated lane's work contract (src/orchestration). */
+export type ApprovalCategory = "edit" | "command" | "service" | "sequence" | "mcp" | "scope";
 
 /** Runtime-backed file operations. They reach the gate through the same confirmation protocol as
  *  shell commands, but approving them is approving an edit, so they share the edit grants. */

@@ -49,6 +49,11 @@ export interface StepChange {
 /** Files nobody would call "outside the plan" when they change: lockfiles and the like. */
 const ALWAYS_IN_BOUNDS = /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|poetry\.lock|uv\.lock|Pipfile\.lock|Cargo\.lock|go\.sum|Gemfile\.lock|composer\.lock|CHANGELOG\.md)$/i;
 
+/** Lockfiles and the changelog: changing them is never "outside the plan". */
+export function isAlwaysInBounds(file: string): boolean {
+  return ALWAYS_IN_BOUNDS.test(normalize(file));
+}
+
 function normalize(file: string): string {
   return file.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
 }

@@ -196,6 +196,12 @@ export interface LoopIteration {
   usd?: number;
   /** Bounded host-generated lane trace; never includes hidden reasoning or unbounded deltas. */
   activity: LoopActivityEntry[];
+  /** The work contract the lane ran under, when contracts are on (src/orchestration). */
+  contractId?: string;
+  /** The lane's receipt. Its status is recorded here rather than as an outcome: an older build
+   *  reads an unknown outcome as "failed". */
+  receiptId?: string;
+  receiptStatus?: string;
 }
 
 export interface LoopExecution {

@@ -233,6 +233,9 @@ function normalizeIterations(value: unknown, loopId: string): LoopIteration[] {
       ...(text(raw.endedAt, 40) ? { endedAt: text(raw.endedAt, 40) } : {}),
       ...(Number.isFinite(Number(raw.usd)) ? { usd: Number(raw.usd) } : {}),
       activity: normalizeActivity(raw.activity),
+      ...(text(raw.contractId, 120) ? { contractId: text(raw.contractId, 120) } : {}),
+      ...(text(raw.receiptId, 120) ? { receiptId: text(raw.receiptId, 120) } : {}),
+      ...(text(raw.receiptStatus, 40) ? { receiptStatus: text(raw.receiptStatus, 40) } : {}),
     });
   }
   return out;
@@ -415,11 +418,28 @@ export interface CreateLoopInput {
   approvals?: Partial<LoopApprovalPosture>;
 }
 
+export interface LoopStoreOptions {
+  /** Injected for deterministic replays (tests/eval). Defaults to the wall clock. */
+  now?: () => number;
+  /** Injected for deterministic replays. Receives the id's prefix ("loop", "execution"). */
+  newId?: (prefix: string) => string;
+}
+
 export class LoopStore implements vscode.Disposable {
   private readonly _emitter = new vscode.EventEmitter<LoopDocument>();
   readonly onDidChange = this._emitter.event;
+  private readonly _now: () => number;
+  private readonly _newId: (prefix: string) => string;
 
-  constructor(private readonly _workspaceRoot: string) {}
+  constructor(private readonly _workspaceRoot: string, options: LoopStoreOptions = {}) {
+    this._now = options.now ?? (() => Date.now());
+    this._newId = options.newId
+      ?? ((prefix) => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`);
+  }
+
+  private _nowIso(): string {
+    return new Date(this._now()).toISOString();
+  }
 
   dispose(): void {
     this._emitter.dispose();
@@ -453,7 +473,7 @@ export class LoopStore implements vscode.Disposable {
     const document = this.read();
     const record: LoopRecord = {
       definition: {
-        id: `loop_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+        id: this._newId("loop"),
         title: text(input.title, 200) || "Untitled loop",
         // Always draft. A loop that dispatched the moment it was described would make an
         // hours-long unattended spend a side effect of asking for one.
@@ -463,8 +483,8 @@ export class LoopStore implements vscode.Disposable {
         ceilings: { ...defaultCeilings(), ...input.ceilings },
         approvals: { ...defaultApprovalPosture(), ...input.approvals },
         closure: "user_review",
-        createdAt: nowIso(),
-        updatedAt: nowIso(),
+        createdAt: this._nowIso(),
+        updatedAt: this._nowIso(),
       },
       executions: [],
       iterations: [],
@@ -483,7 +503,7 @@ export class LoopStore implements vscode.Disposable {
     const record = document.loops.find((candidate) => candidate.definition.id === loopId);
     if (!record) return undefined;
     if (mutate(record) === false) return record;
-    record.definition.updatedAt = nowIso();
+    record.definition.updatedAt = this._nowIso();
     trimIterations(record);
     record.totals = foldTotals(record.iterations, record.retired);
     this._write(document);
@@ -495,9 +515,9 @@ export class LoopStore implements vscode.Disposable {
       if (record.definition.status === status) return false;
       const wasRunning = record.definition.status === "running";
       record.definition.status = status;
-      if (status === "running" && !record.definition.startedAt) record.definition.startedAt = nowIso();
+      if (status === "running" && !record.definition.startedAt) record.definition.startedAt = this._nowIso();
       if (TERMINAL_LOOP_STATUSES.has(status)) {
-        record.definition.endedAt = nowIso();
+        record.definition.endedAt = this._nowIso();
         if (reason) record.definition.endedReason = reason;
       } else {
         delete record.definition.endedAt;
@@ -507,7 +527,7 @@ export class LoopStore implements vscode.Disposable {
         const execution = [...record.executions].reverse().find((entry) => !entry.endedAt);
         if (execution) {
           execution.status = status;
-          execution.endedAt = nowIso();
+          execution.endedAt = this._nowIso();
           if (reason) execution.reason = reason;
         }
       }
@@ -517,9 +537,9 @@ export class LoopStore implements vscode.Disposable {
   beginExecution(loopId: string): LoopExecution | undefined {
     let created: LoopExecution | undefined;
     this.update(loopId, (record) => {
-      const at = nowIso();
+      const at = this._nowIso();
       created = {
-        id: `execution_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+        id: this._newId("execution"),
         startedAt: at,
         status: "running",
         totals: emptyTotals(),
@@ -609,7 +629,7 @@ export class LoopStore implements vscode.Disposable {
   }
 
   private _write(document: LoopDocument): void {
-    const normalized = normalizeLoopDocument({ ...document, updatedAt: nowIso() });
+    const normalized = normalizeLoopDocument({ ...document, updatedAt: this._nowIso() });
     ensureDir(path.join(this._workspaceRoot, BLACKSITE_DIR));
     // No `.bak` here, unlike the other document stores. An hours-long drain rewrites this file
     // once per lane per iteration, and a full copy of a document already sized to

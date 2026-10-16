@@ -625,9 +625,11 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
         },
       ),
       sessionId: () => chat.currentSessionId() ?? "loop",
+      contracts: { mode: () => chat.workContractsMode() },
     }),
     {
       notify: (_loopId, message) => loopViewRef.current?.notify(message),
+      onAbandonedContract: (contractId, subject) => chat.recordAbandonedLaneContract(contractId, subject),
       onError: (loopId, error) => console.warn(`[Blacksite] loop ${loopId} error:`, error),
       onSettled: (loopId, title, status, reason) => {
         loopAttention.current?.raise({

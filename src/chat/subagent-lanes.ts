@@ -12,6 +12,7 @@ import { SERVICE_TOOLS } from "../tools/definitions.js";
 import type { ApprovalDecision } from "../approval-gate.js";
 import type { ActiveRequestMode, RequestMode } from "../request-modes.js";
 import type { AgentSession } from "../agent-session.js";
+import type { ActiveWorkContract } from "../orchestration/active-contract.js";
 import type {
   AgentEvent,
   BaseAgentEvent,
@@ -98,8 +99,11 @@ export function resolveSubagentBudget(input: SubagentSpawnInput, sessionMaxItera
 export const LANE_STALL_REASON = "Delegated lane stalled with no progress.";
 export const LANE_RUNTIME_CAP_REASON = "Delegated lane hit its runtime ceiling.";
 
+/** A lane under a work contract that reached the contract's spend ceiling (src/orchestration). */
+export const LANE_SPEND_CAP_REASON = "Delegated lane reached its contract's spend ceiling.";
+
 export function isLaneTimeoutReason(reason: unknown): boolean {
-  return reason === LANE_STALL_REASON || reason === LANE_RUNTIME_CAP_REASON;
+  return reason === LANE_STALL_REASON || reason === LANE_RUNTIME_CAP_REASON || reason === LANE_SPEND_CAP_REASON;
 }
 
 /** Any event out of the child proves it is alive, so the idle window resets on all of them
@@ -269,6 +273,8 @@ export interface RetainedLane {
   laneId: string;
   label: string;
   session: AgentSession;
+  /** The work contract the lane ran under; a follow-up continues under it. */
+  contract?: ActiveWorkContract;
 }
 
 export interface LaneRunOutcome {
@@ -338,6 +344,7 @@ export async function* streamLaneRun(
 /** Sentence fragment naming which of the two clocks actually ran out, so the parent's retry
  *  is informed by whether the lane died holding still or died busy. */
 export function laneTimeoutDetail(reason: unknown, budget: ResolvedSubagentBudget): string {
+  if (reason === LANE_SPEND_CAP_REASON) return "reached its work contract's spend ceiling.";
   return reason === LANE_RUNTIME_CAP_REASON
     ? `ran past its ${budget.maxRuntimeSeconds}s runtime ceiling.`
     : `stalled — it produced nothing at all for ${budget.idleTimeoutSeconds}s.`;

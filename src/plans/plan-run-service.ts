@@ -86,6 +86,11 @@ export interface PlanRunHost {
   compareSnapshots?(from: Record<string, string>, to: Record<string, string>): Promise<StepChange[]>;
   /** The check that is failing right now, when the last one failed. */
   failingCheck?(): string | undefined;
+  /**
+   * Record a work receipt for a finished step (work contracts on). Observe only: the main agent
+   * is not a bounded delegate, so its steps are described, never gated, by a contract.
+   */
+  recordStepReceipt?(context: { runId: string; plan: TaskPlan | undefined; phaseId: string; stepId: string; title: string; evidence?: StepEvidence }): { id: string; status: string } | undefined;
   publish(view: PlanRunView | null): void;
 }
 
@@ -783,8 +788,14 @@ export class PlanRunService {
     for (const event of events) {
       if (event.type === "step_completed") {
         const step = run.steps.find((entry) => entry.phaseId === event.phaseId && entry.stepId === event.stepId);
-        const evidence = this._host.collectEvidence?.({ phaseId: event.phaseId, stepId: event.stepId, startedAt: step?.startedAt, now });
+        let evidence = this._host.collectEvidence?.({ phaseId: event.phaseId, stepId: event.stepId, startedAt: step?.startedAt, now });
+        let receipt: { id: string; status: string } | undefined;
+        try {
+          receipt = this._host.recordStepReceipt?.({ runId: run.id, plan, phaseId: event.phaseId, stepId: event.stepId, title: event.title, ...(evidence ? { evidence } : {}) });
+        } catch { /* a receipt is a record, never a reason to fail the step */ }
+        if (receipt && evidence) evidence = { ...evidence, receiptIds: [...(evidence.receiptIds ?? []), receipt.id] };
         this._event(evidence ? { ...event, evidence } : event);
+        if (receipt) this._event({ type: "receipt", at: now, phaseId: event.phaseId, stepId: event.stepId, receiptId: receipt.id, status: receipt.status });
         if (evidence) {
           try { this._planning.setStepEvidence(run.planId, event.phaseId, event.stepId, evidence); } catch { /* evidence is a label, never a reason to fail */ }
         }

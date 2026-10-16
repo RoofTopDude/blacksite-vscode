@@ -22,6 +22,10 @@ import type {
 } from "../agent-session.js";
 import type { LoopDispatchRequest, LoopDispatchResult, LoopDispatcher } from "./loop-supervisor.js";
 import type { Ticket } from "../ticket-store.js";
+import type { WorkContractsMode } from "../orchestration/flags.js";
+import { contractFromTicket } from "../orchestration/contract-mapping.js";
+import type { WorkContract } from "../orchestration/work-contract.js";
+import { resolveSubagentBudget } from "../chat/subagent-lanes.js";
 
 /** Marker used when a gated lane ends without a more specific tier. */
 const PARK_MARKER = "awaiting approval";
@@ -41,6 +45,34 @@ export interface SubagentLoopDispatcherOptions {
   /** The parent session lanes are attributed to. Loops have no chat turn of their own, so this
    *  is the session whose transcript the lane renders into. */
   sessionId: () => string;
+  /** Work contracts for loop lanes (blacksite.orchestration.workContracts). Absent means off. */
+  contracts?: {
+    mode: () => WorkContractsMode;
+    now?: () => number;
+    newId?: (prefix: string) => string;
+  };
+}
+
+/** The contract a loop lane works its ticket under: the ticket's own territory and criteria,
+ *  the lane's complexity budget, and what is left of the loop's spend ceiling. */
+export function ticketContractFor(
+  request: Pick<LoopDispatchRequest, "loopId" | "ticket" | "complexity" | "maxUsd" | "approvals">,
+  enforcement: "observe" | "enforce",
+  issue: { id: string; createdAt: string },
+): WorkContract {
+  const tier = resolveSubagentBudget({ task: "", complexity: request.complexity }, 0);
+  return contractFromTicket(request.ticket, {
+    ...issue,
+    enforcement,
+    loopId: request.loopId,
+    onGate: request.approvals.onGate === "wait" ? "wait" : "park",
+    budget: {
+      maxToolRounds: tier.maxToolRounds,
+      maxRuntimeSeconds: tier.maxRuntimeSeconds,
+      idleTimeoutSeconds: tier.idleTimeoutSeconds,
+      ...(request.maxUsd !== undefined ? { maxUsd: request.maxUsd } : {}),
+    },
+  });
 }
 
 /** Matches ChatProvider's HeadlessApprovalPolicy. Null would fall through to the interactive
@@ -218,6 +250,14 @@ export class SubagentLoopDispatcher implements LoopDispatcher {
       blockedReview = { verdict, gate };
     });
     const provider = this._options.providerFor(policy);
+    const mode = this._options.contracts?.mode() ?? "off";
+    let contract: WorkContract | undefined;
+    if (mode !== "off") {
+      const now = this._options.contracts?.now?.() ?? Date.now();
+      const newId = this._options.contracts?.newId ?? ((prefix: string) => `${prefix}_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`);
+      contract = ticketContractFor(request, mode, { id: newId("wc"), createdAt: new Date(now).toISOString() });
+      request.onContract?.(contract.id);
+    }
     const stream = provider.spawn({
       parentSessionId: this._options.sessionId(),
       // Namespaced so the transcript can tell loop lanes from ones the user's agent spawned.
@@ -230,6 +270,7 @@ export class SubagentLoopDispatcher implements LoopDispatcher {
         ...(request.profileId ? { profileId: request.profileId } : {}),
       },
       ...(request.signal ? { signal: request.signal } : {}),
+      ...(contract ? { contract } : {}),
     });
 
     const folded = await foldLaneStream(stream, request, this._options.estimateUsageCostUsd);
@@ -350,6 +391,7 @@ export async function foldLaneStream(
     };
   }
 
+  const receipt = result.receipt;
   if (pendingGate) {
     return {
       ok: false,
@@ -361,6 +403,7 @@ export async function foldLaneStream(
       parkedOnGate: pendingGate,
       parkedSubRequestId: result.subRequestId,
       ...(spendTracked ? { usd } : {}),
+      ...(receipt ? { receipt } : {}),
     };
   }
 
@@ -373,6 +416,7 @@ export async function foldLaneStream(
       filesTouched: [...touched],
       runIds: [],
       ...(spendTracked ? { usd } : {}),
+      ...(receipt ? { receipt } : {}),
     };
   }
 
@@ -388,5 +432,6 @@ export async function foldLaneStream(
     filesTouched: result.filesTouched,
     runIds: [],
     ...(spendTracked ? { usd } : {}),
+    ...(receipt ? { receipt } : {}),
   };
 }

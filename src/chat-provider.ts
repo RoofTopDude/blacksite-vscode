@@ -178,6 +178,7 @@ import {
   laneFailureNextStep,
   laneTimeoutDetail,
   laneUnavailableFailure,
+  LANE_SPEND_CAP_REASON,
   makeLaneId,
   newLaneOutcome,
   streamLaneRun,
@@ -202,6 +203,17 @@ import {
   guessMimeType,
 } from "./chat/attachments.js";
 import { prepareVisionImage } from "./vision-image.js";
+import { readOrchestrationFlags, type WorkContractsMode } from "./orchestration/flags.js";
+import { ReceiptStore } from "./orchestration/receipt-store.js";
+import { LaneContracts, LaneMeter, type LaneEndFacts } from "./orchestration/lane-contracts.js";
+import {
+  createContractEditProvider,
+  createContractLspProvider,
+  type ActiveWorkContract,
+  type ScopeGate,
+} from "./orchestration/active-contract.js";
+import { summarizeReceipt, type ReceiptSummary } from "./orchestration/work-receipt.js";
+import type { LaneEnd } from "./orchestration/work-receipt.js";
 import type { AttachmentKind } from "./chat/attachments.js";
 
 export {
@@ -590,6 +602,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private readonly _liveSubagentSessions = new Set<AgentSession>();
   /** Finished lanes that subagent_followup can resume, newest last. See _retainLane. */
   private readonly _retainedLanes = new Map<string, RetainedLane>();
+  /** Work contracts and receipts for delegated lanes (blacksite.orchestration.workContracts). */
+  private _laneContractService: LaneContracts | undefined;
   private _restoredSessionState: SessionRestoreState | null = null;
   /** MCP configuration, credentials, and tool policy. Shared with the MCP panel so a change
    *  made there is live for the next tool call without a reload. */
@@ -2442,11 +2456,25 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
     // Re-fetched from the *current* settings so a follow-up honours a concurrency or budget
     // change the user made since the original spawn.
-    const budget = resolveSubagentBudget(
+    const tierBudget = resolveSubagentBudget(
       { task: message, complexity: request.input.complexity },
       settings.maxIterations,
     );
     const { laneId, label, session } = retained;
+    const activeContract = retained.contract;
+    // A follow-up continues under the lane's contract. Asking for more than it allows is refused,
+    // not quietly trimmed, so the model learns the bound rather than working around it.
+    if (activeContract && tierBudget.maxToolRounds > activeContract.contract.budget.maxToolRounds && request.input.complexity && request.input.complexity !== "auto") {
+      yield {
+        type: "subagent_tool_result",
+        result: laneUnavailableFailure(
+          subRequestId,
+          `The follow-up was not run: "${request.input.complexity}" asks for more tool rounds (${tierBudget.maxToolRounds}) than this lane's work contract allows (${activeContract.contract.budget.maxToolRounds}). Ask with a smaller complexity.`,
+        ),
+      };
+      return;
+    }
+    const budget = activeContract ? boundBudgetFor(tierBudget, activeContract) : tierBudget;
     const startedAt = Date.now();
 
     const controller = new AbortController();
@@ -2460,6 +2488,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const watchdog = createLaneWatchdog(budget, (reason) => {
       if (!controller.signal.aborted) controller.abort(reason);
     });
+    const meter = activeContract
+      ? new LaneMeter(
+        activeContract.contract.budget.maxUsd,
+        (usage) => this.estimateSubagentUsageCostUsd(usage as unknown as Extract<BaseAgentEvent, { type: "usage_update" }>),
+        (reason) => { if (!controller.signal.aborted) controller.abort(reason); },
+      )
+      : undefined;
 
     session.attachSignal(controller.signal);
     this._liveSubagentSessions.add(session);
@@ -2476,8 +2511,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       };
 
       const outcome = newLaneOutcome();
+      const followUpEvents = session.send(followUpLanePrompt(message), laneRequestMode(request.requestMode));
       yield* streamLaneRun(
-        session.send(followUpLanePrompt(message), laneRequestMode(request.requestMode)),
+        meter ? meter.watch(followUpEvents) : followUpEvents,
         request.parentToolCallId,
         laneId,
         outcome,
@@ -2514,6 +2550,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       };
 
       const failureKind = classifyLaneFailure(timedOut, cancelled, answer);
+      const receipt = this._laneReceipt(activeContract, meter, {
+        session, controller, ok, answer, errorMessage, timedOut, cancelled,
+        filesTouched: outcome.filesTouched, toolRounds, elapsedMs, laneId, subRequestId,
+      });
       yield {
         type: "subagent_tool_result",
         result: ok
@@ -2526,6 +2566,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
             scratchFiles: [],
             budget,
             nextStep: "Review the follow-up and continue synthesis. This lane stays resumable.",
+            ...(receipt ? { receipt } : {}),
           }
           : {
             ok: false,
@@ -2541,6 +2582,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
             executionTraceTruncated: outcome.executionTraceTruncated,
             filesTouched: [...outcome.filesTouched],
             nextStep: laneFailureNextStep(failureKind, budget, !!answer),
+            ...(receipt ? { receipt } : {}),
           },
       };
     } finally {
@@ -2548,6 +2590,86 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       watchdog.stop();
       request.signal?.removeEventListener("abort", forwardAbort);
     }
+  }
+
+  private _laneContracts(): LaneContracts {
+    this._laneContractService ??= new LaneContracts({
+      store: new ReceiptStore(this._workspaceRoot),
+      workspaceRoot: this._workspaceRoot,
+      mode: () => readOrchestrationFlags((key) => vscode.workspace.getConfiguration().get(key)).workContracts,
+      planning: () => {
+        try { return this._planning.read(); } catch { return undefined; }
+      },
+    });
+    return this._laneContractService;
+  }
+
+  /** The work-contracts setting as it reads now, for the loop dispatcher. */
+  workContractsMode(): WorkContractsMode {
+    return this._laneContracts().mode;
+  }
+
+  /** A loop lane under a contract was lost to a host restart: write its receipt. */
+  recordAbandonedLaneContract(contractId: string, subject: { loopId: string; ticketId: string; iterationSeq: number }): void {
+    this._laneContracts().recordAbandoned(contractId, subject);
+  }
+
+  /** The receipt for a lane that ran under a contract, from what the host observed of it. */
+  private _laneReceipt(
+    active: ActiveWorkContract | undefined,
+    meter: LaneMeter | undefined,
+    context: {
+      session: AgentSession;
+      controller: AbortController;
+      ok: boolean;
+      answer: string;
+      errorMessage: string;
+      timedOut: boolean;
+      cancelled: boolean;
+      filesTouched: Iterable<string>;
+      toolRounds: number;
+      elapsedMs: number;
+      laneId: string;
+      subRequestId: string;
+    },
+  ): ReceiptSummary | undefined {
+    if (!active) return undefined;
+    const reason = context.controller.signal.aborted ? String(context.controller.signal.reason ?? "") : "";
+    // A lane the approval path stopped did not fail at its work: it is blocked on a decision.
+    const stoppedByGate = context.cancelled
+      && (reason === "Blocked by automated continuation review." || reason.startsWith("Browser input requires"));
+    const ended: LaneEnd = stoppedByGate ? "error"
+      : context.timedOut ? "timeout"
+        : context.cancelled ? "cancelled"
+          : context.ok ? "ok"
+            : context.answer ? "error" : "no_answer";
+    const budgetHit: LaneEndFacts["budgetHit"] = reason === LANE_SPEND_CAP_REASON ? "usd"
+      : reason === LANE_RUNTIME_CAP_REASON ? "runtime"
+        : reason === LANE_STALL_REASON ? "idle" : undefined;
+    const origin = active.contract.origin;
+    const receipt = this._laneContracts().complete(active, {
+      ended,
+      ...(context.errorMessage ? { endDetail: context.errorMessage } : {}),
+      ...(stoppedByGate ? { gate: meter?.lastRefusal ?? { gate: "approval", detail: reason } } : {}),
+      observation: context.session.contractObservation(),
+      filesTouched: [...context.filesTouched],
+      answer: context.answer,
+      toolRounds: context.toolRounds,
+      elapsedMs: context.elapsedMs,
+      ...(meter?.spendTracked ? { usd: meter.usd } : {}),
+      spendTracked: meter?.spendTracked ?? false,
+      ...(budgetHit ? { budgetHit } : {}),
+      subject: {
+        laneId: context.laneId,
+        subRequestId: context.subRequestId,
+        ...(origin.ticketId ? { ticketId: origin.ticketId } : {}),
+        ...(origin.loopId ? { loopId: origin.loopId } : {}),
+        ...(origin.planId ? { planId: origin.planId } : {}),
+        ...(origin.phaseId ? { phaseId: origin.phaseId } : {}),
+        ...(origin.stepId ? { stepId: origin.stepId } : {}),
+      },
+    });
+    return receipt ? summarizeReceipt(receipt) : undefined;
   }
 
   /**
@@ -2576,7 +2698,24 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const laneId = makeLaneId("lane");
     const subRequestId = makeLaneId("sub");
     const label = request.input.label?.trim() || "Delegated lane";
-    const budget = resolveSubagentBudget(request.input, settings.maxIterations);
+    const tierBudget = resolveSubagentBudget(request.input, settings.maxIterations);
+    // The lane's work contract, when contracts are on. A model-proposed contract that asks for
+    // more than this lane may have refuses the spawn here, before anything runs.
+    const issued = this._laneContracts().issue({
+      task: request.input.task,
+      ...(request.input.contract !== undefined ? { proposal: request.input.contract } : {}),
+      ...(request.contract ? { hostContract: request.contract } : {}),
+      ...(request.input.planId && request.input.phaseId && request.input.stepId
+        ? { planLink: { planId: request.input.planId, phaseId: request.input.phaseId, stepId: request.input.stepId } }
+        : {}),
+      budget: tierBudget,
+    });
+    if (!issued.ok) {
+      yield { type: "subagent_tool_result", result: laneUnavailableFailure("", issued.error) };
+      return;
+    }
+    const activeContract = issued.active;
+    const budget = { ...tierBudget, ...issued.budget };
     const laneStartedAt = Date.now();
 
     // Resolve profile (builtin + user-defined), apply its system prompt addition
@@ -2614,6 +2753,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const watchdog = createLaneWatchdog(budget, (reason) => {
       if (!controller.signal.aborted) controller.abort(reason);
     });
+    const meter = activeContract
+      ? new LaneMeter(
+        activeContract.contract.budget.maxUsd,
+        (usage) => this.estimateSubagentUsageCostUsd(usage as unknown as Extract<BaseAgentEvent, { type: "usage_update" }>),
+        (reason) => { if (!controller.signal.aborted) controller.abort(reason); },
+      )
+      : undefined;
     const laneApprovalPolicy: HeadlessApprovalPolicy | undefined = approvalPolicy
       ? stopLaneOnApprovalDenial(approvalPolicy, (reason) => {
           // Ending the lane now frees the worker slot so the supervisor can advance another
@@ -2627,9 +2773,36 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const laneEditProvider = laneApprovalPolicy
       ? createLoopEditProvider(this._editService, laneApprovalPolicy)
       : this._autoEditService;
-    const laneLspProvider = laneApprovalPolicy
+    const reviewedLspProvider = laneApprovalPolicy
       ? createLoopLspProvider(this._lspService, laneApprovalPolicy)
       : this._autoLspService;
+    // Edits under a contract: the files an edit actually touches are checked against the
+    // territory, and anything outside it goes to this lane's approver like any other gate.
+    const scopeGate: ScopeGate = async (toolName, description) => {
+      const decided = await laneApprovalPolicy?.("scope", toolName, description);
+      const decision = decided ?? await this._createApprovalPromise(
+        `${laneId}:scope:${Date.now().toString(36)}`,
+        toolName,
+        description,
+        "scope",
+        controller.signal,
+      );
+      return decision !== "deny";
+    };
+    const scopeContext = {
+      toRelative: (file: string) => {
+        if (!path.isAbsolute(file)) return file.replace(/\\/g, "/");
+        const relative = path.relative(this._workspaceRoot, file).replace(/\\/g, "/");
+        return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? relative : null;
+      },
+      isScratch: (file: string) => file.startsWith(".blacksite/"),
+    };
+    const contractEditProvider = activeContract && laneEditProvider
+      ? createContractEditProvider(laneEditProvider, activeContract, scopeContext, scopeGate)
+      : laneEditProvider;
+    const laneLspProvider = activeContract && reviewedLspProvider
+      ? createContractLspProvider(reviewedLspProvider, activeContract, scopeContext, scopeGate)
+      : reviewedLspProvider;
 
     // Hoisted so the finally below can always unregister it from the live-session set,
     // even when the lane exits via an exception mid-run.
@@ -2675,6 +2848,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         bedrockExtendedStopReasons: () => this._readCfgBedrockExtendedStopReasons(),
         mapNotes: () => this._readCfgAgentNotes(),
         delegatedLane: true,
+        ...(activeContract ? { workContract: activeContract } : {}),
         fastMode: subPSettings.fastMode,
         taskBudgetTokens: subPSettings.taskBudgetTokens,
         contextEditingEnabled: subPSettings.contextEditingEnabled,
@@ -2700,7 +2874,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
           // render aborted the whole lane as "blocked on human approval".
           renderDocument: (request, signal) => childChromium.renderDocument(request, signal),
         },
-        editProvider: laneEditProvider,
+        editProvider: contractEditProvider,
         diagnosticsProvider: this._diagnostics,
         lspProvider: laneLspProvider,
         // A loop lane is reviewed by its own policy; a chat lane follows the chat's approval mode.
@@ -2764,8 +2938,9 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       };
 
       const outcome = newLaneOutcome();
+      const laneEvents = childSession.send(delegatedLanePrompt(request.input.task, request.input.context), laneRequestMode(request.requestMode));
       yield* streamLaneRun(
-        childSession.send(delegatedLanePrompt(request.input.task, request.input.context), laneRequestMode(request.requestMode)),
+        meter ? meter.watch(laneEvents) : laneEvents,
         request.parentToolCallId,
         laneId,
         outcome,
@@ -2802,6 +2977,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         budget,
       };
       const failureKind = classifyLaneFailure(timedOut, cancelled, answer);
+      const receipt = this._laneReceipt(activeContract, meter, {
+        session: childSession, controller, ok, answer, errorMessage, timedOut, cancelled,
+        filesTouched, toolRounds, elapsedMs, laneId, subRequestId,
+      });
       yield {
         type: "subagent_tool_result",
         result: ok
@@ -2814,6 +2993,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
             scratchFiles: [],
             budget,
             nextStep: "Review the delegated lane output and continue synthesis.",
+            ...(receipt ? { receipt } : {}),
           }
           : {
             ok: false,
@@ -2829,12 +3009,13 @@ export class ChatProvider implements vscode.WebviewViewProvider {
             executionTraceTruncated: outcome.executionTraceTruncated,
             filesTouched: [...filesTouched],
             nextStep: laneFailureNextStep(failureKind, budget, !!answer),
+            ...(receipt ? { receipt } : {}),
           },
       };
 
       // Retained whether or not it succeeded: a timed-out lane is exactly the case where
       // resuming beats respawning, since its context is what the retry would have to rebuild.
-      this._retainLane(subRequestId, { laneId, label, session: childSession });
+      this._retainLane(subRequestId, { laneId, label, session: childSession, ...(activeContract ? { contract: activeContract } : {}) });
     } finally {
       if (liveChild) this._liveSubagentSessions.delete(liveChild);
       watchdog.stop();
@@ -5574,6 +5755,7 @@ ${this._pendingRewindNote}`;
         this._pendingDecisionNotes.length = 0;
       },
       collectEvidence: (context) => this._collectStepEvidence(context),
+      recordStepReceipt: (context) => this._laneContracts().recordStepReceipt(context),
       captureSnapshot: ({ label, plan }) => this._captureRunSnapshot(label, plan),
       saveReport: (run, plan) => this._saveRunReport(run, plan),
       compareSnapshots: (from, to) => this._compareRunSnapshots(from, to),
@@ -6699,4 +6881,16 @@ function scoreMatch(relPath: string, query: string): number {
     if (lower[i] === query[qi]) qi++;
   }
   return qi === query.length ? 20 : 0;
+}
+
+/** A retained lane's budget, bounded by the contract it runs under. */
+function boundBudgetFor(budget: ResolvedSubagentBudget, active: ActiveWorkContract): ResolvedSubagentBudget {
+  const rounds = Math.min(budget.maxToolRounds, active.contract.budget.maxToolRounds);
+  return {
+    ...budget,
+    maxToolRounds: rounds,
+    maxRuntimeSeconds: Math.min(budget.maxRuntimeSeconds, active.contract.budget.maxRuntimeSeconds),
+    idleTimeoutSeconds: Math.min(budget.idleTimeoutSeconds, active.contract.budget.idleTimeoutSeconds),
+    maxIterations: Math.min(budget.maxIterations, rounds + 4),
+  };
 }

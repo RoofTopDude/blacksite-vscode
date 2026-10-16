@@ -1192,6 +1192,27 @@ export const SUBAGENT_TOOLS: ToolDefinition[] = [
       planId: str("Optional — link this lane to one step of a tracked plan. Requires phaseId and stepId together; a partial link is ignored."),
       phaseId: str("Required alongside planId — the phase containing the target step."),
       stepId: str("Required alongside planId — the step this lane's work belongs to."),
+      contract: obj(
+        "Optional, and only meaningful when work contracts are on: narrow this lane's work contract. Each field may only narrow what the lane would otherwise get — fewer writable files, a smaller budget, extra outputs or acceptance criteria. Anything wider, or any field not listed here, refuses the spawn. Writes outside the contract's files ask for approval before they run.",
+        {
+          writable: obj("Files and folders the lane may change.", {
+            files: arr({ type: "string" }, "Workspace-relative files."),
+            areas: arr({ type: "string" }, "Workspace-relative folders."),
+          }),
+          budget: obj("Lower ceilings for this lane.", {
+            maxToolRounds: num("At most this many tool rounds."),
+            maxRuntimeSeconds: num("At most this many seconds of runtime."),
+            idleTimeoutSeconds: num("Stop after this many seconds with no progress."),
+            maxUsd: num("Stop once the lane has spent this much."),
+          }),
+          acceptance: arr({ type: "string" }, "Extra definition-of-done statements."),
+          outputs: arr(obj("A deliverable.", {
+            kind: enumStr("What kind of deliverable.", ["file_change", "artifact", "answer", "test"]),
+            ref: str("For file_change: the workspace-relative file that must change."),
+            description: str("What it is."),
+          }, ["kind", "description"]), "Deliverables the lane must produce. A file_change output that is not produced makes the receipt partial."),
+        },
+      ),
     },
     ["task"],
   ),

@@ -568,3 +568,34 @@ describe("persistence", () => {
     h.service.dispose();
   });
 });
+
+describe("PlanRunService work receipts", () => {
+  it("records a receipt for a finished step when the host makes one, and lists it on the step", () => {
+    const h = harness(makePlan([["pending", "pending"]]), { evidence: { checks: ["npm test"], unverified: [], filesChanged: ["a.ts"], at: "now" } });
+    const recordStepReceipt = vi.fn(() => ({ id: "receipt_1", status: "verified" }));
+    (h.host as PlanRunHost).recordStepReceipt = recordStepReceipt;
+    h.service.start({ planId: "plan1" });
+    setStep(h.plan, 0, 0, "in_progress");
+    h.changed();
+    setStep(h.plan, 0, 0, "completed");
+    h.changed();
+    expect(recordStepReceipt).toHaveBeenCalledWith(expect.objectContaining({ phaseId: "p1", stepId: "s1", evidence: expect.objectContaining({ checks: ["npm test"] }) }));
+    const step = h.service.active!.steps[0]!;
+    expect(step.receiptIds).toEqual(["receipt_1"]);
+    expect(step.evidence?.receiptIds).toEqual(["receipt_1"]);
+    h.service.dispose();
+  });
+
+  it("carries on when recording a receipt throws", () => {
+    const h = harness(makePlan([["pending", "pending"]]));
+    (h.host as PlanRunHost).recordStepReceipt = () => { throw new Error("disk full"); };
+    h.service.start({ planId: "plan1" });
+    setStep(h.plan, 0, 0, "in_progress");
+    h.changed();
+    setStep(h.plan, 0, 0, "completed");
+    h.changed();
+    expect(h.service.active!.steps[0]!.status).toBe("completed");
+    expect(h.service.active!.steps[0]!.receiptIds).toBeUndefined();
+    h.service.dispose();
+  });
+});

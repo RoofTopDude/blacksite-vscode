@@ -171,6 +171,8 @@ export interface PlanRunStep {
   /** How many messages the conversation held at that point, for "restore conversation too". */
   messageCount?: number;
   blockedReason?: string;
+  /** Work receipts recorded when the step finished (src/orchestration). */
+  receiptIds?: string[];
 }
 
 export interface ConductorDecisionRecord {
@@ -267,7 +269,8 @@ export type PlanRunEvent =
   | { type: "decision_deferred"; at: number; decision: DeferredDecision }
   | { type: "decision_resolved"; at: number; id: string; status: Exclude<DeferredDecisionStatus, "open">; answer?: string }
   | { type: "auto_allowed"; at: number; by: AutoAllowedBy; toolName: string; description: string; reason: string }
-  | { type: "tripwire"; at: number; kind: string; detail: string; examples?: string[] };
+  | { type: "tripwire"; at: number; kind: string; detail: string; examples?: string[] }
+  | { type: "receipt"; at: number; phaseId: string; stepId: string; receiptId: string; status: string };
 
 const MAX_TURN_RECORDS = 400;
 const MAX_CONDUCTOR_RECORDS = 200;
@@ -517,6 +520,11 @@ export function applyPlanRunEvent(run: PlanRun, event: PlanRunEvent): PlanRun {
     case "tripwire":
       run.tripwireHits = capped([...(run.tripwireHits ?? []), { at: event.at, kind: event.kind, detail: event.detail, ...(event.examples ? { examples: event.examples } : {}) }], MAX_TRIPWIRE_RECORDS);
       break;
+    case "receipt": {
+      const step = run.steps.find((entry) => entry.phaseId === event.phaseId && entry.stepId === event.stepId);
+      if (step && !(step.receiptIds ?? []).includes(event.receiptId)) step.receiptIds = [...(step.receiptIds ?? []), event.receiptId].slice(-10);
+      break;
+    }
   }
   return run;
 }

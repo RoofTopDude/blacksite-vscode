@@ -83,7 +83,7 @@ export { isMutatingServiceTool } from "./tools/definitions.js";
 import type { ToolDefinition, QCardOption, QCardQuestion } from "./tools/definitions.js";
 import { ToolOutputStore } from "./agent/tool-output-store.js";
 import { isVerificationCommand } from "./agent/verification-commands.js";
-import { outstandingFiles, recordCheck, recordMutation, withoutFiles, type CheckCoverage } from "./agent/verification-ledger.js";
+import { failedFiles, outstandingFiles, recordCheck, recordMutation, withoutFiles, type CheckCoverage } from "./agent/verification-ledger.js";
 import type { AgentMemoryIndex } from "./agent-memory-index.js";
 import { capturePauReceipt, pauTraceFormatFor, type PauReceipt } from "./pau-metrics.js";
 import { PauCacheObserver } from "./pau-cache-observer.js";
@@ -133,6 +133,10 @@ import {
   type ApprovalScope,
 } from "./approval-scope.js";
 import { planModeRefusal, planModeWithholds } from "./plan-mode-policy.js";
+import type { ActiveWorkContract } from "./orchestration/active-contract.js";
+import { mutationTargets, outOfScope, scopeGateDescription } from "./orchestration/contract-scope.js";
+import type { CheckEvidence, ObservedChange, ReceiptSummary } from "./orchestration/work-receipt.js";
+import type { WorkContract } from "./orchestration/work-contract.js";
 import { isMcpTypedToolName, type McpTypedTool } from "./mcp-tool-catalog.js";
 import { buildToolRoster, firstSentence, isCoreTool, searchTools, toolSearchDescription, TOOL_SEARCH_NAME } from "./agent/tool-loading.js";
 import { saveCheckpoint, clearCheckpoint } from "./checkpoint.js";
@@ -578,6 +582,10 @@ export interface SubagentSpawnInput {
   planId?: string;
   phaseId?: string;
   stepId?: string;
+  /** Optional narrowing of the lane's work contract, proposed by the model. Validated strictly by
+   *  the host against what the lane may be given; anything wider refuses the spawn. Ignored while
+   *  orchestration contracts are off. */
+  contract?: unknown;
 }
 
 export interface SubagentBudgetSummary {
@@ -601,6 +609,8 @@ export interface SubagentSpawnToolResult {
   scratchFiles: [];
   budget: SubagentBudgetSummary;
   nextStep?: string;
+  /** What the host observed, when the lane ran under a work contract. */
+  receipt?: ReceiptSummary;
 }
 
 /** Why a lane ended without a usable answer. Drives the parent's retry-or-continue call:
@@ -644,6 +654,8 @@ export interface SubagentSpawnFailureResult {
   filesTouched: string[];
   /** Explicit retry-or-continue guidance, tailored to failureKind. */
   nextStep: string;
+  /** What the host observed, when the lane ran under a work contract. */
+  receipt?: ReceiptSummary;
 }
 
 export type SubagentProviderMessage =
@@ -729,6 +741,8 @@ export interface SubagentSpawnRequest {
   /** The parent's active request mode. A lane spawned while the parent plans is itself in plan
    *  mode — otherwise delegation would be a way around the read-only restriction. */
   requestMode?: ActiveRequestMode;
+  /** A contract the host issued for this lane (a loop ticket). Never set from model input. */
+  contract?: WorkContract;
 }
 
 export interface SubagentFollowUpInput {
@@ -976,6 +990,12 @@ export interface AgentSessionOptions {
    * small iteration budget clearing it — the parent does that once, for the combined work.
    */
   delegatedLane?: boolean;
+  /**
+   * The work contract this session runs under (a delegated lane with orchestration contracts on).
+   * Writes its tools name outside the contract's territory go through an approval first, and the
+   * session records what it changed and checked for the lane's receipt. See src/orchestration.
+   */
+  workContract?: ActiveWorkContract;
   /** Probe installed toolchains again (workspace_refresh): something may have been installed since. */
   refreshToolchains?: () => Promise<void>;
   /** Backs the db_* tools with the embedded database surface (read-only + classify). */
@@ -1395,6 +1415,9 @@ export class AgentSession {
   private _noteEnforcementCount = 0;
   /** Files changed since the last explicit test/diagnostic/evidence check. */
   private _verification: VerificationGateState = { status: "idle", files: [] };
+  /** What a contracted lane changed and checked, for its receipt. Only kept with a workContract. */
+  private readonly _contractChanges = new Map<string, ObservedChange["change"]>();
+  private readonly _contractChecks: CheckEvidence[] = [];
   private _verificationEnforcementCount = 0;
   /** The verification state an editing episode started from, so that when every file in it turns
    *  out to be a scratch file the session created and deleted, the gate goes back to where it was
@@ -1972,6 +1995,7 @@ export class AgentSession {
         added = destinations;
       }
       if (added.some((file) => isScratchPath(file))) ensureScratchIgnored(this.opts.workspaceRoot);
+      if (this.opts.workContract) this._observeContractChange(toolName, added, removed, row);
       // Prose, images and scratch scripts have no check to run, so they are never owed one.
       added = added.filter((file) => owesVerification(file));
       const next = recordMutation(this._verification, added, removed, Date.now());
@@ -1993,6 +2017,10 @@ export class AgentSession {
     const detail = verificationDetail(toolName, row, passed);
     const coverage = this._checkCoverage(toolName, call, row, passed, outstanding);
     const next = recordCheck(this._verification, coverage, method, detail, Date.now());
+    if (next && this.opts.workContract) {
+      this._contractChecks.push({ kind: "check", method, passed: [...coverage.passed], failed: [...coverage.failed], at: new Date().toISOString() });
+      if (this._contractChecks.length > 40) this._contractChecks.splice(0, this._contractChecks.length - 40);
+    }
     if (!next) {
       return { ...row, verificationNote: `This check covered none of the files still owing one (${checklistPaths(outstanding)}).` };
     }
@@ -2159,6 +2187,95 @@ export class AgentSession {
     return (file) => projectOf(file) === project;
   }
 
+  private _observeContractChange(toolName: string, added: readonly string[], removed: readonly string[], row: Record<string, unknown>): void {
+    for (const file of removed) {
+      if (isScratchPath(file)) continue;
+      // A file this lane created and then removed nets out to nothing.
+      if (this._contractChanges.get(file) === "A") this._contractChanges.delete(file);
+      else this._contractChanges.set(file, "D");
+    }
+    for (const file of added) {
+      if (isScratchPath(file)) continue;
+      const previous = this._contractChanges.get(file);
+      const change: ObservedChange["change"] = toolName === "file_move" ? "R"
+        : previous === "A" || (toolName === "file_write" && row.created === true) ? "A" : "M";
+      this._contractChanges.set(file, change);
+    }
+  }
+
+  /**
+   * What this session changed and checked under its work contract, as the host recorded it: the
+   * facts a receipt is derived from. Never includes anything the model said about its own work.
+   */
+  contractObservation(): {
+    filesChanged: ObservedChange[];
+    checks: CheckEvidence[];
+    uncovered: string[];
+    failedFiles: string[];
+    owesVerification: boolean;
+    granted: string[];
+    refused: Array<{ toolName: string; reason: string }>;
+    observedOutOfScope: string[];
+  } {
+    const active = this.opts.workContract;
+    const filesChanged = [...this._contractChanges].map(([file, change]) => ({ path: file, change }));
+    const failing = failedFiles(this._verification);
+    const pending = outstandingFiles(this._verification).filter((file) => !failing.includes(file));
+    const unchecked = this._verification.uncheckedFiles ?? [];
+    return {
+      filesChanged,
+      checks: [...this._contractChecks],
+      uncovered: [...new Set([...pending, ...unchecked])],
+      failedFiles: failing,
+      owesVerification: filesChanged.some((entry) => entry.change !== "D" && owesVerification(entry.path)),
+      granted: active ? [...active.granted] : [],
+      refused: active ? [...active.refused] : [],
+      observedOutOfScope: active ? [...active.observedOutOfScope] : [],
+    };
+  }
+
+  /**
+   * The host half of a work contract: a call whose named targets fall outside the territory is
+   * put to this session's approver before it runs. Approved paths are remembered for the rest of
+   * the lane; a refusal comes back to the model as an ordinary tool error. Observe mode only
+   * records. Shell commands are not checked here: their targets are not knowable in advance.
+   */
+  private async *_contractScopeGate(tc: ToolUseBlock, payload: Record<string, unknown>): AsyncGenerator<AgentEvent, { ok: false; error: string } | null> {
+    const active = this.opts.workContract;
+    if (!active) return null;
+    const targets = mutationTargets(tc.name, payload);
+    if (!targets || targets.length === 0) return null;
+    const context = {
+      toRelative: (file: string) => {
+        const canonical = this._canonicalPath(file);
+        return path.isAbsolute(canonical) || /^[a-zA-Z]:/.test(canonical) ? null : canonical;
+      },
+      isScratch: isScratchPath,
+    };
+    const out = outOfScope(active.contract, targets, active.granted, context);
+    if (out.length === 0) return null;
+    if (active.contract.enforcement === "observe") {
+      for (const file of out) active.observedOutOfScope.add(file);
+      return null;
+    }
+    const { granted, deferredMessage } = yield* this._approvalGate(
+      tc,
+      { category: "scope", tier: "scope" },
+      scopeGateDescription(out, active.contract.objective),
+      undefined,
+      payload,
+    );
+    if (granted) {
+      for (const file of out) active.granted.add(file);
+      return null;
+    }
+    const error = deferredMessage
+      ?? `Not run: ${out.slice(0, 8).join(", ")} ${out.length === 1 ? "is" : "are"} outside this lane's work contract and the write was not approved. `
+        + "Keep the change inside the contract's files, or report what else needs to change.";
+    active.refused.push({ toolName: tc.name, reason: error });
+    return { ok: false, error };
+  }
+
   /** Nothing is left to verify: every file the episode changed was a scratch file the session
    *  created and removed again. Back to the state the episode started from. */
   private _settleVerification(): void {
@@ -2300,7 +2417,7 @@ export class AgentSession {
           planId: input.planId,
           phaseId: input.phaseId,
           stepId: input.stepId,
-          stepNote: `Subagent lane finished: ${String(finalResult.answer ?? "").slice(0, 400)}`,
+          stepNote: `Subagent lane finished: ${String(finalResult.answer ?? "").slice(0, 400)}${receiptNote(finalResult)}`,
         }, { sessionId: this.sessionId, requestId: undefined });
       } else {
         const interrupted = finalResult.failureKind === "timeout" || finalResult.failureKind === "cancelled";
@@ -2309,7 +2426,7 @@ export class AgentSession {
           phaseId: input.phaseId,
           stepId: input.stepId,
           stepStatus: interrupted ? "pending" : "blocked",
-          stepNote: `${interrupted ? "Subagent lane interrupted" : "Subagent lane failed"}: ${String(finalResult.error ?? "unknown error").slice(0, 400)}`,
+          stepNote: `${interrupted ? "Subagent lane interrupted" : "Subagent lane failed"}: ${String(finalResult.error ?? "unknown error").slice(0, 400)}${receiptNote(finalResult)}`,
         }, { sessionId: this.sessionId, requestId: undefined });
       }
     } catch { /* best-effort bookkeeping only */ }
@@ -4718,6 +4835,25 @@ export class AgentSession {
               continue;
             }
 
+            const scopeRefusal = yield* this._contractScopeGate(tc, payload);
+            if (scopeRefusal) {
+              toolResults[idx] = {
+                type: "tool_result",
+                tool_use_id: tc.id,
+                content: this._capToolResult(tc.id, JSON.stringify(scopeRefusal)),
+              };
+              yield {
+                type: "tool_call_result",
+                toolCallId: tc.id,
+                toolName: tc.name,
+                ok: false,
+                summary: scopeRefusal.error,
+                result: scopeRefusal,
+                elapsedMs: Math.max(Date.now() - toolStartedAt, 0),
+              };
+              continue;
+            }
+
             this._noteToolUse(tc.name);
 
             let mcpDestructive = false;
@@ -5760,6 +5896,14 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
+/** The receipt line a linked plan step's note carries, so the step shows evidence, not just the answer. */
+function receiptNote(result: unknown): string {
+  const receipt = result && typeof result === "object" ? (result as { receipt?: ReceiptSummary }).receipt : undefined;
+  if (!receipt) return "";
+  const label = receipt.status === "verified" ? "verified" : receipt.status === "succeeded_unverified" ? "not verified" : receipt.status.replace(/_/g, " ");
+  return ` [receipt ${receipt.id}: ${label}]`;
+}
+
 function normalizeSubagentSpawnInput(payload: Record<string, unknown>): SubagentSpawnInput {
   const complexity = String(payload["complexity"] ?? "").trim().toLowerCase();
   const profileId = payload["profileId"] != null ? String(payload["profileId"]).trim() : undefined;
@@ -5780,6 +5924,7 @@ function normalizeSubagentSpawnInput(payload: Record<string, unknown>): Subagent
     planId: planId && phaseId && stepId ? planId : undefined,
     phaseId: planId && phaseId && stepId ? phaseId : undefined,
     stepId: planId && phaseId && stepId ? stepId : undefined,
+    ...(payload["contract"] !== undefined && payload["contract"] !== null ? { contract: payload["contract"] } : {}),
   };
 }
 

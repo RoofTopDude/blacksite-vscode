@@ -27,6 +27,7 @@ import {
 } from "./loop-model.js";
 import type { LoopStore } from "./loop-store.js";
 import type { Ticket } from "../ticket-store.js";
+import { describeReceiptSummary, type ReceiptSummary } from "../orchestration/work-receipt.js";
 
 export interface LoopDispatchRequest {
   loopId: string;
@@ -45,6 +46,11 @@ export interface LoopDispatchRequest {
   /** Called with each priced model call, so the loop can count spend while a lane is still
    *  running instead of learning about it when the lane ends. */
   onSpend?: (usd: number) => void;
+  /** What is left of the loop's spend ceiling, for the lane's work contract. */
+  maxUsd?: number;
+  /** The dispatcher issued a work contract for this lane. Recorded on the open iteration, so a
+   *  host restart mid-lane can still write the lane's receipt. */
+  onContract?: (contractId: string) => void;
   signal: AbortSignal;
 }
 
@@ -71,6 +77,8 @@ export interface LoopDispatchResult {
    *  from a failure: nothing about the work went wrong. */
   parkedOnGate?: string;
   parkedSubRequestId?: string;
+  /** What the host observed, when the lane ran under a work contract. */
+  receipt?: ReceiptSummary;
 }
 
 export interface LoopDispatcher {
@@ -105,6 +113,8 @@ export interface LoopSupervisorHooks {
   /** The user started or resumed the loop, so anything it raised about itself is out of date. */
   onStarted?(loopId: string): void;
   onReleased?(loopId: string, ticketId: string): void;
+  /** A lane that ran under a work contract was lost to a host restart: record its receipt. */
+  onAbandonedContract?(contractId: string, subject: { loopId: string; ticketId: string; iterationSeq: number }): void;
 }
 
 interface InFlight {
@@ -134,6 +144,8 @@ export class LoopSupervisor {
     private readonly _dispatcher: LoopDispatcher,
     private readonly _hooks: LoopSupervisorHooks = {},
     private readonly _now: () => number = () => Date.now(),
+    /** Injected for deterministic replays (tests/eval); receives the id's prefix. */
+    private readonly _newId: (prefix: string) => string = (prefix) => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
   ) {}
 
   isRunning(loopId: string): boolean {
@@ -159,6 +171,11 @@ export class LoopSupervisor {
       // Any iteration with no endedAt was in flight when the host went down.
       for (const iteration of record.iterations) {
         if (iteration.endedAt) continue;
+        if (iteration.contractId) {
+          try {
+            this._hooks.onAbandonedContract?.(iteration.contractId, { loopId, ticketId: iteration.ticketId, iterationSeq: iteration.seq });
+          } catch { /* the receipt is a record; restoring the loop matters more */ }
+        }
         this._store.update(loopId, (live) => {
           const target = live.iterations.find((entry) => entry.seq === iteration.seq);
           if (!target) return false;
@@ -336,11 +353,15 @@ export class LoopSupervisor {
           ...(record.definition.workers.profileId ? { profileId: record.definition.workers.profileId } : {}),
           ...(state?.attempts ? { priorAttempt: this._priorAttemptDetail(record, ticket.id) } : {}),
           approvals: record.definition.approvals,
+          ...(this._remainingUsd(record) !== undefined ? { maxUsd: this._remainingUsd(record) } : {}),
+          ...(opened ? {
+            onContract: (contractId: string) => this._store.settleIteration(loopId, opened.seq, { contractId }),
+          } : {}),
           ...(opened ? {
             onProgress: (event: LoopDispatchProgress) => {
               this._store.appendIterationActivity(loopId, opened.seq, {
                 ...event,
-                id: `activity_${this._now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                id: this._newId("activity"),
                 at: new Date(this._now()).toISOString(),
               });
             },
@@ -362,6 +383,7 @@ export class LoopSupervisor {
         };
       }
 
+      result = this._resultFromReceipt(result);
       // The spend is in the result now, and counted in the totals once it is recorded.
       this._liveUsd.get(loopId)?.delete(ticket.id);
       this._record(loopId, ticket, result, startedAt, opened?.seq, controllers.lanes.signal.aborted && !result.ok && !result.parkedOnGate);
@@ -369,6 +391,39 @@ export class LoopSupervisor {
     })();
 
     return { ticketId: ticket.id, territory: entry.territory, promise };
+  }
+
+  /** Spend left under the loop's ceiling, counting lanes still running. */
+  private _remainingUsd(record: LoopRecord): number | undefined {
+    const max = record.definition.ceilings.maxUsd;
+    if (max == null) return undefined;
+    let live = 0;
+    for (const usd of this._liveUsd.get(record.definition.id)?.values() ?? []) live += usd;
+    return Math.max(max - record.totals.usd - live, 0.01);
+  }
+
+  /**
+   * Under an enforcing contract the receipt, not the lane's own ok, decides what happened. A lane
+   * that said it was done while a check failed goes back for another attempt instead of to review.
+   * Observe mode changes nothing here.
+   */
+  private _resultFromReceipt(result: LoopDispatchResult): LoopDispatchResult {
+    const receipt = result.receipt;
+    if (!receipt || receipt.enforcement !== "enforce") return result;
+    switch (receipt.status) {
+      case "verified":
+      case "succeeded_unverified":
+        return { ...result, ok: true, detail: `${describeReceiptSummary(receipt)}\n\n${result.detail}`.trim() };
+      case "blocked":
+        return { ...result, ok: false, parkedOnGate: result.parkedOnGate ?? "approval", ...(result.subRequestId ? { parkedSubRequestId: result.parkedSubRequestId ?? result.subRequestId } : {}) };
+      case "partial":
+      case "failed": {
+        const { parkedOnGate: _ignored, ...rest } = result;
+        return { ...rest, ok: false, detail: `${describeReceiptSummary(receipt)}\n\n${result.detail}`.trim() };
+      }
+      default:
+        return result;
+    }
   }
 
   /** The last thing that happened to this ticket, so a retry starts from it. */
@@ -402,6 +457,7 @@ export class LoopSupervisor {
       detail: result.detail,
       endedAt: new Date(this._now()).toISOString(),
       ...(result.usd != null ? { usd: result.usd } : {}),
+      ...(result.receipt ? { receiptId: result.receipt.id, receiptStatus: result.receipt.status, contractId: result.receipt.contractId } : {}),
     };
 
     if (openedSeq != null) {

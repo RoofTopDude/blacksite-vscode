@@ -42,6 +42,8 @@ export interface StepEvidence {
   filesChanged: string[];
   diagnostics?: { errors: number; warnings: number };
   runIds?: string[];
+  /** Work receipts recorded for the step (src/orchestration), when work contracts are on. */
+  receiptIds?: string[];
   at: string;
 }
 
