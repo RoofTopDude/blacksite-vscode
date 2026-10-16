@@ -3,6 +3,53 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.33.0-pre.4
+
+Prerelease. The stable update channel remains on 1.32.0.
+
+This release lays the groundwork for coordinating larger pieces of work: delegated lanes now run under
+a work contract and come back with a receipt of what actually happened, and a new work graph connects
+tickets, plan steps, code and evidence. Both are experimental and **off by default**. With the
+settings left alone, nothing about how Blacksite works changes.
+
+### Added
+
+- **Work contracts and receipts** (`blacksite.orchestration.workContracts`).
+  - **What a contract is.** Each delegated lane and each loop ticket gets a contract: what it is
+    for, which files it may change (from the ticket's territory or the plan phase's files), its
+    budget, and its definition of done.
+  - **What a receipt is.** When the lane finishes, its receipt records what Blacksite saw: the
+    files that changed and the checks that covered them. It is kept separate from what the lane
+    said about its own work. "All tests pass" with no test run on record is *not verified*, never
+    *verified*.
+  - **The settings.** `observe` records contracts and receipts and changes nothing else. `enforce`
+    also asks before a lane writes outside its contract's files, and you, the reviewer, or
+    **Allow all** can grant that. In a ticket loop, a lane whose check failed goes back for another
+    attempt instead of to review.
+  - **Where receipts show.** Receipt notes appear on tickets and plan steps, and the agent sees
+    each lane's receipt in its result.
+- **Work graph** (`blacksite.orchestration.workGraph`). A read-only map of tickets, plan steps, the
+  files they touch, and the receipts and runs that are evidence for them.
+  - **The `work_graph` tool.** The agent can ask what something depends on, what blocks it, what a
+    change would reach, which open work collides, and which chain of open work is the longest.
+  - **Where each relation came from.** Every relation says whether it was observed, written down,
+    inferred, or points at something that no longer exists. Evidence that later changes overtook
+    is marked stale.
+  - **Problems are shown, not fixed.** Dependency cycles, broken references and ticket links that
+    were dropped while reading are listed. Nothing is repaired automatically.
+- **An evaluation suite for orchestration changes.** Recorded loop and plan-run scenarios (crashes,
+  retries, parked approvals, spend ceilings, conflicts, work reported done that was not) are
+  replayed on every build, with and without contracts, so a change to how work is coordinated
+  can be measured against today's behaviour. An opt-in live suite runs the same comparison
+  against a real model in a throwaway workspace.
+
+### Notes
+
+- Contracts and receipts are stored under `.blacksite/orchestration/` and follow the plan-run
+  retention setting.
+- Setting either option back to its default is the rollback. Nothing written while it was on is
+  read again.
+
 ## 1.33.0-pre.3
 
 Prerelease. The stable update channel remains on 1.32.0.

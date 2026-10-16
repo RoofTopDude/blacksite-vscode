@@ -1,0 +1,1994 @@
+{
+  "comparisons": [
+    {
+      "deltas": [
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "verifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "falseCompletions",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "interventions",
+          "regression": false
+        },
+        {
+          "baseline": null,
+          "candidate": null,
+          "field": "costPerVerifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "selfReportedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0.08,
+          "candidate": 0.08,
+          "field": "costUsd",
+          "regression": false
+        },
+        {
+          "baseline": 120000,
+          "candidate": 120000,
+          "field": "elapsedMs",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "retries",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "parks",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "repeatedFailures",
+          "regression": false
+        }
+      ],
+      "regressed": false,
+      "scenario": "loop-consecutive-failure-halt"
+    },
+    {
+      "deltas": [
+        {
+          "baseline": 2,
+          "candidate": 2,
+          "field": "verifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "falseCompletions",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "interventions",
+          "regression": false
+        },
+        {
+          "baseline": 0.175,
+          "candidate": 0.175,
+          "field": "costPerVerifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 2,
+          "candidate": 2,
+          "field": "selfReportedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0.35,
+          "candidate": 0.35,
+          "field": "costUsd",
+          "regression": false
+        },
+        {
+          "baseline": 1000000,
+          "candidate": 1000000,
+          "field": "elapsedMs",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "retries",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "parks",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "repeatedFailures",
+          "regression": false
+        }
+      ],
+      "regressed": false,
+      "scenario": "loop-crash-mid-lane"
+    },
+    {
+      "deltas": [
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "verifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 0,
+          "field": "falseCompletions",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "interventions",
+          "regression": false
+        },
+        {
+          "baseline": 0.2,
+          "candidate": 0.32,
+          "field": "costPerVerifiedSuccess",
+          "regression": true
+        },
+        {
+          "baseline": 2,
+          "candidate": 1,
+          "field": "selfReportedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0.2,
+          "candidate": 0.32,
+          "field": "costUsd",
+          "regression": false
+        },
+        {
+          "baseline": 210000,
+          "candidate": 330000,
+          "field": "elapsedMs",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 1,
+          "field": "retries",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "parks",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "repeatedFailures",
+          "regression": false
+        }
+      ],
+      "regressed": true,
+      "scenario": "loop-false-completion"
+    },
+    {
+      "deltas": [
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "verifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "falseCompletions",
+          "regression": false
+        },
+        {
+          "baseline": 2,
+          "candidate": 2,
+          "field": "interventions",
+          "regression": false
+        },
+        {
+          "baseline": 0.13,
+          "candidate": 0.13,
+          "field": "costPerVerifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "selfReportedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0.13,
+          "candidate": 0.13,
+          "field": "costUsd",
+          "regression": false
+        },
+        {
+          "baseline": 550001,
+          "candidate": 550001,
+          "field": "elapsedMs",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "retries",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "parks",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "repeatedFailures",
+          "regression": false
+        }
+      ],
+      "regressed": false,
+      "scenario": "loop-park-release"
+    },
+    {
+      "deltas": [
+        {
+          "baseline": 2,
+          "candidate": 2,
+          "field": "verifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "falseCompletions",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "interventions",
+          "regression": false
+        },
+        {
+          "baseline": 0.3,
+          "candidate": 0.3,
+          "field": "costPerVerifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 2,
+          "candidate": 2,
+          "field": "selfReportedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0.6,
+          "candidate": 0.6,
+          "field": "costUsd",
+          "regression": false
+        },
+        {
+          "baseline": 540000,
+          "candidate": 540000,
+          "field": "elapsedMs",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "retries",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "parks",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "repeatedFailures",
+          "regression": false
+        }
+      ],
+      "regressed": false,
+      "scenario": "loop-retry-then-succeed"
+    },
+    {
+      "deltas": [
+        {
+          "baseline": 2,
+          "candidate": 2,
+          "field": "verifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "falseCompletions",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "interventions",
+          "regression": false
+        },
+        {
+          "baseline": 0.65,
+          "candidate": 0.65,
+          "field": "costPerVerifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 2,
+          "candidate": 2,
+          "field": "selfReportedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 1.3,
+          "candidate": 1.3,
+          "field": "costUsd",
+          "regression": false
+        },
+        {
+          "baseline": 300000,
+          "candidate": 300000,
+          "field": "elapsedMs",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "retries",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "parks",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "repeatedFailures",
+          "regression": false
+        }
+      ],
+      "regressed": false,
+      "scenario": "loop-spend-ceiling"
+    },
+    {
+      "deltas": [
+        {
+          "baseline": 3,
+          "candidate": 3,
+          "field": "verifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "falseCompletions",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "interventions",
+          "regression": false
+        },
+        {
+          "baseline": 0.1333,
+          "candidate": 0.1333,
+          "field": "costPerVerifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 4,
+          "candidate": 4,
+          "field": "selfReportedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0.4,
+          "candidate": 0.4,
+          "field": "costUsd",
+          "regression": false
+        },
+        {
+          "baseline": 350000,
+          "candidate": 350000,
+          "field": "elapsedMs",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "retries",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "parks",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "repeatedFailures",
+          "regression": false
+        }
+      ],
+      "regressed": false,
+      "scenario": "loop-territory-overlap"
+    },
+    {
+      "deltas": [
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "verifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "falseCompletions",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "interventions",
+          "regression": false
+        },
+        {
+          "baseline": 1.2,
+          "candidate": 1.2,
+          "field": "costPerVerifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "selfReportedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 1.2,
+          "candidate": 1.2,
+          "field": "costUsd",
+          "regression": false
+        },
+        {
+          "baseline": 400000,
+          "candidate": 400000,
+          "field": "elapsedMs",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "retries",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "parks",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "repeatedFailures",
+          "regression": false
+        }
+      ],
+      "regressed": false,
+      "scenario": "plan-budget-exhausted"
+    },
+    {
+      "deltas": [
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "verifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "falseCompletions",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "interventions",
+          "regression": false
+        },
+        {
+          "baseline": 1.1,
+          "candidate": 1.1,
+          "field": "costPerVerifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "selfReportedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 1.1,
+          "candidate": 1.1,
+          "field": "costUsd",
+          "regression": false
+        },
+        {
+          "baseline": 510000,
+          "candidate": 510000,
+          "field": "elapsedMs",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "retries",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "parks",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "repeatedFailures",
+          "regression": false
+        }
+      ],
+      "regressed": false,
+      "scenario": "plan-conductor-halt"
+    },
+    {
+      "deltas": [
+        {
+          "baseline": 2,
+          "candidate": 2,
+          "field": "verifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "falseCompletions",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "interventions",
+          "regression": false
+        },
+        {
+          "baseline": 0.35,
+          "candidate": 0.35,
+          "field": "costPerVerifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 2,
+          "candidate": 2,
+          "field": "selfReportedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0.7,
+          "candidate": 0.7,
+          "field": "costUsd",
+          "regression": false
+        },
+        {
+          "baseline": 605000,
+          "candidate": 605000,
+          "field": "elapsedMs",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "retries",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "parks",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "repeatedFailures",
+          "regression": false
+        }
+      ],
+      "regressed": false,
+      "scenario": "plan-crash-mid-step"
+    },
+    {
+      "deltas": [
+        {
+          "baseline": 3,
+          "candidate": 3,
+          "field": "verifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "falseCompletions",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "interventions",
+          "regression": false
+        },
+        {
+          "baseline": 0.3,
+          "candidate": 0.3,
+          "field": "costPerVerifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 3,
+          "candidate": 3,
+          "field": "selfReportedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0.9,
+          "candidate": 0.9,
+          "field": "costUsd",
+          "regression": false
+        },
+        {
+          "baseline": 905000,
+          "candidate": 905000,
+          "field": "elapsedMs",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "retries",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "parks",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "repeatedFailures",
+          "regression": false
+        }
+      ],
+      "regressed": false,
+      "scenario": "plan-defer-and-answer"
+    },
+    {
+      "deltas": [
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "verifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "falseCompletions",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "interventions",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "costPerVerifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 2,
+          "candidate": 2,
+          "field": "selfReportedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "costUsd",
+          "regression": false
+        },
+        {
+          "baseline": 400000,
+          "candidate": 400000,
+          "field": "elapsedMs",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "retries",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "parks",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "repeatedFailures",
+          "regression": false
+        }
+      ],
+      "regressed": false,
+      "scenario": "plan-false-completion"
+    },
+    {
+      "deltas": [
+        {
+          "baseline": 4,
+          "candidate": 4,
+          "field": "verifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "falseCompletions",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "interventions",
+          "regression": false
+        },
+        {
+          "baseline": 1.025,
+          "candidate": 1.025,
+          "field": "costPerVerifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 4,
+          "candidate": 4,
+          "field": "selfReportedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 4.1,
+          "candidate": 4.1,
+          "field": "costUsd",
+          "regression": false
+        },
+        {
+          "baseline": 3100000,
+          "candidate": 3100000,
+          "field": "elapsedMs",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "retries",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "parks",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "repeatedFailures",
+          "regression": false
+        }
+      ],
+      "regressed": false,
+      "scenario": "plan-long-outage"
+    },
+    {
+      "deltas": [
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "verifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "falseCompletions",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "interventions",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "costPerVerifiedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "selfReportedSuccess",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "costUsd",
+          "regression": false
+        },
+        {
+          "baseline": 905000,
+          "candidate": 905000,
+          "field": "elapsedMs",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "retries",
+          "regression": false
+        },
+        {
+          "baseline": 0,
+          "candidate": 0,
+          "field": "parks",
+          "regression": false
+        },
+        {
+          "baseline": 1,
+          "candidate": 1,
+          "field": "repeatedFailures",
+          "regression": false
+        }
+      ],
+      "regressed": false,
+      "scenario": "plan-tripwire-repeated-failure"
+    }
+  ],
+  "scorecards": [
+    {
+      "abandoned": 0,
+      "arm": "baseline",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": null,
+      "costUsd": 0.08,
+      "elapsedMs": 120000,
+      "falseCompletions": 0,
+      "halts": 1,
+      "interventions": 0,
+      "parks": 0,
+      "repeatedFailures": 1,
+      "retries": 1,
+      "scenario": "loop-consecutive-failure-halt",
+      "selfReportedSuccess": 0,
+      "subject": "loop",
+      "subjects": 3,
+      "verifiedSuccess": 0
+    },
+    {
+      "abandoned": 0,
+      "arm": "observe",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": null,
+      "costUsd": 0.08,
+      "elapsedMs": 120000,
+      "falseCompletions": 0,
+      "halts": 1,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 0
+      },
+      "repeatedFailures": 1,
+      "retries": 1,
+      "scenario": "loop-consecutive-failure-halt",
+      "selfReportedSuccess": 0,
+      "subject": "loop",
+      "subjects": 3,
+      "verifiedSuccess": 0
+    },
+    {
+      "abandoned": 0,
+      "arm": "enforce",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": null,
+      "costUsd": 0.08,
+      "elapsedMs": 120000,
+      "falseCompletions": 0,
+      "halts": 1,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 0
+      },
+      "repeatedFailures": 1,
+      "retries": 1,
+      "scenario": "loop-consecutive-failure-halt",
+      "selfReportedSuccess": 0,
+      "subject": "loop",
+      "subjects": 3,
+      "verifiedSuccess": 0
+    },
+    {
+      "abandoned": 1,
+      "arm": "baseline",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.175,
+      "costUsd": 0.35,
+      "elapsedMs": 1000000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 1,
+      "parks": 0,
+      "repeatedFailures": 0,
+      "retries": 1,
+      "scenario": "loop-crash-mid-lane",
+      "selfReportedSuccess": 2,
+      "subject": "loop",
+      "subjects": 2,
+      "verifiedSuccess": 2
+    },
+    {
+      "abandoned": 1,
+      "arm": "observe",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.175,
+      "costUsd": 0.35,
+      "elapsedMs": 1000000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 1,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 1
+      },
+      "repeatedFailures": 0,
+      "retries": 1,
+      "scenario": "loop-crash-mid-lane",
+      "selfReportedSuccess": 2,
+      "subject": "loop",
+      "subjects": 2,
+      "verifiedSuccess": 2
+    },
+    {
+      "abandoned": 1,
+      "arm": "enforce",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.175,
+      "costUsd": 0.35,
+      "elapsedMs": 1000000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 1,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 1
+      },
+      "repeatedFailures": 0,
+      "retries": 1,
+      "scenario": "loop-crash-mid-lane",
+      "selfReportedSuccess": 2,
+      "subject": "loop",
+      "subjects": 2,
+      "verifiedSuccess": 2
+    },
+    {
+      "abandoned": 0,
+      "arm": "baseline",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.2,
+      "costUsd": 0.2,
+      "elapsedMs": 210000,
+      "falseCompletions": 1,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "loop-false-completion",
+      "selfReportedSuccess": 2,
+      "subject": "loop",
+      "subjects": 2,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "observe",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.2,
+      "costUsd": 0.2,
+      "elapsedMs": 210000,
+      "falseCompletions": 1,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 1
+      },
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "loop-false-completion",
+      "selfReportedSuccess": 2,
+      "subject": "loop",
+      "subjects": 2,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "enforce",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.32,
+      "costUsd": 0.32,
+      "elapsedMs": 330000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 1
+      },
+      "repeatedFailures": 0,
+      "retries": 1,
+      "scenario": "loop-false-completion",
+      "selfReportedSuccess": 1,
+      "subject": "loop",
+      "subjects": 2,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "baseline",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.13,
+      "costUsd": 0.13,
+      "elapsedMs": 550001,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 2,
+      "parks": 1,
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "loop-park-release",
+      "selfReportedSuccess": 1,
+      "subject": "loop",
+      "subjects": 1,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "observe",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.13,
+      "costUsd": 0.13,
+      "elapsedMs": 550001,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 2,
+      "parks": 1,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 0
+      },
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "loop-park-release",
+      "selfReportedSuccess": 1,
+      "subject": "loop",
+      "subjects": 1,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "enforce",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.13,
+      "costUsd": 0.13,
+      "elapsedMs": 550001,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 2,
+      "parks": 1,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 0
+      },
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "loop-park-release",
+      "selfReportedSuccess": 1,
+      "subject": "loop",
+      "subjects": 1,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "baseline",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.3,
+      "costUsd": 0.6,
+      "elapsedMs": 540000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "repeatedFailures": 0,
+      "retries": 1,
+      "scenario": "loop-retry-then-succeed",
+      "selfReportedSuccess": 2,
+      "subject": "loop",
+      "subjects": 2,
+      "verifiedSuccess": 2
+    },
+    {
+      "abandoned": 0,
+      "arm": "observe",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.3,
+      "costUsd": 0.6,
+      "elapsedMs": 540000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 2,
+        "disagree": 0,
+        "unknown": 0
+      },
+      "repeatedFailures": 0,
+      "retries": 1,
+      "scenario": "loop-retry-then-succeed",
+      "selfReportedSuccess": 2,
+      "subject": "loop",
+      "subjects": 2,
+      "verifiedSuccess": 2
+    },
+    {
+      "abandoned": 0,
+      "arm": "enforce",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.3,
+      "costUsd": 0.6,
+      "elapsedMs": 540000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 2,
+        "disagree": 0,
+        "unknown": 0
+      },
+      "repeatedFailures": 0,
+      "retries": 1,
+      "scenario": "loop-retry-then-succeed",
+      "selfReportedSuccess": 2,
+      "subject": "loop",
+      "subjects": 2,
+      "verifiedSuccess": 2
+    },
+    {
+      "abandoned": 0,
+      "arm": "baseline",
+      "budgetStops": 1,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.65,
+      "costUsd": 1.3,
+      "elapsedMs": 300000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "loop-spend-ceiling",
+      "selfReportedSuccess": 2,
+      "subject": "loop",
+      "subjects": 3,
+      "verifiedSuccess": 2
+    },
+    {
+      "abandoned": 0,
+      "arm": "observe",
+      "budgetStops": 1,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.65,
+      "costUsd": 1.3,
+      "elapsedMs": 300000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 1
+      },
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "loop-spend-ceiling",
+      "selfReportedSuccess": 2,
+      "subject": "loop",
+      "subjects": 3,
+      "verifiedSuccess": 2
+    },
+    {
+      "abandoned": 0,
+      "arm": "enforce",
+      "budgetStops": 1,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.65,
+      "costUsd": 1.3,
+      "elapsedMs": 300000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 1
+      },
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "loop-spend-ceiling",
+      "selfReportedSuccess": 2,
+      "subject": "loop",
+      "subjects": 3,
+      "verifiedSuccess": 2
+    },
+    {
+      "abandoned": 0,
+      "arm": "baseline",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 1
+      },
+      "costPerVerifiedSuccess": 0.1333,
+      "costUsd": 0.4,
+      "elapsedMs": 350000,
+      "falseCompletions": 1,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "loop-territory-overlap",
+      "selfReportedSuccess": 4,
+      "subject": "loop",
+      "subjects": 4,
+      "verifiedSuccess": 3
+    },
+    {
+      "abandoned": 0,
+      "arm": "observe",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 1
+      },
+      "costPerVerifiedSuccess": 0.1333,
+      "costUsd": 0.4,
+      "elapsedMs": 350000,
+      "falseCompletions": 1,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 3,
+        "disagree": 1,
+        "unknown": 0
+      },
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "loop-territory-overlap",
+      "selfReportedSuccess": 4,
+      "subject": "loop",
+      "subjects": 4,
+      "verifiedSuccess": 3
+    },
+    {
+      "abandoned": 0,
+      "arm": "enforce",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 1
+      },
+      "costPerVerifiedSuccess": 0.1333,
+      "costUsd": 0.4,
+      "elapsedMs": 350000,
+      "falseCompletions": 1,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 3,
+        "disagree": 1,
+        "unknown": 0
+      },
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "loop-territory-overlap",
+      "selfReportedSuccess": 4,
+      "subject": "loop",
+      "subjects": 4,
+      "verifiedSuccess": 3
+    },
+    {
+      "abandoned": 0,
+      "arm": "baseline",
+      "budgetStops": 1,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 1.2,
+      "costUsd": 1.2,
+      "elapsedMs": 400000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "plan-budget-exhausted",
+      "selfReportedSuccess": 1,
+      "subject": "plan_run",
+      "subjects": 3,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "observe",
+      "budgetStops": 1,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 1.2,
+      "costUsd": 1.2,
+      "elapsedMs": 400000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 0
+      },
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "plan-budget-exhausted",
+      "selfReportedSuccess": 1,
+      "subject": "plan_run",
+      "subjects": 3,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "enforce",
+      "budgetStops": 1,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 1.2,
+      "costUsd": 1.2,
+      "elapsedMs": 400000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 0
+      },
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "plan-budget-exhausted",
+      "selfReportedSuccess": 1,
+      "subject": "plan_run",
+      "subjects": 3,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "baseline",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 1.1,
+      "costUsd": 1.1,
+      "elapsedMs": 510000,
+      "falseCompletions": 0,
+      "halts": 1,
+      "interventions": 0,
+      "parks": 0,
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "plan-conductor-halt",
+      "selfReportedSuccess": 1,
+      "subject": "plan_run",
+      "subjects": 2,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "observe",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 1.1,
+      "costUsd": 1.1,
+      "elapsedMs": 510000,
+      "falseCompletions": 0,
+      "halts": 1,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 0
+      },
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "plan-conductor-halt",
+      "selfReportedSuccess": 1,
+      "subject": "plan_run",
+      "subjects": 2,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "enforce",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 1.1,
+      "costUsd": 1.1,
+      "elapsedMs": 510000,
+      "falseCompletions": 0,
+      "halts": 1,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 0
+      },
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "plan-conductor-halt",
+      "selfReportedSuccess": 1,
+      "subject": "plan_run",
+      "subjects": 2,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 1,
+      "arm": "baseline",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.35,
+      "costUsd": 0.7,
+      "elapsedMs": 605000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 1,
+      "parks": 0,
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "plan-crash-mid-step",
+      "selfReportedSuccess": 2,
+      "subject": "plan_run",
+      "subjects": 2,
+      "verifiedSuccess": 2
+    },
+    {
+      "abandoned": 1,
+      "arm": "observe",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.35,
+      "costUsd": 0.7,
+      "elapsedMs": 605000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 1,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 1
+      },
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "plan-crash-mid-step",
+      "selfReportedSuccess": 2,
+      "subject": "plan_run",
+      "subjects": 2,
+      "verifiedSuccess": 2
+    },
+    {
+      "abandoned": 1,
+      "arm": "enforce",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.35,
+      "costUsd": 0.7,
+      "elapsedMs": 605000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 1,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 1
+      },
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "plan-crash-mid-step",
+      "selfReportedSuccess": 2,
+      "subject": "plan_run",
+      "subjects": 2,
+      "verifiedSuccess": 2
+    },
+    {
+      "abandoned": 0,
+      "arm": "baseline",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.3,
+      "costUsd": 0.9,
+      "elapsedMs": 905000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 1,
+      "parks": 1,
+      "repeatedFailures": 0,
+      "retries": 1,
+      "scenario": "plan-defer-and-answer",
+      "selfReportedSuccess": 3,
+      "subject": "plan_run",
+      "subjects": 3,
+      "verifiedSuccess": 3
+    },
+    {
+      "abandoned": 0,
+      "arm": "observe",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.3,
+      "costUsd": 0.9,
+      "elapsedMs": 905000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 1,
+      "parks": 1,
+      "receipts": {
+        "agree": 2,
+        "disagree": 0,
+        "unknown": 1
+      },
+      "repeatedFailures": 0,
+      "retries": 1,
+      "scenario": "plan-defer-and-answer",
+      "selfReportedSuccess": 3,
+      "subject": "plan_run",
+      "subjects": 3,
+      "verifiedSuccess": 3
+    },
+    {
+      "abandoned": 0,
+      "arm": "enforce",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 0.3,
+      "costUsd": 0.9,
+      "elapsedMs": 905000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 1,
+      "parks": 1,
+      "receipts": {
+        "agree": 2,
+        "disagree": 0,
+        "unknown": 1
+      },
+      "repeatedFailures": 0,
+      "retries": 1,
+      "scenario": "plan-defer-and-answer",
+      "selfReportedSuccess": 3,
+      "subject": "plan_run",
+      "subjects": 3,
+      "verifiedSuccess": 3
+    },
+    {
+      "abandoned": 0,
+      "arm": "baseline",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 1,
+      "costUsd": 1,
+      "elapsedMs": 400000,
+      "falseCompletions": 1,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "plan-false-completion",
+      "selfReportedSuccess": 2,
+      "subject": "plan_run",
+      "subjects": 2,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "observe",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 1,
+      "costUsd": 1,
+      "elapsedMs": 400000,
+      "falseCompletions": 1,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 1
+      },
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "plan-false-completion",
+      "selfReportedSuccess": 2,
+      "subject": "plan_run",
+      "subjects": 2,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "enforce",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 1,
+      "costUsd": 1,
+      "elapsedMs": 400000,
+      "falseCompletions": 1,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 1
+      },
+      "repeatedFailures": 0,
+      "retries": 0,
+      "scenario": "plan-false-completion",
+      "selfReportedSuccess": 2,
+      "subject": "plan_run",
+      "subjects": 2,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "baseline",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 1.025,
+      "costUsd": 4.1,
+      "elapsedMs": 3100000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "repeatedFailures": 0,
+      "retries": 1,
+      "scenario": "plan-long-outage",
+      "selfReportedSuccess": 4,
+      "subject": "plan_run",
+      "subjects": 4,
+      "verifiedSuccess": 4
+    },
+    {
+      "abandoned": 0,
+      "arm": "observe",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 1.025,
+      "costUsd": 4.1,
+      "elapsedMs": 3100000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 3,
+        "disagree": 0,
+        "unknown": 1
+      },
+      "repeatedFailures": 0,
+      "retries": 1,
+      "scenario": "plan-long-outage",
+      "selfReportedSuccess": 4,
+      "subject": "plan_run",
+      "subjects": 4,
+      "verifiedSuccess": 4
+    },
+    {
+      "abandoned": 0,
+      "arm": "enforce",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 1.025,
+      "costUsd": 4.1,
+      "elapsedMs": 3100000,
+      "falseCompletions": 0,
+      "halts": 0,
+      "interventions": 0,
+      "parks": 0,
+      "receipts": {
+        "agree": 3,
+        "disagree": 0,
+        "unknown": 1
+      },
+      "repeatedFailures": 0,
+      "retries": 1,
+      "scenario": "plan-long-outage",
+      "selfReportedSuccess": 4,
+      "subject": "plan_run",
+      "subjects": 4,
+      "verifiedSuccess": 4
+    },
+    {
+      "abandoned": 0,
+      "arm": "baseline",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 1,
+      "costUsd": 1,
+      "elapsedMs": 905000,
+      "falseCompletions": 0,
+      "halts": 1,
+      "interventions": 1,
+      "parks": 0,
+      "repeatedFailures": 1,
+      "retries": 0,
+      "scenario": "plan-tripwire-repeated-failure",
+      "selfReportedSuccess": 1,
+      "subject": "plan_run",
+      "subjects": 1,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "observe",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 1,
+      "costUsd": 1,
+      "elapsedMs": 905000,
+      "falseCompletions": 0,
+      "halts": 1,
+      "interventions": 1,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 0
+      },
+      "repeatedFailures": 1,
+      "retries": 0,
+      "scenario": "plan-tripwire-repeated-failure",
+      "selfReportedSuccess": 1,
+      "subject": "plan_run",
+      "subjects": 1,
+      "verifiedSuccess": 1
+    },
+    {
+      "abandoned": 0,
+      "arm": "enforce",
+      "budgetStops": 0,
+      "conflicts": {
+        "occurred": 0
+      },
+      "costPerVerifiedSuccess": 1,
+      "costUsd": 1,
+      "elapsedMs": 905000,
+      "falseCompletions": 0,
+      "halts": 1,
+      "interventions": 1,
+      "parks": 0,
+      "receipts": {
+        "agree": 1,
+        "disagree": 0,
+        "unknown": 0
+      },
+      "repeatedFailures": 1,
+      "retries": 0,
+      "scenario": "plan-tripwire-repeated-failure",
+      "selfReportedSuccess": 1,
+      "subject": "plan_run",
+      "subjects": 1,
+      "verifiedSuccess": 1
+    }
+  ]
+}
