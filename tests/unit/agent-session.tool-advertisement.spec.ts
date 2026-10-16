@@ -53,6 +53,7 @@ function fullyWiredOverrides(): Partial<Opts> {
     memoryProvider: { append: () => undefined, readMemory: () => "", readContext: () => "" },
     agentMemoryIndex: stub(),
     graphProvider: stub(),
+    workGraphProvider: { enabled: () => true, dispatch: vi.fn() },
     subagentProvider: { spawn: vi.fn(), followUp: vi.fn() } as unknown as Opts["subagentProvider"],
     transcriptProvider: stub(),
     transcriptDocumentProvider: stub(),
@@ -113,5 +114,16 @@ describe("AgentSession tool advertisement", () => {
       expect(parent).toContain(tool.name);
       expect(delegated).not.toContain(tool.name);
     }
+  });
+});
+
+describe("work graph tool gating", () => {
+  it("is offered only while a work graph provider is wired and enabled", () => {
+    const off = advertisedNames(createSession({}));
+    expect(off).not.toContain("work_graph");
+    const disabled = advertisedNames(createSession({ workGraphProvider: { enabled: () => false, dispatch: vi.fn() } }));
+    expect(disabled).not.toContain("work_graph");
+    const enabled = advertisedNames(createSession({ workGraphProvider: { enabled: () => true, dispatch: vi.fn() } }));
+    expect(enabled).toContain("work_graph");
   });
 });

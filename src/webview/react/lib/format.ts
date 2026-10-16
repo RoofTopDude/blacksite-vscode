@@ -543,6 +543,7 @@ export const TOOL_GROUPS: ToolGroupDef[] = [
   { label: "Tickets", tools: ["ticket_file", "ticket_update", "ticket_list", "ticket_get", "ticket_comment", "ticket_next", "ticket_promote", "ticket_sweep"] },
   { label: "Delegation", tools: ["subagent_spawn", "subagent_followup"] },
   { label: "Code Intel", tools: ["code_insert", "code_replace", "code_replace_batch", "code_symbols", "code_navigate", "code_hierarchy", "code_hover", "code_diagnostics", "code_rename", "code_actions", "code_format", "code_inlay_hints"] },
+  { label: "Work Graph", tools: ["work_graph"] },
   { label: "Codebase Map", tools: ["map_overview", "map_find", "map_relationships", "map_impact", "map_path", "map_note_add", "map_note_list", "map_note_update", "map_note_remove"] },
   { label: "Memory", tools: ["memory_append", "memory_read", "memory_search"] },
   { label: "Skills", tools: ["skill_read", "skill_list", "skill_write"] },
@@ -568,6 +569,7 @@ export const TOOL_GROUPS: ToolGroupDef[] = [
 export const ALL_TOOL_NAMES: string[] = TOOL_GROUPS.flatMap((g) => g.tools);
 
 export const TOOL_LABELS: Record<string, string> = {
+  work_graph: "Work Graph",
   map_overview: "Map Overview",
   map_find: "Map Search",
   map_relationships: "Map Relationships",

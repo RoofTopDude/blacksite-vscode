@@ -531,24 +531,47 @@ function normalizeTicket(value: unknown): Ticket | null {
  * already rejects a cycle-forming write with an explanatory error; this only fires against a
  * hand-edited file or a v1 document with no cycle protection at write time.
  */
-function reconcileLinks(tickets: Ticket[]): void {
+/**
+ * A link the read-time healing below dropped. Reported so a reader (the work graph) can show what
+ * was repaired instead of the repair being invisible; the healing itself is unchanged.
+ */
+export interface TicketLinkFinding {
+  ticketId: string;
+  link: "blockedBy" | "relatedTo" | "duplicateOf" | "parentId";
+  target: string;
+  reason: "self" | "missing" | "cycle";
+}
+
+function reconcileLinks(tickets: Ticket[], findings: TicketLinkFinding[] = []): void {
   const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]));
+  const drop = (ticket: Ticket, link: TicketLinkFinding["link"], target: string, reason: TicketLinkFinding["reason"]): void => {
+    if (findings.length < 500) findings.push({ ticketId: ticket.id, link, target, reason });
+  };
   const blocks = new Map<string, Set<string>>(tickets.map((ticket) => [ticket.id, new Set<string>()]));
   const related = new Map<string, Set<string>>(tickets.map((ticket) => [ticket.id, new Set<string>()]));
   const children = new Map<string, Set<string>>(tickets.map((ticket) => [ticket.id, new Set<string>()]));
 
   for (const ticket of tickets) {
+    for (const id of ticket.blockedBy) {
+      if (id === ticket.id) drop(ticket, "blockedBy", id, "self");
+      else if (!byId.has(id)) drop(ticket, "blockedBy", id, "missing");
+    }
     ticket.blockedBy = ticket.blockedBy.filter((id) => id !== ticket.id && byId.has(id));
     for (const id of ticket.blockedBy) blocks.get(id)?.add(ticket.id);
     for (const id of ticket.relatedTo) {
-      if (id === ticket.id || !byId.has(id)) continue;
+      if (id === ticket.id || !byId.has(id)) {
+        drop(ticket, "relatedTo", id, id === ticket.id ? "self" : "missing");
+        continue;
+      }
       related.get(ticket.id)?.add(id);
       related.get(id)?.add(ticket.id);
     }
     if (ticket.duplicateOf && (ticket.duplicateOf === ticket.id || !byId.has(ticket.duplicateOf))) {
+      drop(ticket, "duplicateOf", ticket.duplicateOf, ticket.duplicateOf === ticket.id ? "self" : "missing");
       ticket.duplicateOf = undefined;
     }
     if (ticket.parentId && (ticket.parentId === ticket.id || !byId.has(ticket.parentId))) {
+      drop(ticket, "parentId", ticket.parentId, ticket.parentId === ticket.id ? "self" : "missing");
       ticket.parentId = undefined;
     }
   }
@@ -558,7 +581,11 @@ function reconcileLinks(tickets: Ticket[]): void {
     const seen = new Set<string>([ticket.id]);
     let cursor: Ticket | undefined = byId.get(ticket.parentId);
     while (cursor) {
-      if (seen.has(cursor.id)) { ticket.parentId = undefined; break; }
+      if (seen.has(cursor.id)) {
+        drop(ticket, "parentId", ticket.parentId, "cycle");
+        ticket.parentId = undefined;
+        break;
+      }
       seen.add(cursor.id);
       cursor = cursor.parentId ? byId.get(cursor.parentId) : undefined;
     }
@@ -576,6 +603,8 @@ export interface NormalizeResult {
   document: TicketDocument;
   /** Entries that could not be salvaged, so corruption is reported rather than silently eaten. */
   dropped: number;
+  /** Links the read dropped as self-references, dangling ids or parent cycles. */
+  linkFindings: TicketLinkFinding[];
 }
 
 export function normalizeTicketDocument(value: unknown): NormalizeResult {
@@ -592,7 +621,8 @@ export function normalizeTicketDocument(value: unknown): NormalizeResult {
     seen.add(ticket.id);
     tickets.push(ticket);
   }
-  reconcileLinks(tickets);
+  const linkFindings: TicketLinkFinding[] = [];
+  reconcileLinks(tickets, linkFindings);
   return {
     document: {
       schemaVersion: TICKETS_SCHEMA_VERSION,
@@ -600,6 +630,7 @@ export function normalizeTicketDocument(value: unknown): NormalizeResult {
       tickets,
     },
     dropped,
+    linkFindings,
   };
 }
 

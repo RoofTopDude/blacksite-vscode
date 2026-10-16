@@ -2439,6 +2439,29 @@ export const GRAPH_TOOLS: ToolDefinition[] = [
 ];
 
 /**
+ * The work graph (blacksite.orchestration.workGraph): read-only questions across tickets, plan
+ * steps, code, runs and receipts. Offered only while the setting is on.
+ */
+export const WORK_GRAPH_TOOLS: ToolDefinition[] = [
+  tool(
+    "work_graph",
+    "work.query",
+    "Ask the work graph — tickets, plan steps, the code they touch, and the receipts and runs that are evidence for them — a read-only question. " +
+      "Every relation says whether it was verified (observed by the host), declared (written in a ticket, plan or contract), inferred (by the graph), or missing (its target does not exist), and evidence that later changes overtook is marked stale. " +
+      "ops: trace (one item: affected code, dependencies, dependents, deliverables, evidence, conflicts) · blockers (what it waits on that is not done) · dependencies / dependents (transitive, up to depth) · impact (other work a change to this item or file reaches) · critical_path (longest chain of open work; scope = a plan id or \"tickets\") · conflicts (open work that collides) · findings (cycles, missing references, stale evidence, superseded inputs, links the ticket store repaired). " +
+      "ref is a ticket id (BLK-12), a plan step (planId/phaseId/stepId), a phase (planId/phaseId), a plan id, a receipt id, or a workspace file path.",
+    {
+      op: enumStr("The question.", ["trace", "blockers", "dependencies", "dependents", "impact", "critical_path", "conflicts", "findings"]),
+      ref: str("What to ask about. Required except for critical_path, conflicts and findings."),
+      depth: num("For dependencies/dependents: how many hops (default 3, max 10)."),
+      scope: str("For critical_path: a plan id, or \"tickets\". Omit for all open work."),
+      limit: num("Maximum entries returned per list (default 50, max 200)."),
+    },
+    ["op"],
+  ),
+];
+
+/**
  * The loader for on-demand tools (see src/agent/tool-loading.ts). Advertised only when on-demand
  * loading is on, and with its description replaced per session by one that lists every tool it
  * can load — the static text here is what validation and dispatch see.
@@ -2475,6 +2498,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...PLANNING_TOOLS,
   ...TICKET_TOOLS,
   ...GRAPH_TOOLS,
+  ...WORK_GRAPH_TOOLS,
   ...DIAGNOSTICS_TOOLS,
   ...MEMORY_TOOLS,
   ...DATA_TOOLS,

@@ -96,6 +96,30 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     return this._annotations.dispatch(op, payload, ctx);
   }
 
+  private _fileSet: { source: GraphNode[]; ids: Set<string> } | undefined;
+
+  /** Whether a workspace-relative file is on the map. Synchronous, against the index already built. */
+  hasFile(path: string): boolean {
+    const nodes = this._nodes();
+    if (this._fileSet?.source !== nodes) this._fileSet = { source: nodes, ids: new Set(nodes.map((node) => node.id)) };
+    return this._fileSet.ids.has(path.replace(/\\/g, "/").replace(/^\.\//, ""));
+  }
+
+  /**
+   * Files that import any of these, one hop, from the import layer already indexed. Synchronous and
+   * best-effort: it never schedules a rebuild, so a file indexed since the last pass may be missed.
+   */
+  importDependents(paths: readonly string[]): string[] {
+    const snapshot = this._indexer.snapshot();
+    if (!snapshot || paths.length === 0) return [];
+    const wanted = new Set(paths.map((entry) => entry.replace(/\\/g, "/")));
+    const out = new Set<string>();
+    for (const edge of snapshot.edges) {
+      if (edge.kind === "import" && wanted.has(edge.to) && !wanted.has(edge.from)) out.add(edge.from);
+    }
+    return [...out].sort();
+  }
+
   async syncIndex(): Promise<{ appliedChanges: number }> {
     return { appliedChanges: await this._indexer.flushPending() };
   }

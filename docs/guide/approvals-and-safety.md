@@ -117,6 +117,23 @@ A plan run decides most gates the same way chat does, with four differences, in 
 
 Every operation approved without you is listed in the run's report, with who approved it.
 
+### Work contracts: writes outside a lane's files
+
+With `blacksite.orchestration.workContracts` set to `enforce`, every delegated lane and loop ticket
+runs under a work contract. The contract names the files and folders the lane may change; a ticket's
+come from its territory, and a plan step's from its phase's files. A lane whose source names no
+files may change anything, which is the previous behaviour.
+
+A write outside those files is a gate like any other, with the tier **scope**. It is checked before
+the tool runs, and again for renames, formatting and code actions, where the files an edit touches
+are only known when it is applied. Whoever answers the lane's approvals answers it: you, the
+reviewer in Auto mode, or a loop's unattended reviewer. **Allow all** covers further scope widening
+for the rest of the turn. An approved path stays approved for the rest of that lane. The lane's
+receipt lists every path an approval let it write.
+
+A shell command's targets cannot be known before it runs, so commands keep their usual gates.
+Changes a command makes outside the contract show up afterwards on the receipt.
+
 ---
 
 ## The three lists

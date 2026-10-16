@@ -108,6 +108,11 @@ export class LaneContracts {
     this._newId = _options.newId ?? ((prefix) => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`);
   }
 
+  /** The store contracts and receipts are written to, shared with whoever reads them. */
+  get store(): ReceiptStore {
+    return this._options.store;
+  }
+
   get mode(): WorkContractsMode {
     return this._options.mode();
   }

@@ -44,7 +44,7 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "code_symbols": case "code_navigate": case "code_hierarchy": case "code_hover":
     case "code_rename": case "code_actions": case "code_format": case "code_inlay_hints": return "code";
     case "map_overview": case "map_relationships":
-    case "map_find": case "map_impact": case "map_path": return "code";
+    case "map_find": case "map_impact": case "map_path": case "work_graph": return "code";
     // Notes are map work too — without these they were the only map tools wearing the
     // generic wrench.
     case "map_note_add": case "map_note_update": return "memory";

@@ -90,6 +90,25 @@ Covered fully in [Using the Codebase Map](map-guide.html).
 
 ---
 
+## Work graph
+
+Offered only while `blacksite.orchestration.workGraph` is on.
+
+| Tool | Purpose |
+| --- | --- |
+| `work_graph` | Read-only questions across tickets, plan steps, the code they touch, and the receipts and runs that are evidence for them: `trace`, `blockers`, `dependencies`, `dependents`, `impact`, `critical_path`, `conflicts`, `findings` |
+
+Every relation is marked with where it came from:
+
+- **verified**: observed by the extension, such as a receipt's changed files;
+- **declared**: written in a ticket, plan or contract;
+- **inferred**: worked out by the graph, such as step order or overlapping territory;
+- **missing**: its target no longer exists.
+
+Evidence that later changes have overtaken is marked **stale**. `findings` lists dependency cycles, missing references, stale evidence, inputs a newer receipt replaced, and ticket links the ticket store dropped when reading. Nothing is repaired.
+
+---
+
 ## Planning
 
 | Tool | Purpose |
@@ -205,6 +224,12 @@ runners.
 | --- | --- |
 | `subagent_spawn` | Run independent work in a separate context and return the result |
 | `subagent_followup` | Resume a finished lane with a new message, keeping its context |
+
+With work contracts on (`blacksite.orchestration.workContracts`), `subagent_spawn` takes an optional `contract`. It can narrow what the lane may change and spend, and add deliverables and acceptance criteria. Anything wider than the lane would otherwise get, or any field not in the schema, refuses the spawn. The result then carries a **receipt**:
+
+- what the extension observed the lane change;
+- which checks covered those changes;
+- a status, kept separate from what the lane said about its own work: `verified`, `succeeded_unverified`, `partial`, `blocked`, `failed`, `cancelled` or `abandoned`.
 
 Used for inspection, verification, broad file triage, and evidence gathering — so the parent agent
 preserves its context for orchestration and synthesis. Four built-in profiles: **Frontend UI**,

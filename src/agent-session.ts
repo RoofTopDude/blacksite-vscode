@@ -67,7 +67,7 @@ import {
 } from "@blacksite-agent/llm";
 import type { LocalRuntime, McpServer } from "@blacksite/local-runtime";
 import {
-  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, RESEARCH_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, DIAGRAM_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS, SKILL_TOOLS,
+  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, RESEARCH_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, WORK_GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, DIAGRAM_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS, SKILL_TOOLS,
   resolveToolDispatch,
   validateToolInput,
   describeExpectedToolShape,
@@ -996,6 +996,8 @@ export interface AgentSessionOptions {
    * session records what it changed and checked for the lane's receipt. See src/orchestration.
    */
   workContract?: ActiveWorkContract;
+  /** Backs the read-only work_graph tool ("work.*" runtime types). Absent: the tool is not offered. */
+  workGraphProvider?: { enabled?(): boolean; dispatch(op: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> };
   /** Probe installed toolchains again (workspace_refresh): something may have been installed since. */
   refreshToolchains?: () => Promise<void>;
   /** Backs the db_* tools with the embedded database surface (read-only + classify). */
@@ -2908,6 +2910,8 @@ export class AgentSession {
     // not act on is the same dead end tickets would be without their tools.
     if (this.opts.skillProvider) all.push(...SKILL_TOOLS);
     if (this.opts.graphProvider) all.push(...GRAPH_TOOLS);
+    // The work graph is offered only while its setting is on.
+    if (this.opts.workGraphProvider && (this.opts.workGraphProvider.enabled?.() ?? true)) all.push(...WORK_GRAPH_TOOLS);
     // Follow-up is only advertised when the host can actually resume a lane. Advertising a
     // tool that always fails costs the agent a turn to discover it does nothing.
     if (this.opts.subagentProvider) {
@@ -5195,6 +5199,10 @@ export class AgentSession {
                     { sessionId: this.sessionId, signal: this._signal },
                   );
                 }
+              } else if (runtimeType.startsWith("work.")) {
+                result = this.opts.workGraphProvider
+                  ? await this.opts.workGraphProvider.dispatch(String(payload["op"] ?? ""), payload)
+                  : { ok: false, error: "The work graph is off. Turn on blacksite.orchestration.workGraph to use it." };
               } else if (runtimeType.startsWith("graph.")) {
                 if (!this.opts.graphProvider) {
                   result = { ok: false, error: "The Codebase Map is not available in this context." };

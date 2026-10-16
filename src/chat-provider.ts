@@ -213,6 +213,7 @@ import {
   type ScopeGate,
 } from "./orchestration/active-contract.js";
 import { summarizeReceipt, type ReceiptSummary } from "./orchestration/work-receipt.js";
+import type { WorkGraphService } from "./orchestration/work-graph/service.js";
 import type { LaneEnd } from "./orchestration/work-receipt.js";
 import type { AttachmentKind } from "./chat/attachments.js";
 
@@ -604,6 +605,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private readonly _retainedLanes = new Map<string, RetainedLane>();
   /** Work contracts and receipts for delegated lanes (blacksite.orchestration.workContracts). */
   private _laneContractService: LaneContracts | undefined;
+  private _workGraph: WorkGraphService | undefined;
   private _restoredSessionState: SessionRestoreState | null = null;
   /** MCP configuration, credentials, and tool policy. Shared with the MCP panel so a change
    *  made there is live for the next tool call without a reload. */
@@ -1183,6 +1185,16 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     this._planContinuation = service;
   }
 
+  /** The read-only work graph behind the work_graph tool (blacksite.orchestration.workGraph). */
+  setWorkGraph(service: WorkGraphService): void {
+    this._workGraph = service;
+  }
+
+  /** Where lane contracts and receipts are kept, shared so every reader sees the same index. */
+  receiptStore(): ReceiptStore {
+    return this._laneContracts().store;
+  }
+
   /** Set by the extension once the plan run service and attention center exist. */
   setPlanRuns(service: PlanRunService, attention: AttentionCenter): void {
     this._planRuns = service;
@@ -1611,6 +1623,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       planningProvider: this._runAwarePlanning(),
       ticketProvider: this._tickets,
       graphProvider: this._graphAnnotations,
+      ...(this._workGraph ? { workGraphProvider: this._workGraph } : {}),
       dataProvider: this._buildDataToolProvider(),
       referenceProvider: this._buildReferenceToolProvider(),
       skillProvider: this._buildSkillToolProvider(),
@@ -2917,6 +2930,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         planningProvider: this._planning,
         ticketProvider: this._tickets,
         graphProvider: this._graphAnnotations,
+        ...(this._workGraph ? { workGraphProvider: this._workGraph } : {}),
         referenceProvider,
         transcriptDocumentProvider,
         diagramProvider: this._diagramProvider(),

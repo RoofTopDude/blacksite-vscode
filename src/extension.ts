@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
+import * as fs from "fs";
+import { createHash } from "crypto";
 import { LocalRuntime, closeMcpConnections, setMcpLogger } from "@blacksite/local-runtime";
 import { readCommandPolicy } from "./command-policy.js";
 import { ChatProvider } from "./chat-provider.js";
@@ -42,6 +44,8 @@ import { LoopProvider } from "./loops/loop-view.js";
 import { registerLoopCommands } from "./loops/loop-commands.js";
 import { SubagentLoopDispatcher } from "./loops/loop-dispatcher.js";
 import { registerEvalCommands } from "./eval/eval-commands.js";
+import { WorkGraphService } from "./orchestration/work-graph/service.js";
+import { readOrchestrationFlags } from "./orchestration/flags.js";
 import { TicketStoreLoopGateway } from "./loops/loop-ticket-gateway.js";
 import { LoopToolService } from "./loops/loop-tool-provider.js";
 import { reviewLoopApproval } from "./continuation/approval-review.js";
@@ -713,6 +717,47 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   loopAttention.current = attention;
   const planRunStore = new PlanRunStore(workspaceRoot);
   const planRuns = new PlanRunService(planRunStore, planning, chat.planRunHost(), attention);
+  // ── Work graph (blacksite.orchestration.workGraph) ─────────
+  /* Derived and read-only: built on the first work_graph question, refreshed incrementally when
+     a store changes, never written back. The tool is offered only while the setting is on. */
+  const workGraph = new WorkGraphService({
+    enabled: () => readOrchestrationFlags((key) => vscode.workspace.getConfiguration().get(key)).workGraph,
+    readTickets: () => {
+      const result = tickets.readWithDiagnostics();
+      return { tickets: result.document.tickets, linkFindings: result.linkFindings };
+    },
+    readPlans: () => planning.read().plans,
+    receipts: chat.receiptStore(),
+    ports: {
+      fileExists: (file) => graphGateway.hasFile(file),
+      dependentsOf: (files) => graphGateway.importDependents(files),
+      fingerprint: (file) => {
+        try {
+          const absolute = path.join(workspaceRoot, file);
+          const stat = fs.statSync(absolute);
+          if (!stat.isFile() || stat.size > 2 * 1024 * 1024) return undefined;
+          return createHash("sha256").update(fs.readFileSync(absolute)).digest("hex");
+        } catch {
+          return undefined;
+        }
+      },
+    },
+  });
+  chat.setWorkGraph(workGraph);
+  /* Old receipts and contracts follow the plan-run retention setting. Pruned once, after
+     activation has settled, so a large store never slows start-up. */
+  const receiptPrune = setTimeout(() => {
+    try {
+      const days = vscode.workspace.getConfiguration("blacksite.planRuns").get<number>("retentionDays", 30);
+      chat.receiptStore().prune(Math.max(1, Math.min(365, days)));
+    } catch { /* retention is housekeeping; it never blocks anything */ }
+  }, 60_000);
+  context.subscriptions.push({ dispose: () => clearTimeout(receiptPrune) });
+  context.subscriptions.push(tickets.onDidChange(() => workGraph.markDirty()));
+  context.subscriptions.push(planning.onDidChange(() => workGraph.markDirty()));
+  context.subscriptions.push(chat.receiptStore().onDidPut(() => workGraph.markDirty()));
+  context.subscriptions.push(graphIndexer.onDidChange(() => workGraph.mapChanged()));
+
   // Live orchestration evaluations only (tests/integration/eval): inert unless BLACKSITE_EVAL=1.
   const evalCommands = registerEvalCommands({ workspaceRoot, loops, loopSupervisor, planRuns, secrets: context.secrets });
   if (evalCommands) context.subscriptions.push(evalCommands);
