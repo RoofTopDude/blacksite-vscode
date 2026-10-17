@@ -81,6 +81,9 @@ implementer. All three flags ship at their baselines.
 - A loop given an explicit id list (`queue.ids`) admits tickets in any status, review and done
   included. `matchesQueue` returns early for ids. Such a loop runs a finished ticket again until its
   two attempts are spent.
+  Follow-up on the working branch: `blacksite.orchestration.explicitQueueStatusGuard` excludes
+  review/done/cancelled tickets from explicit queues in both schedulers. It defaults to false;
+  named open tickets still bypass selection filters. This fix is not part of the release above.
 
 ### Verification (2026-10-16)
 

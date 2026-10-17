@@ -84,11 +84,16 @@ describe("getModelPricing", () => {
     expect(getModelPricing("openai", "o3")?.outputPricePerM).toBe(8);
   });
 
-  it("prices known Bedrock cross-region inference-profile models from the fallback table", () => {
-    // Bedrock pricing mirrors Anthropic's own published rates — no separate Bedrock markup.
+  it("prices Bedrock geographic inference profiles at Anthropic's rates plus the 10% regional premium", () => {
     const pricing = getModelPricing("bedrock", "us.anthropic.claude-sonnet-4-5-20250929-v1:0");
-    expect(pricing?.inputPricePerM).toBe(3);
-    expect(pricing?.outputPricePerM).toBe(15);
+    expect(pricing?.inputPricePerM).toBeCloseTo(3.3, 10);
+    expect(pricing?.outputPricePerM).toBeCloseTo(16.5, 10);
+    // The cache columns used to be missing here, so every Converse cache token went unbilled.
+    expect(pricing?.cacheReadPricePerM).toBeCloseTo(0.33, 10);
+    expect(pricing?.cacheWritePricePerM).toBeCloseTo(4.125, 10);
+    // Global profiles carry no premium, and models before 4.5 never had one.
+    expect(getModelPricing("bedrock", "global.anthropic.claude-sonnet-4-5-20250929-v1:0")?.inputPricePerM).toBe(3);
+    expect(getModelPricing("bedrock", "us.anthropic.claude-sonnet-4-20250514-v1:0")?.inputPricePerM).toBe(3);
   });
 
   it("prices Bedrock Mantle model ids (anthropic.claude-*, no dated snapshot)", () => {
@@ -281,25 +286,67 @@ describe("Claude cache pricing", () => {
   });
 });
 
-describe("Claude Sonnet 5 introductory pricing", () => {
-  it("quotes the introductory rate up to the cutover and the standard rate after", () => {
-    // Pinned to both sides of the boundary rather than "whatever today is": a single hardcoded
-    // figure is wrong half the time — 50% over-reported before the cutover, under-reported after.
-    const before = sonnet5Pricing(SONNET_5_INTRO_PRICING_ENDS - 1);
-    expect(before).toMatchObject({ inputPricePerM: 2, outputPricePerM: 10 });
-    expect(before.cacheReadPricePerM).toBeCloseTo(0.2, 10);
-
-    const after = sonnet5Pricing(SONNET_5_INTRO_PRICING_ENDS + 1);
-    expect(after).toMatchObject({ inputPricePerM: 3, outputPricePerM: 15 });
-    expect(after.cacheReadPricePerM).toBeCloseTo(0.3, 10);
+describe("Claude Sonnet 5 pricing", () => {
+  it("stays at $2/$10 after the date the introductory window was due to close", () => {
+    // Anthropic made the introductory rate the standard price; the scheduled rise to $3/$15 on
+    // 2026-09-01 did not happen. Quoting $3/$15 after the cutover over-reported spend by half.
+    for (const at of [SONNET_5_INTRO_PRICING_ENDS - 1, SONNET_5_INTRO_PRICING_ENDS + 1]) {
+      expect(sonnet5Pricing(at)).toEqual({ inputPricePerM: 2, outputPricePerM: 10, cacheReadPricePerM: 0.2, cacheWritePricePerM: 2.5 });
+    }
   });
 
-  it("re-resolves on every getModelPricing call rather than freezing at module load", () => {
-    // The catalog is built once at import; a host process still running when the window closes
-    // would otherwise quote the introductory rate for the rest of its life.
-    for (const [provider, id] of [["anthropic", "claude-sonnet-5"], ["openrouter", "anthropic/claude-sonnet-5"]] as const) {
-      expect(getModelPricing(provider, id), id).toEqual(sonnet5Pricing());
+  it("agrees with getModelPricing on every route", () => {
+    for (const [provider, id] of [["anthropic", "claude-sonnet-5"], ["openrouter", "anthropic/claude-sonnet-5"], ["bedrock", "anthropic.claude-sonnet-5"]] as const) {
+      expect(getModelPricing(provider, id), id).toMatchObject(sonnet5Pricing());
     }
+  });
+});
+
+describe("current-generation Claude pricing", () => {
+  it.each([
+    ["claude-opus-5-5", { inputPricePerM: 4, outputPricePerM: 20, cacheReadPricePerM: 0.2, cacheWritePricePerM: 5 }],
+    ["claude-sonnet-5-5", { inputPricePerM: 2, outputPricePerM: 10, cacheReadPricePerM: 0.1, cacheWritePricePerM: 2.5 }],
+    ["claude-haiku-5-5", { inputPricePerM: 0.1, outputPricePerM: 0.5, cacheReadPricePerM: 0.01, cacheWritePricePerM: 0.125 }],
+    ["claude-fable-5-1", { inputPricePerM: 10, outputPricePerM: 50, cacheReadPricePerM: 0.25, cacheWritePricePerM: 12.5 }],
+    ["claude-mythos-5-1", { inputPricePerM: 10, outputPricePerM: 50, cacheReadPricePerM: 0.25, cacheWritePricePerM: 12.5 }],
+    ["claude-fable-5", { inputPricePerM: 10, outputPricePerM: 50, cacheReadPricePerM: 1, cacheWritePricePerM: 12.5 }],
+    ["claude-opus-4-6", { inputPricePerM: 5, outputPricePerM: 25, cacheReadPricePerM: 0.5, cacheWritePricePerM: 6.25 }],
+  ])("lists %s at its published rates", (id, rates) => {
+    expect(getModelPricing("anthropic", id)).toMatchObject(rates);
+  });
+
+  it("prices every route's spelling of a model the same way", () => {
+    const expected = getModelPricing("anthropic", "claude-opus-5-5");
+    for (const [provider, id] of [
+      ["bedrock", "anthropic.claude-opus-5-5"],
+      ["bedrock", "global.anthropic.claude-opus-5-5"],
+      ["openrouter", "anthropic/claude-opus-5.5"],
+    ] as const) {
+      expect(getModelPricing(provider, id), id).toEqual(expected);
+    }
+  });
+
+  it("never bills a point release at its predecessor's rate", () => {
+    // The prefix fuzzy match used to give claude-opus-5-5 the claude-opus-5 price ($5/$25).
+    expect(getModelPricing("anthropic", "claude-opus-5-5")?.inputPricePerM).toBe(4);
+    // A Claude model this build has never heard of is unknown, not a sibling's price.
+    expect(getModelPricing("anthropic", "claude-opus-6")).toBeUndefined();
+    expect(getModelPricing("bedrock", "us.anthropic.claude-sonnet-7")).toBeUndefined();
+  });
+
+  it("bills Haiku 5.5 at the long-prompt rates once the prompt passes 100K tokens, cache included", () => {
+    const haiku = getModelPricing("anthropic", "claude-haiku-5-5");
+    const short = estimateUsageCostUsd(haiku, { input: 50_000, cacheRead: 50_000, output: 1_000_000 });
+    expect(short?.costUsd).toBeCloseTo(0.05 * 0.1 + 0.05 * 0.01 + 1 * 0.5, 10);
+    // 60K fresh + 50K cached = 110K prompt: every category moves to the higher rates.
+    const long = estimateUsageCostUsd(haiku, { input: 60_000, cacheRead: 50_000, output: 1_000_000 });
+    expect(long?.costUsd).toBeCloseTo(0.06 * 0.5 + 0.05 * 0.05 + 1 * 2.5, 10);
+  });
+
+  it("scales Haiku 5.5's long-prompt cache writes to the 1-hour rate", () => {
+    const haiku = getModelPricing("anthropic", "claude-haiku-5-5");
+    const cost = estimateUsageCostUsd(haiku, { cacheWrite: 1_000_000, cacheTtl: "1h" });
+    expect(cost?.costUsd).toBeCloseTo(1, 10); // $1/MTok, the published 1-hour rate above 100K
   });
 });
 

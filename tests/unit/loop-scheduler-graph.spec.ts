@@ -74,6 +74,13 @@ function inputs(tickets: Ticket[], overrides: Partial<SchedulerInputs> = {}): Sc
 }
 
 describe("graph-aware ready set", () => {
+  it.each(["review", "done", "cancelled"] as const)("releases named %s tickets despite retained attempt state", (status) => {
+    const item = ticket("A", { status });
+    const spec = { ...defaultQueueSpec(), ids: [item.id] };
+    const state = new Map<string, LoopTicketState>([[item.id, { ticketId: item.id, attempts: 1, touchedFiles: [] }]]);
+    expect(computeReadySet(inputs([item], { spec, state })).ready).toHaveLength(1);
+    expect(computeReadySet(inputs([item], { spec, state, explicitQueueStatusGuard: true }))).toEqual({ ready: [], withheld: [], queueSize: 0 });
+  });
   it("never makes ready a ticket with an unmet hard dependency (property, 300 random graphs)", () => {
     let seed = 11;
     const random = () => { seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648; return seed / 2_147_483_648; };

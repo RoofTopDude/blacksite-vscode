@@ -5,7 +5,7 @@
   model that cannot see) want, kept apart from the conversation routes on purpose.
 */
 import { converseBedrock, mantleMessage } from "./bedrock-client.js";
-import type { BedrockCredentials } from "./bedrock-types.js";
+import type { BedrockCredentials, BedrockUsage } from "./bedrock-types.js";
 import { isOpenAIReasoningModel, type OpenAIReasoningEffort } from "./model-limits.js";
 import { PROVIDER_BASE_URLS } from "./transport/request.js";
 import type { ProviderName } from "./types.js";
@@ -14,6 +14,17 @@ export interface TextCompletionImage {
   mediaType: string;
   /** Base64 image bytes. */
   data: string;
+}
+
+/**
+ * Tokens one helper call consumed, split into the four billed categories the same way a turn's
+ * `usage_update` is: `inputTokens` is the uncached remainder, so the four add up to the prompt.
+ */
+export interface CompletionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 }
 
 export interface TextCompletionRequest {
@@ -35,6 +46,67 @@ export interface TextCompletionRequest {
   /** OpenRouter attribution headers. */
   httpReferer?: string;
   xTitle?: string;
+  /**
+   * Called once with what the call consumed, when the provider reported it. These helper calls
+   * are billed like any turn; without this they were invisible to spend tracking.
+   */
+  onUsage?: (usage: CompletionUsage) => void;
+}
+
+const count = (value: unknown): number => {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+};
+
+/** Usage from an Anthropic Messages response (first-party or Bedrock Mantle). */
+export function anthropicCompletionUsage(usage: Record<string, unknown> | undefined): CompletionUsage | undefined {
+  if (!usage) return undefined;
+  return {
+    inputTokens: count(usage["input_tokens"]),
+    outputTokens: count(usage["output_tokens"]),
+    cacheReadTokens: count(usage["cache_read_input_tokens"]),
+    cacheWriteTokens: count(usage["cache_creation_input_tokens"]),
+  };
+}
+
+/** Usage from a Bedrock Converse response. */
+export function converseCompletionUsage(usage: BedrockUsage | undefined): CompletionUsage | undefined {
+  if (!usage) return undefined;
+  return {
+    inputTokens: count(usage.inputTokens),
+    outputTokens: count(usage.outputTokens),
+    cacheReadTokens: count(usage.cacheReadInputTokens),
+    cacheWriteTokens: count(usage.cacheWriteInputTokens),
+  };
+}
+
+/**
+ * Usage from an OpenAI-compatible chat completion. `prompt_tokens` is the total and already
+ * includes cached and newly cached tokens, so they are split out to match the Anthropic shape.
+ */
+export function openAICompletionUsage(usage: Record<string, unknown> | undefined): CompletionUsage | undefined {
+  if (!usage) return undefined;
+  const details = usage["prompt_tokens_details"] as Record<string, unknown> | undefined;
+  const prompt = count(usage["prompt_tokens"]);
+  const cacheRead = Math.min(count(details?.["cached_tokens"] ?? usage["cached_tokens"]), prompt);
+  const cacheWrite = Math.min(count(details?.["cache_write_tokens"] ?? usage["cache_write_tokens"]), prompt - cacheRead);
+  return {
+    inputTokens: Math.max(0, prompt - cacheRead - cacheWrite),
+    outputTokens: count(usage["completion_tokens"]),
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: cacheWrite,
+  };
+}
+
+/** Report usage without letting a faulty observer fail the call that was already paid for. */
+export function reportCompletionUsage(onUsage: ((usage: CompletionUsage) => void) | undefined, usage: CompletionUsage | undefined): void {
+  if (!onUsage || !usage) return;
+  if (usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheWriteTokens === 0) return;
+  try {
+    onUsage(usage);
+  } catch {
+    // Accounting is a side effect of the call, never a reason for it to fail.
+  }
 }
 
 /** Request shape shared by no-tools helpers such as continuation review and plan continuation. */
@@ -94,6 +166,7 @@ export async function completeText(req: TextCompletionRequest, signal?: AbortSig
         maxTokens,
         messages: [{ role: "user", content }],
       }, signal);
+      reportCompletionUsage(req.onUsage, anthropicCompletionUsage(response.usage as Record<string, unknown> | undefined));
       return response.content.find((b) => b.type === "text")?.text?.trim() ?? "";
     }
     const bedrockFormat = (image?.mediaType.split("/")[1] ?? "png") as "png" | "jpeg" | "gif" | "webp";
@@ -109,6 +182,7 @@ export async function completeText(req: TextCompletionRequest, signal?: AbortSig
           : [{ text: userPrompt }],
       }],
     }, signal);
+    reportCompletionUsage(req.onUsage, converseCompletionUsage(response.usage));
     return response.output.message.content
       .filter((block): block is { text: string } => "text" in block)
       .map((block) => block.text)
@@ -147,7 +221,8 @@ export async function completeText(req: TextCompletionRequest, signal?: AbortSig
       const text = await response.text().catch(() => "");
       throw new Error(`Anthropic error ${response.status}: ${text.slice(0, 300)}`);
     }
-    const data = await response.json() as { content?: Array<{ type: string; text?: string }> };
+    const data = await response.json() as { content?: Array<{ type: string; text?: string }>; usage?: Record<string, unknown> };
+    reportCompletionUsage(req.onUsage, anthropicCompletionUsage(data.usage));
     return data.content?.find((block) => block.type === "text")?.text?.trim() ?? "";
   }
 
@@ -181,6 +256,7 @@ export async function completeText(req: TextCompletionRequest, signal?: AbortSig
     const text = await response.text().catch(() => "");
     throw new Error(`${provider} error ${response.status}: ${text.slice(0, 300)}`);
   }
-  const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+  const data = await response.json() as { choices?: Array<{ message?: { content?: string } }>; usage?: Record<string, unknown> };
+  reportCompletionUsage(req.onUsage, openAICompletionUsage(data.usage));
   return data.choices?.[0]?.message?.content?.trim() ?? "";
 }

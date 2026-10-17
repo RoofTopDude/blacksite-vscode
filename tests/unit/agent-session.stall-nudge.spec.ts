@@ -93,7 +93,62 @@ const usage = { inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheWrite
 const readCall = (turnIndex: number): ToolUseBlock => ({ type: "tool_use", id: `read-${turnIndex}`, name: "file_read", input: { path: "index.html" } });
 
 describe("AgentSession — stall nudge", () => {
-  it("nudges only after three identical rounds return no new evidence", async () => {
+  it.each([true, false])("timestamped failing rounds respect normalization flag=%s", async (normalizeToolRounds) => {
+    let calls = 0;
+    const runtime = { handleMessage: vi.fn(async () => ({ result: {
+      ok: false, passed: 0, failed: 1, durationMs: ++calls * 17,
+      verification: { status: "failed", updatedAt: 1_800_000_000_000 + calls },
+    } })) };
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => turnIndex < 4
+      ? { toolCalls: [{ type: "tool_use", id: `test-${turnIndex}`, name: "test_run", input: {} }], stopReason: "tool_use", usage }
+      : { text: "The test is still failing.", stopReason: "end_turn", usage });
+    const { session } = createSession({ runtime: runtime as never, providerTurnSessionFactory: () => scripted, normalizeToolRounds });
+    const events = await collectEvents(session.send("run the tests"));
+    expect(calls).toBe(4);
+    expect(events.some((e) => e.type === "execution_diagnostic" && e.message.includes("identical tool rounds (test_run)"))).toBe(normalizeToolRounds);
+  });
+
+  it("does not nudge when a successful file edit changes state between failing rounds", async () => {
+    let state = "before";
+    let calls = 0;
+    const editProvider = createFakeEditProvider();
+    editProvider.applyEdit = async (input) => {
+      state = "after";
+      return { ok: true, path: input.path, replacements: 1 };
+    };
+    const runtime = { handleMessage: vi.fn(async () => ({ result: {
+      ok: false, passed: 0, failed: 1, durationMs: ++calls * 17,
+      failures: [{ message: `failure ${state}` }], updatedAt: calls,
+    } })) };
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => {
+      if (turnIndex === 2) return { toolCalls: [{ type: "tool_use", id: "edit", name: "file_edit",
+        input: { path: "index.html", oldString: "before", newString: "after" } }], stopReason: "tool_use", usage };
+      if (turnIndex < 5) return { toolCalls: [{ type: "tool_use", id: `test-${turnIndex}`, name: "test_run", input: {} }], stopReason: "tool_use", usage };
+      return { text: "Tests still fail after the edit.", stopReason: "end_turn", usage };
+    });
+    const { session } = createSession({ runtime: runtime as never, editProvider, normalizeToolRounds: true, providerTurnSessionFactory: () => scripted });
+    const events = await collectEvents(session.send("edit and test index.html"));
+    expect(state).toBe("after");
+    expect(calls).toBe(4);
+    expect(events.some((e) => e.type === "execution_diagnostic" && e.message.includes("identical tool rounds"))).toBe(false);
+  });
+
+  it("keeps new failure evidence significant even when every round has timing metadata", async () => {
+    let calls = 0;
+    const runtime = { handleMessage: vi.fn(async () => ({ result: {
+      ok: false, durationMs: ++calls * 17, updatedAt: calls,
+      failures: [{ message: `different failure ${calls}` }],
+    } })) };
+    const scripted = new ScriptedProviderSession(({ turnIndex }) => turnIndex < 4
+      ? { toolCalls: [{ type: "tool_use", id: `test-${turnIndex}`, name: "test_run", input: {} }], stopReason: "tool_use", usage }
+      : { text: "New evidence each time.", stopReason: "end_turn", usage });
+    const { session } = createSession({ runtime: runtime as never, providerTurnSessionFactory: () => scripted, normalizeToolRounds: true });
+    const events = await collectEvents(session.send("run tests"));
+    expect(calls).toBe(4);
+    expect(events.some((e) => e.type === "execution_diagnostic" && e.message.includes("identical tool rounds"))).toBe(false);
+  });
+
+  it.each([true, false])("nudges only after three identical rounds return no new evidence (normalize=%s)", async (normalizeToolRounds) => {
     const turnFactory: ScriptedTurnFactory = ({ turnIndex }) => {
       if (turnIndex < 3) return { toolCalls: [readCall(turnIndex)], stopReason: "tool_use", usage };
       if (turnIndex === 6) {
@@ -108,7 +163,7 @@ describe("AgentSession — stall nudge", () => {
     };
 
     const scripted = new ScriptedProviderSession(turnFactory);
-    const { session } = createSession({ providerTurnSessionFactory: () => scripted });
+    const { session } = createSession({ providerTurnSessionFactory: () => scripted, normalizeToolRounds });
 
     const events = await collectEvents(session.send("read index.html and figure out what to change"));
 

@@ -7,7 +7,7 @@ import type { BedrockThinkingConfig } from "./bedrock-types.js";
 import type { ProviderName } from "./types.js";
 import {
   acceptsSamplingParams,
-  canDisableThinking,
+  thinkingOffShape,
   CLAUDE_EFFORT_LADDER,
   maxEffortWithThinkingDisabled,
   needsSummarizedDisplay,
@@ -46,6 +46,9 @@ export type ResolvedThinking =
   /** `thinking: {type: "disabled"}` — the explicit off switch. Required on Sonnet 5, where an
    *  absent field runs adaptive anyway. */
   | { kind: "disabled" }
+  /** `thinking: {type: "between_tools"}` and nothing else — Sonnet 5.5's off switch, which rejects
+   *  `disabled`. Thinks only between tool calls, at effort `high` or below. */
+  | { kind: "between_tools" }
   /** `thinking: {type: "adaptive", display?}`. Depth comes from {@link ThinkingPlan.effort}. */
   | { kind: "adaptive"; summarize: boolean }
   /** `thinking: {type: "enabled", budget_tokens: N}` — Claude 3.7 through 4.5. */
@@ -117,15 +120,17 @@ export function planThinking(input: ThinkingPlanInput): ThinkingPlan {
 
   if (!wantsThinking) {
     // "Off" is not the same as "unset": on Sonnet 5 an absent `thinking` field still runs
-    // adaptive, so off has to be stated. Fable/Mythos are the exception — they cannot be turned
-    // off and reject `{type: "disabled"}`, so there the only legal shape is to omit the field.
-    const disabled = mode === "adaptive" && canDisableThinking(model);
-    const thinking: ResolvedThinking = disabled ? { kind: "disabled" } : { kind: "omit" };
-    // Opus 5 rejects disabled thinking above `high` effort — neither field is invalid alone, so
-    // the conflict can only be resolved once both are known. Clamping the rung honours the
-    // user's explicit "thinking off" (the setting they actually reached for) instead of quietly
-    // switching thinking back on, and beats 400ing every turn on a legal-looking request.
-    const cap = disabled ? maxEffortWithThinkingDisabled(model) : null;
+    // adaptive, so off has to be stated. Fable/Mythos and Opus 5.5 cannot be turned off and
+    // reject `{type: "disabled"}`, so there the only legal shape is to omit the field; Sonnet 5.5
+    // spells off as `between_tools`.
+    const shape = thinkingOffShape(model);
+    const thinking: ResolvedThinking = { kind: shape };
+    // Opus 5, Haiku 5.5 and Sonnet 5.5 reject their off switch above `high` effort — neither field
+    // is invalid alone, so the conflict can only be resolved once both are known. Clamping the
+    // rung honours the user's explicit "thinking off" (the setting they actually reached for)
+    // instead of quietly switching thinking back on, and beats 400ing every turn on a
+    // legal-looking request.
+    const cap = shape !== "omit" ? maxEffortWithThinkingDisabled(model) : null;
     const cappedEffort = cap && effort && CLAUDE_EFFORT_LADDER.indexOf(effort) > CLAUDE_EFFORT_LADDER.indexOf(cap)
       ? cap
       : effort;
@@ -176,6 +181,7 @@ export function toBedrockThinking(thinking: ResolvedThinking): BedrockThinkingCo
   switch (thinking.kind) {
     case "omit":     return undefined;
     case "disabled": return { type: "disabled" };
+    case "between_tools": return { type: "between_tools" };
     case "budget":   return { type: "enabled", budget_tokens: thinking.budgetTokens };
     case "adaptive": return thinking.summarize
       ? { type: "adaptive", display: "summarized" }
@@ -189,6 +195,9 @@ export function applyAnthropicThinking(body: Record<string, unknown>, plan: Thin
       break;
     case "disabled":
       body["thinking"] = { type: "disabled" };
+      break;
+    case "between_tools":
+      body["thinking"] = { type: "between_tools" };
       break;
     case "budget":
       body["thinking"] = { type: "enabled", budget_tokens: plan.thinking.budgetTokens };

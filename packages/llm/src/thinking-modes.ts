@@ -191,17 +191,41 @@ export function resolveEffort(
 }
 
 /**
- * Whether thinking can be switched off at all.
+ * How "thinking off" is spelled for this model.
  *
- * Fable/Mythos think unconditionally: `{type: "disabled"}` is a 400 there, and omitting the
- * parameter still thinks. Every other model can be turned off — but note that *omitting* the
- * parameter is not a reliable "off" switch either: on Sonnet 5 an absent `thinking` field runs
- * adaptive, while on Opus 4.8/4.7 it runs without thinking. So "off" must be sent explicitly as
- * `{type: "disabled"}` rather than expressed by leaving the field out.
+ *  - `"disabled"`: `thinking: {type: "disabled"}`. Opus 4.6 – 5, Sonnet 4.6 and 5, Haiku 5.5.
+ *  - `"between_tools"`: `thinking: {type: "between_tools"}`, with no other thinking field. Sonnet
+ *    5.5 rejects `disabled` with a 400 and takes this instead, at effort `high` or below.
+ *  - `"omit"`: there is no off switch. Fable/Mythos think unconditionally, and Opus 5.5 rejects
+ *    `disabled` at every effort level, so effort is the only lever. Budget-era and non-Claude
+ *    models also land here, where leaving the field out is what "off" means.
+ *
+ * Omitting the parameter is not a reliable "off" on the adaptive models that can be switched off:
+ * on Sonnet 5 an absent `thinking` field runs adaptive, while on Opus 4.8/4.7 it runs without
+ * thinking. So "off" is sent explicitly whenever the model has a way to say it.
+ *
+ * Threshold-shaped like the rest of this module: a later Opus inherits 5.5's rule and a later
+ * Sonnet inherits `between_tools`, which is the direction Anthropic has been moving.
+ */
+export function thinkingOffShape(modelId: string | null | undefined): "disabled" | "between_tools" | "omit" {
+  const v = parseClaudeVersion(modelId);
+  if (!v || resolveThinkingMode(modelId) !== "adaptive") return "omit";
+  if (v.family === "fable" || v.family === "mythos") return "omit";
+  if (v.family === "opus" && atLeast(v, 5, 5)) return "omit";
+  if (v.family === "sonnet" && atLeast(v, 5, 5)) return "between_tools";
+  return "disabled";
+}
+
+/**
+ * Whether thinking can be switched off at all. False for Fable/Mythos and Opus 5.5, which think on
+ * every request. True for Sonnet 5.5, whose off switch is `between_tools` rather than `disabled`
+ * (see {@link thinkingOffShape}).
  */
 export function canDisableThinking(modelId: string | null | undefined): boolean {
   const v = parseClaudeVersion(modelId);
-  return !(v?.family === "fable" || v?.family === "mythos");
+  if (v?.family === "fable" || v?.family === "mythos") return false;
+  if (!v || resolveThinkingMode(modelId) !== "adaptive") return true;
+  return thinkingOffShape(modelId) !== "omit";
 }
 
 /**
@@ -243,14 +267,18 @@ export function supportsFastMode(modelId: string | null | undefined): boolean {
  * though earlier turns succeeded. Nothing in the request is invalid on its own; it is the
  * *combination* that is rejected, which is why this can't live in {@link supportedEfforts}.
  *
- * Threshold-shaped like the rest of this module: a future Opus inherits the cap rather than
- * silently 400ing on it. Deliberately not applied to Sonnet 5 — Anthropic documents the cap for
- * Opus only, and over-applying it would quietly shallow out a rung the model does accept.
+ * The same cap applies to Haiku 5.5's `disabled` and to Sonnet 5.5's `between_tools` (its off
+ * switch). Threshold-shaped like the rest of this module: a future Opus, Haiku or Sonnet inherits
+ * the cap rather than silently 400ing on it. Deliberately not applied to Sonnet 5, which Anthropic
+ * documents without it; over-applying it would quietly shallow out a rung the model does accept.
  */
 export function maxEffortWithThinkingDisabled(modelId: string | null | undefined): ClaudeEffort | null {
   const v = parseClaudeVersion(modelId);
-  if (!v || v.family !== "opus") return null;
-  return v.major >= 5 ? "high" : null;
+  if (!v) return null;
+  if (v.family === "opus" && v.major >= 5) return "high";
+  if (v.family === "haiku" && v.major >= 5) return "high";
+  if (v.family === "sonnet" && atLeast(v, 5, 5)) return "high";
+  return null;
 }
 
 /**
@@ -258,28 +286,32 @@ export function maxEffortWithThinkingDisabled(modelId: string | null | undefined
  * "refusal"` on an HTTP 200), and for which Anthropic recommends a default-on server-side
  * refusal fallback.
  *
- * Covers Fable 5 / Mythos 5 *and* Opus 5, which ships the same elevated cybersecurity
- * safeguards. Benign adjacent work — security tooling, life-sciences tasks — trips them as a
- * false positive often enough that Anthropic's guidance is to opt in by default; without a
- * fallback the turn simply stops with empty content.
+ * Covers Fable/Mythos, Opus 5 and later (elevated cybersecurity safeguards, `bio` added at 5.5),
+ * and Sonnet 5.5, which accepts only the `"default"` form this module sends. Benign adjacent work
+ * — security tooling, life-sciences tasks — trips them as a false positive often enough that
+ * Anthropic's guidance is to opt in by default; without a fallback the turn simply stops with
+ * empty content. Haiku 5.5 is left out: it has safeguards but no server-side fallback, so sending
+ * the parameter would only fail the request.
  */
 export function recommendsRefusalFallback(modelId: string | null | undefined): boolean {
   const v = parseClaudeVersion(modelId);
   if (!v) return false;
   if (v.family === "fable" || v.family === "mythos") return true;
+  if (v.family === "sonnet") return atLeast(v, 5, 5);
   return v.family === "opus" && v.major >= 5;
 }
 
 /**
- * Fable 5 / Mythos 5 / Sonnet 5 / Opus 4.8 / Opus 4.7 — the models documented to accept
- * `output_config.task_budget` (beta task-budgets-2026-03-13). Not available on Amazon
- * Bedrock/Vertex/Foundry — callers restrict it to the first-party Anthropic path.
+ * The models documented to accept `output_config.task_budget` (beta task-budgets-2026-03-13):
+ * Fable/Mythos, Opus 4.7 and later, Sonnet 5.5 and Haiku 5.5. Sonnet 5 is the exception in its
+ * line: it rejects the field. Not available on Amazon Bedrock/Vertex/Foundry — callers restrict
+ * it to the first-party Anthropic path.
  */
 export function supportsTaskBudget(modelId: string | null | undefined): boolean {
   const v = parseClaudeVersion(modelId);
   if (!v) return false;
   if (v.family === "fable" || v.family === "mythos") return true;
-  if (v.family === "sonnet") return v.major >= 5;
+  if (v.family === "sonnet" || v.family === "haiku") return atLeast(v, 5, 5);
   if (v.family === "opus") return atLeast(v, 4, 7);
   return false;
 }

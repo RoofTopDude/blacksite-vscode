@@ -53,6 +53,9 @@ import { createSignalPorts, signalNoteMarker } from "./orchestration/signals/por
 import { TicketStoreLoopGateway } from "./loops/loop-ticket-gateway.js";
 import { LoopToolService } from "./loops/loop-tool-provider.js";
 import { reviewLoopApproval } from "./continuation/approval-review.js";
+import { DEFAULT_STRATEGIC_POLICY } from "./continuation/strategic-verdict.js";
+import { receiptStillCurrent, verifyWork } from "./orchestration/verification-service.js";
+import { ExchangeHost } from "./orchestration/artifact-exchange/host.js";
 import { PlanRecoveryService, describeRecovery } from "./plans/plan-recovery-service.js";
 import { PlanContinuationService } from "./plans/plan-continuation-service.js";
 import { PlanRunService } from "./plans/plan-run-service.js";
@@ -606,6 +609,15 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   // Local binding: the module-level `chatProvider` is nullable by declaration, and a loop
   // dispatching hours from now must not re-check that on every lane.
   const chat = chatProvider;
+  /* The artifact exchange (#17): lanes leave handoffs by reference, later lanes read them. Every
+     call checks blacksite.orchestration.artifactExchange; off, nothing is read or written. */
+  const exchange = new ExchangeHost({
+    workspaceRoot,
+    enabled: () => readOrchestrationFlags((key) => vscode.workspace.getConfiguration().get(key)).artifactExchange,
+    receipt: (id) => chat.receiptStore().getReceipt(id),
+    ticket: (id) => tickets.read().tickets.find((ticket) => ticket.id === id),
+  });
+  chat.setExchangeHost(exchange);
   const loopViewRef: { current: LoopProvider | undefined } = { current: undefined };
   /** The attention center is created with the plan run service, further down. */
   const loopAttention: { current: AttentionCenter | undefined } = { current: undefined };
@@ -675,21 +687,60 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     {
       /* How each pass schedules (blacksite.orchestration.scheduler, #15). Legacy unless the work
          graph is on; the receipt lookup serves a loop's opt-in `verified_review` dependencies. */
+      explicitQueueStatusGuard: () => readOrchestrationFlags((key) => vscode.workspace.getConfiguration().get(key)).explicitQueueStatusGuard,
+      /* The verification lane (#18): judges a lane's receipt before its ticket reaches review.
+         Off by default; it never closes a ticket. */
+      verification: () => {
+        const flags = readOrchestrationFlags((key) => vscode.workspace.getConfiguration().get(key));
+        if (flags.verificationLane === "off") return undefined;
+        return {
+          mode: flags.verificationLane,
+          verify: async ({ ticket, result }) => {
+            if (!result.receipt) return undefined;
+            const verdict = await verifyWork({
+              workspaceRoot,
+              receipt: (id) => chat.receiptStore().getReceipt(id),
+              ...(flags.verificationReviewer ? { reviewer: () => chat.createContinuationModel() } : {}),
+            }, {
+              taskId: ticket.id,
+              acceptanceCriteria: ticket.acceptanceCriteria,
+              implementerSessionId: result.laneId ?? result.subRequestId ?? "lane",
+              receiptId: result.receipt.id,
+              reviewRequired: flags.verificationReviewer,
+            });
+            // The verdict as a handoff later lanes can rely on (#17), pinned to the receipt it judged.
+            const judged = chat.receiptStore().getReceipt(result.receipt.id);
+            if (judged) exchange.recordVerification(verdict, judged);
+            return verdict;
+          },
+        };
+      },
       scheduling: () => {
         const flags = readOrchestrationFlags((key) => vscode.workspace.getConfiguration().get(key));
-        const latest = new Map<string, { status: string; at: string }>();
+        const latest = new Map<string, { id: string; status: string; at: string }>();
         for (const entry of chat.receiptStore().index()) {
           const ticketId = entry.subject.ticketId;
           if (!ticketId) continue;
           const seen = latest.get(ticketId);
-          if (!seen || entry.createdAt > seen.at) latest.set(ticketId, { status: entry.status, at: entry.createdAt });
+          if (!seen || entry.createdAt > seen.at) latest.set(ticketId, { id: entry.id, status: entry.status, at: entry.createdAt });
         }
-        const latestReceipt = (ticketId: string) => latest.get(ticketId)?.status;
+        // #21: a verification counts only while its evidence still describes the files. Once other
+        // work rewrites what was verified, tickets waiting on it wait again. Hashed once per pass.
+        const current = new Map<string, boolean>();
+        const latestReceipt = (ticketId: string) => {
+          const entry = latest.get(ticketId);
+          if (!entry || entry.status !== "verified" || !flags.integrationGate) return entry?.status;
+          if (!current.has(entry.id)) {
+            const receipt = chat.receiptStore().getReceipt(entry.id);
+            current.set(entry.id, receipt ? receiptStillCurrent(workspaceRoot, receipt) : false);
+          }
+          return current.get(entry.id) ? "verified" : "verified_stale";
+        };
         const graphService = workGraphRef.current;
         if (!flags.workGraph || flags.scheduler === "legacy" || !graphService) return { mode: "legacy", latestReceipt };
         const held = new Map<string, string>();
         for (const [file, holder] of chat.claimRegistry().held()) held.set(file, holder.ticketId ? `${holder.ticketId}'s lane` : holder.label);
-        return { mode: flags.scheduler, graph: schedulingGraphFrom(graphService.graph()), held, latestReceipt };
+        return { mode: flags.scheduler, graph: schedulingGraphFrom(graphService.graph(), { inputs: flags.integrationGate }), held, latestReceipt };
       },
     },
   );
@@ -848,6 +899,7 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
       const days = vscode.workspace.getConfiguration("blacksite.planRuns").get<number>("retentionDays", 30);
       chat.receiptStore().prune(Math.max(1, Math.min(365, days)));
       signalJournal.prune(Math.max(1, Math.min(365, days)), Date.now());
+      exchange.store.prune(Math.max(1, Math.min(365, days)));
     } catch { /* retention is housekeeping; it never blocks anything */ }
   }, 60_000);
   context.subscriptions.push({ dispose: () => clearTimeout(receiptPrune) });
@@ -880,6 +932,11 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
       trace: (message) => chat.reportPlanContinuation("trace", message),
     },
     planRuns.conductorContext(),
+    // Strategic proposals (#16). Off by default: the legacy conductor answers every trigger.
+    () => ({
+      ...DEFAULT_STRATEGIC_POLICY,
+      enabled: readOrchestrationFlags((key) => vscode.workspace.getConfiguration().get(key)).strategicConductor,
+    }),
   );
   chat.setPlanContinuation(planContinuation);
   chat.setPlanRuns(planRuns, attention);

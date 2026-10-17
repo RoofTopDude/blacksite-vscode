@@ -3,7 +3,11 @@ import { converseBedrock, mantleMessage } from "./bedrock-client.js";
 import type { BedrockCredentials, BedrockThinkingConfig } from "./bedrock-types.js";
 import { HttpError, parseRetryAfter, retryAsync } from "./provider-retry.js";
 import { isOpenAIReasoningModel, shallowestReasoningEffort } from "./model-limits.js";
-import { canDisableThinking, resolveEffort, resolveThinkingMode } from "./thinking-modes.js";
+import { resolveEffort, thinkingOffShape } from "./thinking-modes.js";
+import {
+  anthropicCompletionUsage, converseCompletionUsage, openAICompletionUsage, reportCompletionUsage,
+  type CompletionUsage,
+} from "./complete-text.js";
 
 /**
  * Compaction is a background, best-effort call (a failure degrades to "session continues at
@@ -24,6 +28,12 @@ export interface CompressorOptions {
   bedrock?: BedrockCredentials;
   /** Selects Bedrock API path: "converse" (default) or "mantle" (Messages API). */
   bedrockApi?: "converse" | "mantle";
+  /**
+   * Called once per summarization request with what it consumed. Compaction reads the whole
+   * transcript, so on a long session it is one of the larger calls a session makes; it is billed
+   * like any other and must count toward spend. A split summary reports each part.
+   */
+  onUsage?: (usage: CompletionUsage) => void;
 }
 
 interface StoredMessage {
@@ -169,13 +179,13 @@ const COMPACTION_EFFORT = "low" as const;
  * The `thinking` object that turns Claude's reasoning off, or undefined when the field must be
  * omitted instead. Mirrors `planThinking`'s off-branch in agent-session, for the same reasons:
  * on Sonnet 5 an absent `thinking` field still runs adaptive, so off has to be stated — while
- * budget-era models (3.7–4.5) are already off when it is absent, and Fable/Mythos think
- * unconditionally and take a 400 on `{type: "disabled"}`.
+ * budget-era models (3.7–4.5) are already off when it is absent, Fable/Mythos and Opus 5.5 think
+ * unconditionally and take a 400 on `{type: "disabled"}`, and Sonnet 5.5 spells off as
+ * `between_tools`.
  */
 function claudeThinkingOff(model: string): BedrockThinkingConfig | undefined {
-  return resolveThinkingMode(model) === "adaptive" && canDisableThinking(model)
-    ? { type: "disabled" }
-    : undefined;
+  const shape = thinkingOffShape(model);
+  return shape === "omit" ? undefined : { type: shape };
 }
 
 /**
@@ -249,7 +259,9 @@ async function callAnthropic(opts: CompressorOptions, transcript: string, signal
     const text = await response.text().catch(() => "");
     throw new HttpError(response.status, `Compression API error ${response.status}: ${text.slice(0, 300)}`, parseRetryAfter(response.headers.get("retry-after")));
   }
-  const data = await response.json() as { content?: Array<{ type: string; text?: string }>; stop_reason?: string };
+  const data = await response.json() as { content?: Array<{ type: string; text?: string }>; stop_reason?: string; usage?: Record<string, unknown> };
+  // Billed even when the summary turns out unusable, so it is reported before validation.
+  reportCompletionUsage(opts.onUsage, anthropicCompletionUsage(data.usage));
   return validateSummary(data.content?.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n") ?? "", data.stop_reason);
 }
 
@@ -305,7 +317,8 @@ async function callOpenAI(opts: CompressorOptions, transcript: string, signal: A
       throw new HttpError(response.status, `Compression API error ${response.status}: ${text.slice(0, 300)}`, parseRetryAfter(response.headers.get("retry-after")));
     }
   }
-  const data = await response.json() as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }>; error?: { message?: string; code?: number } };
+  const data = await response.json() as { choices?: Array<{ message?: { content?: string }; finish_reason?: string }>; error?: { message?: string; code?: number }; usage?: Record<string, unknown> };
+  reportCompletionUsage(opts.onUsage, openAICompletionUsage(data.usage));
   if (data.error) {
     throw new HttpError(data.error.code ?? 500, `Compression API error: ${data.error.message?.slice(0, 300) ?? "Unknown provider error"}`);
   }
@@ -326,6 +339,7 @@ async function callBedrock(opts: CompressorOptions, transcript: string, signal: 
       effort: claudeEffortOff(opts.model),
       messages: [{ role: "user", content: `Compress the following conversation transcript:\n\n${transcript}` }],
     }, signal);
+    reportCompletionUsage(opts.onUsage, anthropicCompletionUsage(response.usage as Record<string, unknown> | undefined));
     return validateSummary(response.content.filter((b) => b.type === "text").map((b) => b.text ?? "").join("\n"), response.stop_reason);
   }
 
@@ -338,6 +352,7 @@ async function callBedrock(opts: CompressorOptions, transcript: string, signal: 
     effort: claudeEffortOff(opts.model),
     messages: [{ role: "user", content: [{ text: `Compress the following conversation transcript:\n\n${transcript}` }] }],
   }, signal);
+  reportCompletionUsage(opts.onUsage, converseCompletionUsage(response.usage));
   return validateSummary(response.output.message.content
     .filter((block): block is { text: string } => "text" in block)
     .map((block) => block.text)

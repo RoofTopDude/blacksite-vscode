@@ -104,6 +104,16 @@ export interface WorkReceipt {
     elapsedMs: number;
     budgetHit?: "rounds" | "runtime" | "idle" | "usd";
   };
+  /**
+   * What the false-progress monitor saw over the lane (#20), when it was on: how many check runs
+   * and edits there were, and any signal it raised. A handoff fact, never a status input.
+   */
+  progress?: {
+    rounds: number;
+    checks: number;
+    edits: number;
+    signals: Array<{ kind: string; detail: string }>;
+  };
   blocked?: { gate: string; detail: string; whatWouldUnblock?: string };
   failure?: { kind: ReceiptFailureKind; detail: string };
   /** The lane's own words. Recorded for the reader; never used to decide anything. */
@@ -275,11 +285,13 @@ export interface BuildReceiptInput {
   facts: ReceiptFacts;
   evidence?: ReceiptEvidence[];
   usage: WorkReceipt["usage"];
+  progress?: WorkReceipt["progress"];
   answer?: string;
   createdAt: string;
 }
 
 const MAX_FILES = 200;
+const MAX_PROGRESS_SIGNALS = 12;
 const MAX_EXCERPT = 600;
 
 export function buildReceipt(input: BuildReceiptInput): WorkReceipt {
@@ -308,6 +320,14 @@ export function buildReceipt(input: BuildReceiptInput): WorkReceipt {
     evidence: [...input.facts.checks.slice(-20), ...(input.evidence ?? [])],
     verification: derived.verification,
     usage: input.usage,
+    ...(input.progress ? {
+      progress: {
+        rounds: input.progress.rounds,
+        checks: input.progress.checks,
+        edits: input.progress.edits,
+        signals: input.progress.signals.slice(0, MAX_PROGRESS_SIGNALS).map((signal) => ({ kind: signal.kind, detail: signal.detail.slice(0, 300) })),
+      },
+    } : {}),
     ...(input.facts.gate ? { blocked: input.facts.gate } : {}),
     ...(derived.failure ? { failure: derived.failure } : {}),
     selfReport: { answerExcerpt: (input.answer ?? "").slice(0, MAX_EXCERPT) },

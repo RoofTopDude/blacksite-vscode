@@ -303,6 +303,8 @@ function normalizeIterations(value: unknown, loopId: string): LoopIteration[] {
       ...(text(raw.contractId, 120) ? { contractId: text(raw.contractId, 120) } : {}),
       ...(text(raw.receiptId, 120) ? { receiptId: text(raw.receiptId, 120) } : {}),
       ...(text(raw.receiptStatus, 40) ? { receiptStatus: text(raw.receiptStatus, 40) } : {}),
+      ...(text(raw.verificationVerdict, 40) ? { verificationVerdict: text(raw.verificationVerdict, 40) } : {}),
+      ...(Array.isArray(raw.verificationReasons) && raw.verificationReasons.length ? { verificationReasons: stringList(raw.verificationReasons, 8) } : {}),
       ...(Array.isArray(raw.scheduledBecause) && raw.scheduledBecause.length ? { scheduledBecause: stringList(raw.scheduledBecause, 12) } : {}),
     });
   }

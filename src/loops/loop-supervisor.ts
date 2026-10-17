@@ -31,6 +31,7 @@ import type { LoopStore } from "./loop-store.js";
 import type { SchedulerMode } from "../orchestration/flags.js";
 import type { Ticket } from "../ticket-store.js";
 import { describeReceiptSummary, type ReceiptSummary } from "../orchestration/work-receipt.js";
+import type { VerificationResult } from "../orchestration/verification-lane.js";
 
 export interface LoopDispatchRequest {
   loopId: string;
@@ -82,6 +83,19 @@ export interface LoopDispatchResult {
   parkedSubRequestId?: string;
   /** What the host observed, when the lane ran under a work contract. */
   receipt?: ReceiptSummary;
+  /** The verification lane's verdict on that receipt (#18), when verification is on. */
+  verification?: Pick<VerificationResult, "verdict" | "reasons">;
+}
+
+/**
+ * The verification lane (#18), read fresh before each lane settles. `observe` records the verdict
+ * on the iteration and changes nothing else. `enforce` lets it decide: rework goes back for
+ * another attempt, a block parks the ticket for a person, and anything short of verified reaches
+ * review labelled as such. A ticket is never closed by it.
+ */
+export interface LoopVerification {
+  mode: "observe" | "enforce";
+  verify(input: { loopId: string; ticket: Ticket; result: LoopDispatchResult }): Promise<VerificationResult | undefined>;
 }
 
 export interface LoopDispatcher {
@@ -135,7 +149,11 @@ export interface LoopSchedulingContext {
 }
 
 export interface LoopSupervisorOptions {
+  /** Read independently of the graph so graph failures do not disable the status guard. */
+  explicitQueueStatusGuard?: () => boolean;
   scheduling?: (record: LoopRecord) => LoopSchedulingContext;
+  /** #18. Undefined, or returning undefined, means the lane's result stands as it is. */
+  verification?: () => LoopVerification | undefined;
 }
 
 /** Past lanes needed before their median spend is trusted to hold a ticket back. */
@@ -389,6 +407,7 @@ export class LoopSupervisor {
     }
     const state = new Map(record.ticketState.map((entry) => [entry.ticketId, entry] as const));
     const base = {
+      explicitQueueStatusGuard: this._options.explicitQueueStatusGuard?.() === true,
       tickets: this._tickets.tickets(),
       spec: record.definition.queue,
       state,
@@ -544,6 +563,7 @@ export class LoopSupervisor {
       }
 
       result = this._resultFromReceipt(result);
+      if (!controllers.lanes.signal.aborted) result = await this._applyVerification(loopId, ticket, result);
       // The spend is in the result now, and counted in the totals once it is recorded.
       this._liveUsd.get(loopId)?.delete(ticket.id);
       this._record(loopId, ticket, result, startedAt, opened?.seq, controllers.lanes.signal.aborted && !result.ok && !result.parkedOnGate);
@@ -586,6 +606,48 @@ export class LoopSupervisor {
     }
   }
 
+  /**
+   * Put the verification lane's verdict on a settled lane (#18). Only work that ran under a
+   * contract has a receipt to verify; a park or a lane that never produced one is left alone. A
+   * verifier that fails is reported on the iteration and decides nothing.
+   */
+  private async _applyVerification(loopId: string, ticket: Ticket, result: LoopDispatchResult): Promise<LoopDispatchResult> {
+    if (!result.receipt || result.parkedOnGate) return result;
+    let verification: LoopVerification | undefined;
+    try {
+      verification = this._options.verification?.();
+    } catch {
+      verification = undefined;
+    }
+    if (!verification) return result;
+    let verdict: VerificationResult | undefined;
+    try {
+      verdict = await verification.verify({ loopId, ticket, result });
+    } catch (error) {
+      this._hooks.onError?.(loopId, error);
+      return result;
+    }
+    if (!verdict) return result;
+    const recorded = { ...result, verification: { verdict: verdict.verdict, reasons: verdict.reasons } };
+    if (verification.mode !== "enforce") return recorded;
+
+    const line = describeVerification(verdict);
+    const detail = `${line}\n\n${result.detail}`.trim();
+    switch (verdict.verdict) {
+      case "verified":
+        return { ...recorded, detail };
+      case "rework_required":
+        // Back for another attempt, informed by why: the attempt budget still bounds it.
+        return { ...recorded, ok: false, detail };
+      case "blocked":
+        return { ...recorded, ok: false, detail, parkedOnGate: "verification", ...(result.subRequestId ? { parkedSubRequestId: result.subRequestId } : {}) };
+      default:
+        // Insufficient evidence: another attempt would not add criteria or a missing check. It
+        // reaches review, and the note says plainly that it was not verified.
+        return { ...recorded, detail };
+    }
+  }
+
   /** The last thing that happened to this ticket, so a retry starts from it. */
   private _priorAttemptDetail(record: LoopRecord, ticketId: string): string {
     for (let index = record.iterations.length - 1; index >= 0; index -= 1) {
@@ -618,6 +680,7 @@ export class LoopSupervisor {
       endedAt: new Date(this._now()).toISOString(),
       ...(result.usd != null ? { usd: result.usd } : {}),
       ...(result.receipt ? { receiptId: result.receipt.id, receiptStatus: result.receipt.status, contractId: result.receipt.contractId } : {}),
+      ...(result.verification ? { verificationVerdict: result.verification.verdict, verificationReasons: result.verification.reasons.slice(0, 8) } : {}),
     };
 
     if (openedSeq != null) {
@@ -655,7 +718,9 @@ export class LoopSupervisor {
     if (result.parkedOnGate) {
       this._tickets.blockTicket?.(
         ticket.id,
-        `Automated continuation review blocked an approval (${result.parkedOnGate}). ${result.detail}`.trim(),
+        result.parkedOnGate === "verification"
+          ? `The verification lane blocked this ticket. ${result.detail}`.trim()
+          : `Automated continuation review blocked an approval (${result.parkedOnGate}). ${result.detail}`.trim(),
       );
       const record = this._store.get(loopId);
       try { this._hooks.onParked?.(loopId, record?.definition.title ?? loopId, ticket.id, result.parkedOnGate); } catch { /* best effort */ }
@@ -713,4 +778,18 @@ export class LoopSupervisor {
     }
     return "";
   }
+}
+
+const VERDICT_TEXT: Record<VerificationResult["verdict"], string> = {
+  verified: "Verified by the verification lane",
+  rework_required: "Verification sent this back for rework",
+  insufficient_evidence: "Not verified: the evidence is insufficient",
+  blocked: "Verification is blocked",
+};
+
+/** One line for the ticket note: the verdict, the decisive reason, and the receipt it judged. */
+function describeVerification(result: VerificationResult): string {
+  const reason = result.reasons[0] ? ` (${result.reasons[0].replace(/_/g, " ")})` : "";
+  const receipt = result.evidence.receiptId ? ` [receipt ${result.evidence.receiptId}]` : "";
+  return `${VERDICT_TEXT[result.verdict]}${reason}.${receipt}`;
 }

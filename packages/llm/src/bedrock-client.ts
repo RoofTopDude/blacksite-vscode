@@ -242,7 +242,7 @@ export interface MantleMessageOptions {
 export interface MantleMessageResponse {
   content: Array<{ type: string; text?: string }>;
   stop_reason: string;
-  usage: { input_tokens: number; output_tokens: number };
+  usage: { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
 }
 
 /** One-shot non-streaming POST to the Bedrock Mantle (Messages) API. Throws on non-OK. */

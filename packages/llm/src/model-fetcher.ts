@@ -1,6 +1,6 @@
 import type { ProviderName } from "./types.js";
 import { resolveContextWindow, resolveOutputCeiling } from "./model-limits.js";
-import { stripBedrockProfilePrefix, supportsThinking } from "./thinking-modes.js";
+import { parseClaudeVersion, stripBedrockProfilePrefix, supportsThinking } from "./thinking-modes.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -21,6 +21,17 @@ export interface ModelInfo {
       input. Populated from OpenRouter's live pricing and from the pinned OpenAI table; 0 on
       OpenAI models older than GPT-5.6, which write to cache for free. */
   cacheWritePricePerM?: number;
+  /**
+   * Rates that apply to the whole request once its prompt (input + cache reads + cache writes)
+   * exceeds `aboveInputTokens`. Haiku 5.5 is priced this way; most models are not.
+   */
+  longContextPricing?: {
+    aboveInputTokens: number;
+    inputPricePerM?: number;
+    outputPricePerM?: number;
+    cacheReadPricePerM?: number;
+    cacheWritePricePerM?: number;
+  };
   supportsThinking?: boolean;
   supportsVision?: boolean;
   /** The provider catalog reports that this model accepts audio input directly. */
@@ -43,7 +54,7 @@ export interface ModelInfo {
 }
 
 /** The subset of ModelInfo cost-tracking actually needs. */
-export type ModelPricing = Pick<ModelInfo, "inputPricePerM" | "outputPricePerM" | "cacheReadPricePerM" | "cacheWritePricePerM">;
+export type ModelPricing = Pick<ModelInfo, "inputPricePerM" | "outputPricePerM" | "cacheReadPricePerM" | "cacheWritePricePerM" | "longContextPricing">;
 
 /**
  * Reduce a model id to its comparable core: strip a provider/prefix path (OpenRouter's
@@ -65,19 +76,167 @@ export function normalizeModelIdForFallbackLookup(modelId: string): string {
 }
 
 /** True when two model ids plausibly name the same model once normalized — exact match first,
- *  then a normalized-id match, then a prefix match on the normalized form (so "claude-opus-4-8"
- *  matches a hypothetical "claude-opus-4-8-preview" and vice versa). */
+ *  then a normalized-id match, then a prefix match on the normalized form (so "gpt-5.1" matches
+ *  a "gpt-5.1-preview" and vice versa).
+ *
+ *  The prefix never continues into a version number: "claude-opus-5-5" is not "claude-opus-5",
+ *  and "gpt-5.6-sol" is not "gpt-5". Allowing that priced every point release at its
+ *  predecessor's rate, which for Opus 5.5 overstated spend by a quarter. */
 function modelIdFallbackMatches(candidateId: string, targetId: string): boolean {
   if (candidateId === targetId) return true;
   const a = normalizeModelIdForFallbackLookup(candidateId);
   const b = normalizeModelIdForFallbackLookup(targetId);
-  return a === b || a.startsWith(b) || b.startsWith(a);
+  if (a === b) return true;
+  const [longer, shorter] = a.length >= b.length ? [a, b] : [b, a];
+  return longer.startsWith(shorter) && !/^[-.]\d/.test(longer.slice(shorter.length));
+}
+
+// ── Claude pricing ─────────────────────────────────────────────────────────────
+
+/** Per-MTok USD rates for one Claude model, as Anthropic's pricing page lists them. */
+interface ClaudeRates {
+  input: number;
+  output: number;
+  /** Cache hits. 0.1x input on most models, but 0.025x on Fable 5.1 / Mythos 5.1 and 0.05x on
+   *  Opus 5.5 / Sonnet 5.5, so it is listed per model rather than derived. */
+  cacheRead: number;
+  /** 5-minute cache writes (1.25x input). The 1-hour rate is 2x input; `estimateUsageCostUsd`
+   *  scales to it from the session's TTL, since the TTL is a per-request choice. */
+  cacheWrite: number;
+}
+
+interface ClaudePriceEntry extends ClaudeRates {
+  /** Rates for a request whose prompt (input + cache reads + cache writes) exceeds `aboveTokens`.
+   *  The whole request is billed at them. Only Haiku 5.5 is priced by prompt length. */
+  longContext?: ClaudeRates & { aboveTokens: number };
+}
+
+const OPUS_STANDARD: ClaudeRates = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
+const OPUS_LEGACY: ClaudeRates = { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 };
+const SONNET_STANDARD: ClaudeRates = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
+const FABLE_5: ClaudeRates = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 };
+const FABLE_5_1: ClaudeRates = { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 };
+
+/**
+ * First-party list prices, keyed by canonical model id (see {@link canonicalClaudeModelId}). Every
+ * route prices Claude from this one table: the Anthropic API, Bedrock (Mantle and Converse),
+ * OpenRouter's offline fallback and Vertex. Before, each route had its own copy, and a model added
+ * to one was unpriced on the others.
+ *
+ * Bedrock and Vertex bill through AWS and Google, which may differ. These are the published
+ * Anthropic rates, used as the estimate. Bedrock's regional premium is applied by
+ * {@link bedrockEndpointMultiplier}.
+ */
+const CLAUDE_PRICES: Readonly<Record<string, ClaudePriceEntry>> = {
+  "claude-fable-5-1": FABLE_5_1,
+  "claude-mythos-5-1": FABLE_5_1,
+  "claude-fable-5": FABLE_5,
+  "claude-mythos-5": FABLE_5,
+  "claude-opus-5-5": { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+  "claude-opus-5": OPUS_STANDARD,
+  "claude-opus-4-8": OPUS_STANDARD,
+  "claude-opus-4-7": OPUS_STANDARD,
+  "claude-opus-4-6": OPUS_STANDARD,
+  "claude-opus-4-5": OPUS_STANDARD,
+  "claude-opus-4-1": OPUS_LEGACY,
+  "claude-opus-4": OPUS_LEGACY,
+  "claude-sonnet-5-5": { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
+  // $2/$10 was announced as introductory through 2026-08-31; Anthropic made it the standard price.
+  "claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  "claude-sonnet-4-6": SONNET_STANDARD,
+  "claude-sonnet-4-5": SONNET_STANDARD,
+  "claude-sonnet-4": SONNET_STANDARD,
+  "claude-3-7-sonnet": SONNET_STANDARD,
+  "claude-3-5-sonnet": SONNET_STANDARD,
+  "claude-haiku-5-5": {
+    input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125,
+    longContext: { aboveTokens: 100_000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 },
+  },
+  "claude-haiku-4-5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+  "claude-3-5-haiku": { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
+};
+
+/** Spellings that name the same model as a table key. */
+const CLAUDE_ID_ALIASES: Readonly<Record<string, string>> = {
+  "claude-opus-4-0": "claude-opus-4",
+  "claude-sonnet-4-0": "claude-sonnet-4",
+};
+
+/**
+ * Any route's spelling of a Claude model id, reduced to the first-party id: Bedrock profile and
+ * provider prefixes, `-v1:0` and dated snapshots, Vertex's `@date`, OpenRouter's `anthropic/`
+ * path and dotted versions (`claude-opus-4.8`). Undefined for anything that is not Claude, and
+ * for an ARN that does not name its model.
+ */
+export function canonicalClaudeModelId(modelId: string): string | undefined {
+  let id = normalizeModelIdForFallbackLookup(modelId.replace(/@[^/]*$/, ""));
+  id = id.replace(/(\d)\.(\d)/g, "$1-$2");
+  if (!id.startsWith("claude-")) return undefined;
+  return CLAUDE_ID_ALIASES[id] ?? id;
+}
+
+/** Bedrock geographic cross-Region inference profiles. `global.` profiles carry no premium. */
+const BEDROCK_GEO_PROFILE = /^(?:us|eu|apac|jp|au)\./i;
+
+/** Bedrock's premium for regional and geographic endpoints over global ones, Claude 4.5 and later. */
+export const BEDROCK_REGIONAL_PREMIUM = 1.1;
+
+/**
+ * The multiplier Bedrock applies to a Claude model's rates for the endpoint the id names. A
+ * geographic profile (`us.`, `eu.`, `apac.`, `jp.`, `au.`) on Claude 4.5 or later costs 10% more
+ * than global routing. Everything else is 1: `global.` profiles, older models, and bare ids,
+ * whose routing (a Mantle endpoint or an in-region model) the id alone does not reveal.
+ */
+export function bedrockEndpointMultiplier(modelId: string): number {
+  if (!BEDROCK_GEO_PROFILE.test(modelId.trim())) return 1;
+  const v = parseClaudeVersion(modelId);
+  if (!v) return 1;
+  const premiumGeneration = v.family === "fable" || v.family === "mythos" || v.major >= 5 || (v.major === 4 && v.minor >= 5);
+  return premiumGeneration ? BEDROCK_REGIONAL_PREMIUM : 1;
+}
+
+function scaledRates(rates: ClaudeRates, scale: number): Pick<ModelInfo, "inputPricePerM" | "outputPricePerM" | "cacheReadPricePerM" | "cacheWritePricePerM"> {
+  return {
+    inputPricePerM: rates.input * scale,
+    outputPricePerM: rates.output * scale,
+    cacheReadPricePerM: rates.cacheRead * scale,
+    cacheWritePricePerM: rates.cacheWrite * scale,
+  };
+}
+
+/**
+ * Published pricing for a Claude model on a route, or undefined when the id is not a Claude model
+ * this build has a price for. Never borrows a sibling's price: an unknown point release is
+ * reported as unknown rather than billed at its predecessor's rate.
+ */
+export function getClaudeModelPricing(modelId: string, provider?: ProviderName): ModelPricing | undefined {
+  const canonical = canonicalClaudeModelId(modelId);
+  const entry = canonical ? CLAUDE_PRICES[canonical] : undefined;
+  if (!entry) return undefined;
+  const scale = provider === "bedrock" ? bedrockEndpointMultiplier(modelId) : 1;
+  return {
+    ...scaledRates(entry, scale),
+    ...(entry.longContext
+      ? { longContextPricing: { aboveInputTokens: entry.longContext.aboveTokens, ...scaledRates(entry.longContext, scale) } }
+      : {}),
+  };
+}
+
+/** Price columns for a static table row, from the same table. */
+function claudeListPrice(modelId: string, provider?: ProviderName): ModelPricing {
+  const pricing = getClaudeModelPricing(modelId, provider);
+  if (!pricing) throw new Error(`No Claude price listed for ${modelId}`);
+  return pricing;
 }
 
 // ── Bedrock Mantle (Messages API) static model list ────────────────────────────
 // Mantle has no listing API; these are the documented model IDs.
 export { BEDROCK_MANTLE_DEFAULT_MODEL } from "./bedrock-config.js";
 const BEDROCK_MANTLE_MODEL_CATALOG: ModelInfo[] = [
+  { id: "anthropic.claude-opus-5-5",  name: "Claude Opus 5.5 (Mantle)",  contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+  { id: "anthropic.claude-fable-5-1", name: "Claude Fable 5.1 (Mantle)", contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+  { id: "anthropic.claude-sonnet-5-5", name: "Claude Sonnet 5.5 (Mantle)", contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+  { id: "anthropic.claude-haiku-5-5", name: "Claude Haiku 5.5 (Mantle)", contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
   { id: "anthropic.claude-opus-5",    name: "Claude Opus 5 (Mantle)",    contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
   { id: "anthropic.claude-fable-5",   name: "Claude Fable 5 (Mantle)",   contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
   { id: "anthropic.claude-opus-4-8",  name: "Claude Opus 4.8 (Mantle)",  contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
@@ -87,46 +246,35 @@ const BEDROCK_MANTLE_MODEL_CATALOG: ModelInfo[] = [
 ];
 export const BEDROCK_MANTLE_MODELS: ModelInfo[] = BEDROCK_MANTLE_MODEL_CATALOG.map((model) => ({
   ...model,
+  ...claudeListPrice(model.id, "bedrock"),
   maxOutputTokens: resolveOutputCeiling(model.id, "bedrock") ?? undefined,
 }));
 
 // ── Hardcoded fallbacks ────────────────────────────────────────────────────────
 //
 /**
- * Anthropic's cache rates, derived from a model's input rate rather than published per model:
- * a cache read is 0.1x input, and a cache write is 1.25x for the default 5-minute breakpoint
- * TTL (2x for the 1-hour TTL — {@link estimateUsageCostUsd} scales for that from the session's
- * setting, since the TTL is a per-request choice rather than a model property).
+ * Anthropic's usual cache ratios: a cache read is 0.1x input, and a cache write is 1.25x for the
+ * default 5-minute breakpoint TTL and 2x for the 1-hour TTL. {@link estimateUsageCostUsd} scales a
+ * listed 5-minute write rate to the 1-hour one from the session's setting, since the TTL is a
+ * per-request choice rather than a model property.
  *
- * Deriving beats a hand-maintained column: the ratios have held across every Claude generation,
- * so a model added to the tables below gets correct cache pricing from its input rate alone.
- * Before this existed the columns were simply absent, and `estimateUsageCostUsd` drops any
- * category it cannot price — so on the Anthropic path, which places cache breakpoints on
- * purpose and therefore serves most of its prompt from cache, reported spend was a fraction of
- * the real invoice and flagged only by a quiet `partial`.
+ * The read ratio is no longer universal (Fable 5.1, Opus 5.5 and Sonnet 5.5 charge less), so the
+ * Claude price table lists cache reads per model instead of deriving them from this constant.
  */
 export const CLAUDE_CACHE_READ_RATIO = 0.1;
 export const CLAUDE_CACHE_WRITE_RATIO_5M = 1.25;
 export const CLAUDE_CACHE_WRITE_RATIO_1H = 2;
 
-function claudeCachePricing(inputPricePerM: number): Pick<ModelInfo, "cacheReadPricePerM" | "cacheWritePricePerM"> {
-  return {
-    cacheReadPricePerM: inputPricePerM * CLAUDE_CACHE_READ_RATIO,
-    cacheWritePricePerM: inputPricePerM * CLAUDE_CACHE_WRITE_RATIO_5M,
-  };
-}
-
-/** Claude Sonnet 5 runs at introductory pricing of $2/$10 per MTok through 2026-08-31, reverting
- *  to $3/$15 after. Quoting one figure year-round is wrong half the time — before the cutover it
- *  over-reports by 50%, after it under-reports — so the rate is resolved against the clock.
- *  Exported for tests, which pin both sides of the boundary rather than whichever one today
- *  happens to fall on. */
+/**
+ * @deprecated Sonnet 5's $2/$10 rate, announced as introductory through this date, is now its
+ * standard price; the scheduled rise to $3/$15 did not happen. Kept for callers of the old API.
+ */
 export const SONNET_5_INTRO_PRICING_ENDS = Date.UTC(2026, 7, 31, 23, 59, 59); // 2026-08-31T23:59:59Z
 
-export function sonnet5Pricing(now: number = Date.now()): Pick<ModelInfo, "inputPricePerM" | "outputPricePerM" | "cacheReadPricePerM" | "cacheWritePricePerM"> {
-  const introductory = now <= SONNET_5_INTRO_PRICING_ENDS;
-  const inputPricePerM = introductory ? 2 : 3;
-  return { inputPricePerM, outputPricePerM: introductory ? 10 : 15, ...claudeCachePricing(inputPricePerM) };
+/** Claude Sonnet 5's price. The argument is ignored: the rate no longer changes with the date. */
+export function sonnet5Pricing(_now: number = Date.now()): Pick<ModelInfo, "inputPricePerM" | "outputPricePerM" | "cacheReadPricePerM" | "cacheWritePricePerM"> {
+  const { inputPricePerM, outputPricePerM, cacheReadPricePerM, cacheWritePricePerM } = claudeListPrice("claude-sonnet-5");
+  return { inputPricePerM, outputPricePerM, cacheReadPricePerM, cacheWritePricePerM };
 }
 
 // Context windows must agree with resolveClaudeLimits (model-limits.ts) — this table is consulted
@@ -135,30 +283,34 @@ export function sonnet5Pricing(now: number = Date.now()): Pick<ModelInfo, "input
 // capacity and long runs shed history they had ample room for.
 
 const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
-  // `...claudeCachePricing(input)` fills in the cache read/write rates, which Anthropic derives
-  // from the input rate rather than publishing per model. Omitting them made every Anthropic
-  // session under-report its spend — see the helper's doc comment.
+  // Prices come from CLAUDE_PRICES, the one table every route reads, so a row here can never
+  // disagree with what a session on another route is billed.
   anthropic: [
-    { id: "claude-opus-5",                name: "Claude Opus 5",         contextLength: 1_000_000, maxOutputTokens: 128_000, inputPricePerM: 5,  outputPricePerM: 25, ...claudeCachePricing(5),  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "claude-opus-4-8",              name: "Claude Opus 4.8",       contextLength: 1_000_000, inputPricePerM: 5,  outputPricePerM: 25,  ...claudeCachePricing(5),  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "claude-opus-4-7",              name: "Claude Opus 4.7",       contextLength: 1_000_000, inputPricePerM: 5,  outputPricePerM: 25,  ...claudeCachePricing(5),  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "claude-sonnet-5",              name: "Claude Sonnet 5",       contextLength: 1_000_000, ...sonnet5Pricing(),                                                supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "claude-sonnet-4-6",            name: "Claude Sonnet 4.6",     contextLength: 1_000_000, inputPricePerM: 3,  outputPricePerM: 15,  ...claudeCachePricing(3),  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "claude-fable-5",               name: "Claude Fable 5",        contextLength: 1_000_000, inputPricePerM: 10, outputPricePerM: 50,  ...claudeCachePricing(10), supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    // Project Glasswing only — same specs and pricing as Fable 5. Listed so a session that does
-    // have access resolves real limits and cost instead of "unknown".
-    { id: "claude-mythos-5",              name: "Claude Mythos 5",       contextLength: 1_000_000, maxOutputTokens: 128_000, inputPricePerM: 10, outputPricePerM: 50, ...claudeCachePricing(10), supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "claude-haiku-4-5",             name: "Claude Haiku 4.5",      contextLength: 200_000,   inputPricePerM: 1,  outputPricePerM: 5,    ...claudeCachePricing(1),  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "claude-3-7-sonnet-20250219",   name: "Claude 3.7 Sonnet",     contextLength: 200_000,   inputPricePerM: 3,  outputPricePerM: 15,   ...claudeCachePricing(3),  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-opus-5-5",              name: "Claude Opus 5.5",       contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-opus-5-5"),   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-sonnet-5-5",            name: "Claude Sonnet 5.5",     contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-sonnet-5-5"), supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-haiku-5-5",             name: "Claude Haiku 5.5",      contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-haiku-5-5"),  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-fable-5-1",             name: "Claude Fable 5.1",      contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-fable-5-1"),  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-opus-5",                name: "Claude Opus 5",         contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-opus-5"),     supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-opus-4-8",              name: "Claude Opus 4.8",       contextLength: 1_000_000, ...claudeListPrice("claude-opus-4-8"),   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-opus-4-7",              name: "Claude Opus 4.7",       contextLength: 1_000_000, ...claudeListPrice("claude-opus-4-7"),   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-opus-4-6",              name: "Claude Opus 4.6",       contextLength: 1_000_000, ...claudeListPrice("claude-opus-4-6"),   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-sonnet-5",              name: "Claude Sonnet 5",       contextLength: 1_000_000, ...claudeListPrice("claude-sonnet-5"),   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-sonnet-4-6",            name: "Claude Sonnet 4.6",     contextLength: 1_000_000, ...claudeListPrice("claude-sonnet-4-6"), supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-fable-5",               name: "Claude Fable 5",        contextLength: 1_000_000, ...claudeListPrice("claude-fable-5"),    supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    // Project Glasswing only — same specs and pricing as the Fable release they mirror. Listed so
+    // a session that does have access resolves real limits and cost instead of "unknown".
+    { id: "claude-mythos-5-1",            name: "Claude Mythos 5.1",     contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-mythos-5-1"), supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-mythos-5",              name: "Claude Mythos 5",       contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-mythos-5"),   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-haiku-4-5",             name: "Claude Haiku 4.5",      contextLength: 200_000,   ...claudeListPrice("claude-haiku-4-5"),  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
   ],
   // Offline seed only — the live /models fetch supersedes this and carries OpenRouter's own
   // per-model cache pricing. Kept current anyway: it is what the picker shows before the first
   // successful fetch, and what pricing falls back to if the catalog can't be reached.
   openrouter: [
-    { id: "anthropic/claude-opus-5",      name: "Claude Opus 5 (OR)",     contextLength: 1_000_000, inputPricePerM: 5, outputPricePerM: 25,   ...claudeCachePricing(5), supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "anthropic/claude-opus-4.8",    name: "Claude Opus 4.8 (OR)",   contextLength: 1_000_000, inputPricePerM: 5, outputPricePerM: 25,   ...claudeCachePricing(5), supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "anthropic/claude-sonnet-5",    name: "Claude Sonnet 5 (OR)",   contextLength: 1_000_000, ...sonnet5Pricing(),                                                supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "anthropic/claude-sonnet-4.6",  name: "Claude Sonnet 4.6 (OR)", contextLength: 1_000_000, inputPricePerM: 3, outputPricePerM: 15,   ...claudeCachePricing(3), supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "anthropic/claude-opus-5",      name: "Claude Opus 5 (OR)",     contextLength: 1_000_000, ...claudeListPrice("claude-opus-5"),     supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "anthropic/claude-opus-4.8",    name: "Claude Opus 4.8 (OR)",   contextLength: 1_000_000, ...claudeListPrice("claude-opus-4-8"),   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "anthropic/claude-sonnet-5",    name: "Claude Sonnet 5 (OR)",   contextLength: 1_000_000, ...claudeListPrice("claude-sonnet-5"),   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "anthropic/claude-sonnet-4.6",  name: "Claude Sonnet 4.6 (OR)", contextLength: 1_000_000, ...claudeListPrice("claude-sonnet-4-6"), supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "openai/gpt-5.6-sol",          name: "GPT-5.6 Sol (OR)",       contextLength: 1_050_000, inputPricePerM: 5,    outputPricePerM: 30, cacheReadPricePerM: 0.50,  cacheWritePricePerM: 6.25, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "openai/gpt-5.6-terra",        name: "GPT-5.6 Terra (OR)",     contextLength: 1_050_000, inputPricePerM: 2,    outputPricePerM: 12, cacheReadPricePerM: 0.20,  cacheWritePricePerM: 2.50, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "openai/gpt-5.1",              name: "GPT-5.1 (OR)",           contextLength: 400000, inputPricePerM: 1.25, outputPricePerM: 10,   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
@@ -191,38 +343,25 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
   // version suffix isn't derivable, so they're surfaced via live listing rather
   // than a guessed ID that would 404. Add them here verbatim if you pin specific
   // IDs from the live picker / AWS console.
-  // Pricing below mirrors Anthropic's own published per-model rates — Bedrock doesn't apply a
-  // separate markup for Claude. Bedrock publishes no pricing API at all (unlike context length,
-  // which AWS does return per inference profile), so this is the best available source; treat it
-  // as a display estimate and reconcile against the AWS Bedrock pricing page if it drifts.
+  // Pricing mirrors Anthropic's published per-model rates, with Bedrock's 10% premium for the
+  // geographic (`us.`) profiles below on Claude 4.5 and later. Bedrock publishes no pricing API
+  // (unlike context length, which AWS returns per inference profile), so treat these as a display
+  // estimate and reconcile against the AWS Bedrock pricing page if they drift. These rows used to
+  // carry no cache rates at all, so every cache read and write on Converse went unbilled.
   bedrock: [
     // Current-generation profiles carry no dated/-v1:0 suffix. `us.` rather than `global.` keeps
     // the default inside US/Canada regions, matching the geography the previous default used.
-    { id: "us.anthropic.claude-sonnet-5",                 name: "Claude Sonnet 5 (Bedrock)",   contextLength: 1_000_000, ...sonnet5Pricing(), supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "us.anthropic.claude-opus-4-5-20251101-v1:0",  name: "Claude Opus 4.5 (Bedrock)",   contextLength: 200000, inputPricePerM: 5,   outputPricePerM: 25, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", name: "Claude Sonnet 4.5 (Bedrock)", contextLength: 200000, inputPricePerM: 3,   outputPricePerM: 15, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "us.anthropic.claude-haiku-4-5-20251001-v1:0",  name: "Claude Haiku 4.5 (Bedrock)",  contextLength: 200000, inputPricePerM: 1,   outputPricePerM: 5,  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "us.anthropic.claude-opus-4-1-20250805-v1:0",   name: "Claude Opus 4.1 (Bedrock)",   contextLength: 200000, inputPricePerM: 15,  outputPricePerM: 75, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "us.anthropic.claude-opus-4-20250514-v1:0",     name: "Claude Opus 4 (Bedrock)",     contextLength: 200000, inputPricePerM: 15,  outputPricePerM: 75, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "us.anthropic.claude-sonnet-4-20250514-v1:0",   name: "Claude Sonnet 4 (Bedrock)",   contextLength: 200000, inputPricePerM: 3,   outputPricePerM: 15, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "us.anthropic.claude-3-7-sonnet-20250219-v1:0", name: "Claude 3.7 Sonnet (Bedrock)", contextLength: 200000, inputPricePerM: 3,   outputPricePerM: 15, supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "us.anthropic.claude-3-5-sonnet-20241022-v2:0", name: "Claude 3.5 Sonnet (Bedrock)", contextLength: 200000, inputPricePerM: 3,   outputPricePerM: 15, supportsThinking: false, supportsVision: true, supportsTools: true, source: "fallback" },
-    { id: "us.anthropic.claude-3-5-haiku-20241022-v1:0",  name: "Claude 3.5 Haiku (Bedrock)",  contextLength: 200000, inputPricePerM: 0.8, outputPricePerM: 4,  supportsThinking: false, supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-sonnet-5",                 name: "Claude Sonnet 5 (Bedrock)",   contextLength: 1_000_000, ...claudeListPrice("us.anthropic.claude-sonnet-5", "bedrock"), supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-opus-4-5-20251101-v1:0",  name: "Claude Opus 4.5 (Bedrock)",   contextLength: 200000, ...claudeListPrice("us.anthropic.claude-opus-4-5-20251101-v1:0", "bedrock"),  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0", name: "Claude Sonnet 4.5 (Bedrock)", contextLength: 200000, ...claudeListPrice("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "bedrock"), supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-haiku-4-5-20251001-v1:0",  name: "Claude Haiku 4.5 (Bedrock)",  contextLength: 200000, ...claudeListPrice("us.anthropic.claude-haiku-4-5-20251001-v1:0", "bedrock"),  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-opus-4-1-20250805-v1:0",   name: "Claude Opus 4.1 (Bedrock)",   contextLength: 200000, ...claudeListPrice("us.anthropic.claude-opus-4-1-20250805-v1:0", "bedrock"),   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-opus-4-20250514-v1:0",     name: "Claude Opus 4 (Bedrock)",     contextLength: 200000, ...claudeListPrice("us.anthropic.claude-opus-4-20250514-v1:0", "bedrock"),     supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-sonnet-4-20250514-v1:0",   name: "Claude Sonnet 4 (Bedrock)",   contextLength: 200000, ...claudeListPrice("us.anthropic.claude-sonnet-4-20250514-v1:0", "bedrock"),   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-3-7-sonnet-20250219-v1:0", name: "Claude 3.7 Sonnet (Bedrock)", contextLength: 200000, ...claudeListPrice("us.anthropic.claude-3-7-sonnet-20250219-v1:0", "bedrock"), supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-3-5-sonnet-20241022-v2:0", name: "Claude 3.5 Sonnet (Bedrock)", contextLength: 200000, ...claudeListPrice("us.anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock"), supportsThinking: false, supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "us.anthropic.claude-3-5-haiku-20241022-v1:0",  name: "Claude 3.5 Haiku (Bedrock)",  contextLength: 200000, ...claudeListPrice("us.anthropic.claude-3-5-haiku-20241022-v1:0", "bedrock"),  supportsThinking: false, supportsVision: true, supportsTools: true, source: "fallback" },
   ],
-};
-
-// Bedrock Mantle model ids (anthropic.claude-*, no dated snapshot) — same per-model pricing as
-// the first-party Anthropic API, since Mantle speaks the Messages API wire format verbatim.
-// Cache rates are derived from the input rate the same way (claudeCachePricing) rather than
-// listed, so a model added here can't pick up prices with the cache columns missing.
-const BEDROCK_MANTLE_PRICING: Record<string, { inp: number; out: number }> = {
-  "anthropic.claude-opus-5":    { inp: 5,  out: 25 },
-  "anthropic.claude-fable-5":   { inp: 10, out: 50 },
-  "anthropic.claude-mythos-5":  { inp: 10, out: 50 },
-  "anthropic.claude-opus-4-8":  { inp: 5,  out: 25 },
-  "anthropic.claude-opus-4-7":  { inp: 5,  out: 25 },
-  "anthropic.claude-sonnet-5":  { inp: 3,  out: 15 },
-  "anthropic.claude-haiku-4-5": { inp: 1,  out: 5  },
 };
 
 // ── HTTP helper ────────────────────────────────────────────────────────────────
@@ -389,9 +528,12 @@ export interface RawOpenRouterModelEntry {
 /** Map one live catalog row. OpenRouter exposes its output cap as
  *  `top_provider.max_completion_tokens`; family metadata is only the offline fallback. */
 export function mapOpenRouterModelEntry(m: RawOpenRouterModelEntry): ModelInfo {
+  // A "0" price is free, not unknown, so a free route bills $0 instead of marking the session's
+  // spend partial. Negative values ("-1") are OpenRouter's "variable", which is unknown. Rounded to
+  // the micro-dollar: two decimals turned Haiku-class rates such as $0.125 into $0.13.
   const perM = (perToken: string | undefined): number | undefined => {
-    const usd = perToken ? parseFloat(perToken) * 1_000_000 : undefined;
-    return usd ? Math.round(usd * 100) / 100 : undefined;
+    const usd = perToken ? parseFloat(perToken) * 1_000_000 : NaN;
+    return Number.isFinite(usd) && usd >= 0 ? Math.round(usd * 1_000_000) / 1_000_000 : undefined;
   };
   const modalities = Array.isArray(m.architecture?.input_modalities) ? m.architecture.input_modalities : undefined;
   const params = Array.isArray(m.supported_parameters) ? m.supported_parameters : undefined;
@@ -556,10 +698,9 @@ export function getMaxOutputTokens(provider: ProviderName, modelId: string): num
     back to this when nothing better is available — this mirrors getContextLength's own
     fallback-table-first strategy. */
 export function getModelPricing(provider: ProviderName, modelId: string): ModelPricing | undefined {
-  // Resolved per call rather than read off the table: the table is built once at module load,
-  // and a host process still running when the introductory window closes would keep quoting the
-  // old rate for the rest of its life.
-  if (normalizeModelIdForFallbackLookup(modelId) === "claude-sonnet-5") return sonnet5Pricing();
+  // Claude is priced from one table on every route that serves it. A Claude id the table does not
+  // list is unknown, never billed at a sibling's rate by the fuzzy match below.
+  if (provider !== "openai" && canonicalClaudeModelId(modelId)) return getClaudeModelPricing(modelId, provider);
 
   const fallback = FALLBACK_MODELS[provider]?.find((m) => m.id === modelId);
   if (fallback?.inputPricePerM != null || fallback?.outputPricePerM != null) return fallback;
@@ -574,13 +715,6 @@ export function getModelPricing(provider: ProviderName, modelId: string): ModelP
         cacheWritePricePerM: meta.cacheWrite,
       };
     }
-  }
-
-  // Bedrock Mantle model ids (anthropic.claude-*, no dated snapshot) — same per-model rates as
-  // the first-party Anthropic API.
-  if (provider === "bedrock") {
-    const mantle = BEDROCK_MANTLE_PRICING[modelId];
-    if (mantle) return { inputPricePerM: mantle.inp, outputPricePerM: mantle.out, ...claudeCachePricing(mantle.inp) };
   }
 
   // Last resort: a dated-snapshot or provider-prefixed id (a new Bedrock inference-profile date
@@ -650,6 +784,11 @@ export interface UsageCostEstimate {
     all, so callers can distinguish "$0 spent" from "cost unknown". */
 export function estimateUsageCostUsd(pricing: ModelPricing | undefined, tokens: UsageTokens): UsageCostEstimate | undefined {
   if (!pricing || (pricing.inputPricePerM == null && pricing.outputPricePerM == null)) return undefined;
+  // A prompt-length tier (Haiku 5.5 above 100K tokens) prices the whole request, cached tokens
+  // included, and the prompt it is measured on counts them too.
+  const promptTokens = (tokens.input ?? 0) + (tokens.cacheRead ?? 0) + (tokens.cacheWrite ?? 0);
+  const long = pricing.longContextPricing;
+  const rates = long && promptTokens > long.aboveInputTokens ? long : pricing;
   let costUsd = 0;
   let partial = false;
   const tierMultiplier = serviceTierMultiplier(tokens.serviceTier);
@@ -661,12 +800,12 @@ export function estimateUsageCostUsd(pricing: ModelPricing | undefined, tokens: 
   // Catalog cache-write rates are the 5-minute figure; a 1-hour breakpoint costs 2x input
   // instead of 1.25x, so scale by the ratio between the two rather than re-deriving from input
   // (which a live OpenRouter row may not agree with).
-  const cacheWritePricePerM = tokens.cacheTtl === "1h" && pricing.cacheWritePricePerM != null
-    ? pricing.cacheWritePricePerM * (CLAUDE_CACHE_WRITE_RATIO_1H / CLAUDE_CACHE_WRITE_RATIO_5M)
-    : pricing.cacheWritePricePerM;
-  bill(tokens.input, pricing.inputPricePerM);
-  bill(tokens.output, pricing.outputPricePerM);
-  bill(tokens.cacheRead, pricing.cacheReadPricePerM);
+  const cacheWritePricePerM = tokens.cacheTtl === "1h" && rates.cacheWritePricePerM != null
+    ? rates.cacheWritePricePerM * (CLAUDE_CACHE_WRITE_RATIO_1H / CLAUDE_CACHE_WRITE_RATIO_5M)
+    : rates.cacheWritePricePerM;
+  bill(tokens.input, rates.inputPricePerM);
+  bill(tokens.output, rates.outputPricePerM);
+  bill(tokens.cacheRead, rates.cacheReadPricePerM);
   bill(tokens.cacheWrite, cacheWritePricePerM);
   return { costUsd, partial };
 }

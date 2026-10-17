@@ -179,6 +179,39 @@ describe("disabled thinking above the effort cap (Opus 5)", () => {
   });
 });
 
+describe("thinking off on the 5.5 generation", () => {
+  it("never sends disabled to Opus 5.5, which thinks on every request; effort is the only lever", () => {
+    const body = messagesBody({ model: "claude-opus-5-5", thinkingEnabled: false, effort: "low" });
+    expect(body["thinking"]).toBeUndefined();
+    expect(body["output_config"]).toEqual({ effort: "low" });
+    // No cap applies: nothing is being switched off.
+    expect(messagesBody({ model: "claude-opus-5-5", thinkingEnabled: false, effort: "max" })["output_config"]).toEqual({ effort: "max" });
+  });
+
+  it("switches Sonnet 5.5 off with between_tools, the only off it accepts, at high or below", () => {
+    const body = messagesBody({ model: "claude-sonnet-5-5", thinkingEnabled: false, effort: "max" });
+    expect(body["thinking"]).toEqual({ type: "between_tools" });
+    expect(body["output_config"]).toEqual({ effort: "high" });
+    expect(toBedrockThinking(plan({ model: "anthropic.claude-sonnet-5-5", thinkingEnabled: false }).thinking)).toEqual({ type: "between_tools" });
+  });
+
+  it("disables Haiku 5.5 with the same high-effort cap as Opus 5", () => {
+    const body = messagesBody({ model: "claude-haiku-5-5", thinkingEnabled: false, effort: "xhigh" });
+    expect(body["thinking"]).toEqual({ type: "disabled" });
+    expect(body["output_config"]).toEqual({ effort: "high" });
+  });
+
+  it("leaves Fable 5.1 without a thinking field when off", () => {
+    expect(messagesBody({ model: "claude-fable-5-1", thinkingEnabled: false })["thinking"]).toBeUndefined();
+  });
+
+  it("runs adaptive with a summarized display when thinking is on", () => {
+    for (const model of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]) {
+      expect(messagesBody({ model, thinkingEnabled: true })["thinking"], model).toEqual({ type: "adaptive", display: "summarized" });
+    }
+  });
+});
+
 describe("non-Claude models", () => {
   it("never get a thinking block, and keep their temperature", () => {
     const body = messagesBody({ model: "amazon.nova-pro-v1:0", thinkingEnabled: true });

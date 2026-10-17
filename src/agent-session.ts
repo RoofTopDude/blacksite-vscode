@@ -1,6 +1,8 @@
 import type * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import { toolRoundFingerprint } from "./orchestration/tool-round-fingerprint.js";
+import { ProgressMonitor, progressPrompt, type ProgressFacts, type ProgressThresholds } from "./orchestration/progress-monitor.js";
 import type { HookInput, HookOutcome, HookProvider } from "./hooks.js";
 import { browserTool, redactBrowserPayload } from "./browser/privacy.js";
 import {
@@ -517,8 +519,11 @@ export type BaseAgentEvent =
   /** `serviceTier` is the processing tier that actually served the request, read back from
    *  OpenAI's echoed `service_tier` — not the one that was requested, which OpenAI may decline
    *  to honour. Undefined on providers that have no such concept. Cost estimation scales the
-   *  per-model rates by it, so a flex turn is billed at half and a fast turn at double. */
-  | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; serviceTier?: string }
+   *  per-model rates by it, so a flex turn is billed at half and a fast turn at double.
+   *  `provider` and `model` name the session that made the call. Cost is priced from them, not
+   *  from settings, because a delegated lane can run on a different provider or model than the
+   *  one configured, and the settings can change while a call is in flight. */
+  | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; serviceTier?: string; provider?: ProviderName; model?: string }
   /** Beta, opt-in (`AgentSessionOptions.pauMetricsEnabled`). Read-only context-utilization
    *  measurement for the turn that just produced `usage_update` — see pau-metrics.ts. Absent
    *  entirely when the flag is off; never affects what was already sent to the provider. */
@@ -991,6 +996,14 @@ export interface AgentSessionOptions {
    * small iteration budget clearing it — the parent does that once, for the combined work.
    */
   delegatedLane?: boolean;
+  /** #20: ignore volatile result metadata for duplicate-round detection. Off by default. */
+  normalizeToolRounds?: boolean;
+  /**
+   * #20: watch for false progress (the same failure despite edits, edits that are undone and
+   * redone, reads that return nothing new). `observe` reports each signal as a diagnostic;
+   * `nudge` also asks the agent to change approach. Absent: nothing is watched.
+   */
+  progressSignals?: { mode: "observe" | "nudge"; thresholds?: Partial<ProgressThresholds> };
   /**
    * The work contract this session runs under (a delegated lane with orchestration contracts on).
    * Writes its tools name outside the contract's territory go through an approval first, and the
@@ -1455,6 +1468,10 @@ export class AgentSession {
   /** For a missing executable with an installed stand-in (`python` → `python3`), what to use. */
   private readonly _missingCommandAlternatives = new Map<string, string>();
   private _duplicateToolRoundNudgeCount = 0;
+  /** #20 false-progress detection, when enabled. Lives as long as the session. */
+  private readonly _progress?: ProgressMonitor;
+  /** Signals raised since the host last collected them (see {@link takeProgressSignals}). */
+  private _uncollectedProgress: Array<{ kind: string; detail: string }> = [];
   /** Set after the missing-contextLength diagnostic has been emitted once. */
   private _contextLengthWarned = false;
   /** Current pending user gate, if the loop is waiting on approval or an answer. */
@@ -1514,6 +1531,7 @@ export class AgentSession {
   constructor(private readonly opts: AgentSessionOptions) {
     this.sessionId = `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     this.provider = opts.provider ?? "anthropic";
+    if (opts.progressSignals) this._progress = new ProgressMonitor(opts.progressSignals.thresholds);
     this._modelClient = createModelClient({
       provider: this.provider,
       apiKey: opts.apiKey,
@@ -1573,6 +1591,16 @@ export class AgentSession {
   /** What the user typed this session, oldest first (see send). Empty for sessions persisted
    *  before prompts were recorded; callers fall back to reading the history. */
   get userPrompts(): string[] { return [...this._userPrompts]; }
+
+  /** #20: what the progress monitor saw over the session, for receipts and reports. */
+  progressFacts(): ProgressFacts | undefined { return this._progress?.facts(); }
+
+  /** #20: signals raised since the last call, for the host to forward (a plan run's reassessments). */
+  takeProgressSignals(): Array<{ kind: string; detail: string }> {
+    const taken = this._uncollectedProgress;
+    this._uncollectedProgress = [];
+    return taken;
+  }
 
   /** Kinds of untrusted outside content this conversation has read. See _untrustedSources. */
   get untrustedContentSources(): string[] { return [...this._untrustedSources]; }
@@ -2492,7 +2520,7 @@ export class AgentSession {
    * cannot advance the task without a different decision.
    */
   private _observeToolRound(toolCalls: ToolUseBlock[], results: ToolResultBlock[]): { rounds: number; tools: string } | null {
-    const fingerprint = stableJson(toolCalls.map((tc, index) => ({
+    const fingerprint = this.opts.normalizeToolRounds ? toolRoundFingerprint(toolCalls, results) : stableJson(toolCalls.map((tc, index) => ({
       name: tc.name,
       input: tc.input,
       result: results[index]?.content ?? "",
@@ -4273,7 +4301,11 @@ export class AgentSession {
             };
           } else if (ev.type === "usage_update") {
             this._recordUsage(ev);
-            yield { type: "usage_update", inputTokens: ev.inputTokens, outputTokens: ev.outputTokens, cacheReadTokens: ev.cacheReadTokens, cacheWriteTokens: ev.cacheWriteTokens, serviceTier: ev.serviceTier };
+            yield {
+              type: "usage_update", inputTokens: ev.inputTokens, outputTokens: ev.outputTokens,
+              cacheReadTokens: ev.cacheReadTokens, cacheWriteTokens: ev.cacheWriteTokens, serviceTier: ev.serviceTier,
+              provider: this.provider, model: this.opts.model,
+            };
             yield { type: "runtime_state", state: this.runtimeState };
             const pauEvent = this._buildPauReceiptEvent(ev);
             if (pauEvent) yield pauEvent;
@@ -5766,6 +5798,19 @@ export class AgentSession {
           message: `${duplicateRound.rounds} identical tool rounds (${duplicateRound.tools}) returned no new evidence — asking the agent to choose a different next step (${this._duplicateToolRoundNudgeCount}/${MAX_DUPLICATE_TOOL_ROUND_NUDGES}).`,
         };
         this._providerTurnSession.appendUserText(duplicateToolRoundPrompt(duplicateRound.rounds, duplicateRound.tools));
+      }
+
+      // #20: rounds that differ on the surface but bring the task no closer. Reported with their
+      // evidence; in nudge mode the agent is also asked to change approach.
+      for (const signal of this._progress?.observe(turnResult.toolCalls, toolResults) ?? []) {
+        this._uncollectedProgress.push({ kind: signal.kind, detail: signal.detail });
+        if (this._uncollectedProgress.length > 20) this._uncollectedProgress.shift();
+        yield {
+          type: "execution_diagnostic",
+          level: "info",
+          message: `Progress check (${signal.kind.replace(/_/g, " ")}): ${signal.detail} ${signal.falsePositive}`,
+        };
+        if (this.opts.progressSignals?.mode === "nudge") this._providerTurnSession.appendUserText(progressPrompt(signal));
       }
 
       if (this.opts.checkpointingEnabled !== false) this._saveCheckpoint();

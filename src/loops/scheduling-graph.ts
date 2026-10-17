@@ -10,15 +10,87 @@
  */
 
 import type { WorkGraph } from "../orchestration/work-graph/graph.js";
+import { isWorkItem, type ResolvedEdge } from "../orchestration/work-graph/model.js";
+import {
+  evaluateIntegration, type ConsumedInterface, type ProducedInterface, type TaskFacts,
+} from "../orchestration/integration-gate.js";
 import type { SchedulingGraph } from "./loop-scheduler.js";
 
 const TICKET = "ticket:";
 const bare = (id: string): string | undefined => (id.startsWith(TICKET) ? id.slice(TICKET.length) : undefined);
 
-export function schedulingGraphFrom(graph: WorkGraph): SchedulingGraph {
+export interface SchedulingGraphOptions {
+  /**
+   * #21. Hold a ticket whose contract consumes something other open work has declared it will
+   * produce, until that work is verified or closed and what it produced matches what the consumer
+   * pinned. Off: `waitingInputs` holds nothing, as before.
+   */
+  inputs?: boolean;
+}
+
+/** Revisions of file contents carry no separate interface, so only the content can move. */
+const CONTENT = "content";
+
+export function schedulingGraphFrom(graph: WorkGraph, options: SchedulingGraphOptions = {}): SchedulingGraph {
   let critical: { ids: ReadonlySet<string>; weight: number } | undefined;
   let cycles: Map<string, string[]> | undefined;
   const blockers = new Map<string, Array<{ id: string; missing: boolean; source: string }>>();
+  const waiting = new Map<string, string[]>();
+  let producers: Map<string, ResolvedEdge[]> | undefined;
+
+  /** Declared deliverables of work items, by what they produce. Built once per pass. */
+  const producersOf = (nodeId: string): ResolvedEdge[] => {
+    if (!producers) {
+      producers = new Map();
+      for (const edge of graph.edges()) {
+        if (edge.kind !== "produces" || edge.status === "missing" || !isWorkItem(edge.from)) continue;
+        producers.set(edge.to, [...(producers.get(edge.to) ?? []), edge]);
+      }
+    }
+    return producers.get(nodeId) ?? [];
+  };
+
+  /** The content the producer last left in a file it modified, when a receipt recorded it. */
+  const producedRevision = (producer: string, nodeId: string): string => {
+    const change = graph.trace(producer).affectedCode
+      .filter((edge) => edge.to === nodeId && edge.status === "verified" && edge.sha256)
+      .sort((a, b) => (b.observedAt ?? "").localeCompare(a.observedAt ?? ""))[0];
+    return change?.sha256 ?? "unproduced";
+  };
+
+  /**
+   * One line per consumed input the gate holds this ticket on, judged one input at a time so each
+   * line names exactly what is awaited.
+   */
+  const inputsWaitedOn = (ticketId: string): string[] => {
+    const self = `${TICKET}${ticketId}`;
+    const out: string[] = [];
+    for (const edge of graph.trace(self).consumes) {
+      if (edge.status === "missing") continue;
+      const sources = producersOf(edge.to).filter((source) => source.from !== self);
+      // An input nobody open has said they will produce is just an input: nothing to wait for.
+      if (sources.length === 0) continue;
+      const tasks: TaskFacts[] = [{ id: self, revision: "consumer", dependsOn: [], writes: [] }];
+      const produced: ProducedInterface[] = [];
+      for (const source of sources) {
+        const verified = graph.node(source.from)?.state === "done"
+          || graph.trace(source.from).evidence.some((item) => item.kind === "verified_by");
+        tasks.push({ id: source.from, revision: source.from, dependsOn: [], writes: [], ...(verified ? { verdict: "verified" as const } : {}) });
+        produced.push({ taskId: source.from, name: edge.to, revision: producedRevision(source.from, edge.to), interfaceHash: CONTENT });
+      }
+      // Unpinned, the consumer accepts whatever its single producer leaves.
+      const expectedRevision = edge.sha256 ?? (produced.length === 1 ? produced[0]!.revision : "unpinned");
+      const consumed: ConsumedInterface[] = [{ taskId: self, name: edge.to, expectedRevision, expectedInterfaceHash: CONTENT }];
+      const verdict = evaluateIntegration({ tasks, produced, consumed }).readiness.find((entry) => entry.taskId === self);
+      if (!verdict || verdict.readiness === "ready") continue;
+      const who = sources.map((source) => bare(source.from) ?? source.from).sort().join(", ");
+      const what = edge.to.replace(/^file:/, "");
+      out.push(verdict.reasons.some((reason) => reason.startsWith("producer_revision_moved"))
+        ? `${who} to produce ${what} again (it changed after this ticket pinned it)`
+        : `${who} to produce ${what}`);
+    }
+    return out;
+  };
   const downstream = new Map<string, string[]>();
 
   const cycleIndex = (): Map<string, string[]> => {
@@ -72,9 +144,13 @@ export function schedulingGraphFrom(graph: WorkGraph): SchedulingGraph {
     cycleOf(ticketId) {
       return cycleIndex().get(ticketId);
     },
-    waitingInputs() {
-      // Contract inputs produced by other open work become `consumes` edges once #17 lands.
-      return [];
+    waitingInputs(ticketId) {
+      if (!options.inputs) return [];
+      const cached = waiting.get(ticketId);
+      if (cached) return cached;
+      const out = inputsWaitedOn(ticketId);
+      waiting.set(ticketId, out);
+      return out;
     },
     observedFiles(ticketId) {
       return graph.trace(`${TICKET}${ticketId}`).affectedCode

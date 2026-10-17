@@ -1,5 +1,5 @@
 import type { AgentEvent } from "./agent-session.js";
-import { sanitizeForLogging } from "./shared/redaction.js";
+import { redactSecretsInText as redactPromptPreview, sanitizeForLogging } from "./shared/redaction.js";
 
 export interface TurnLogMetadata {
   inputChars: number;
@@ -35,11 +35,6 @@ export interface StructuredLogEntry {
   data?: unknown;
 }
 
-const SECRET_PATTERNS: RegExp[] = [
-  /\bBearer\s+[A-Za-z0-9._-]+\b/gi,
-  /\bsk-[A-Za-z0-9_-]{12,}\b/g,
-  /\b(?:api[_ -]?key|token|password|secret)\s*[:=]\s*[^\s,;]+/gi,
-];
 
 export function buildPromptPreview(text: string, limit = 160): string {
   const collapsed = redactPromptPreview(text).replace(/\s+/g, " ").trim();
@@ -123,24 +118,6 @@ export function createStructuredEventEntry(
     eventType: event.type,
     data: sanitizeEvent(event),
   };
-}
-
-function redactPromptPreview(text: string): string {
-  let output = text;
-  for (const pattern of SECRET_PATTERNS) {
-    output = output.replace(pattern, redactMatch);
-  }
-  return output;
-}
-
-function redactMatch(match: string): string {
-  if (/^Bearer\s+/i.test(match)) return "Bearer [redacted]";
-  const separatorIndex = match.search(/[:=]/);
-  if (separatorIndex >= 0) {
-    const prefix = match.slice(0, separatorIndex + 1);
-    return `${prefix} [redacted]`;
-  }
-  return "[redacted]";
 }
 
 function sanitizeEvent(event: AgentEvent): unknown {

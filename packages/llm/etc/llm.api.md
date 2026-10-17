@@ -45,6 +45,9 @@ export type AnthropicCacheControl = {
     ttl?: "1h";
 };
 
+// @public
+export function anthropicCompletionUsage(usage: Record<string, unknown> | undefined): CompletionUsage | undefined;
+
 // @public (undocumented)
 export interface AnthropicParseResult {
     rawStopReason: string;
@@ -98,6 +101,9 @@ export const BEDROCK_MANTLE_DEFAULT_MODEL = "anthropic.claude-opus-5";
 
 // @public (undocumented)
 export const BEDROCK_MANTLE_MODELS: ModelInfo[];
+
+// @public
+export const BEDROCK_REGIONAL_PREMIUM = 1.1;
 
 // @public (undocumented)
 export type BedrockApiMode = "converse" | "mantle";
@@ -184,15 +190,7 @@ export type BedrockContentBlock = {
 // @public (undocumented)
 export interface BedrockConverseRequest {
     additionalModelRequestFields?: {
-        thinking?: {
-            type: "adaptive";
-            display?: "summarized";
-        } | {
-            type: "enabled";
-            budget_tokens: number;
-        } | {
-            type: "disabled";
-        };
+        thinking?: BedrockThinkingConfig;
         output_config?: {
             effort: string;
         };
@@ -257,6 +255,9 @@ export interface BedrockCredentials {
     sessionToken?: string;
 }
 
+// @public
+export function bedrockEndpointMultiplier(modelId: string): number;
+
 // @public (undocumented)
 export interface BedrockImageBlock {
     // (undocumented)
@@ -309,6 +310,10 @@ export type BedrockThinkingConfig = {
     budget_tokens: number;
 } | {
     type: "disabled";
+}
+/** Sonnet 5.5's off switch. Carries no other field. */
+| {
+    type: "between_tools";
 };
 
 // @public (undocumented)
@@ -377,6 +382,9 @@ export type CacheTtl = "5m" | "1h";
 
 // @public
 export function canDisableThinking(modelId: string | null | undefined): boolean;
+
+// @public
+export function canonicalClaudeModelId(modelId: string): string | undefined;
 
 // @public
 export const CHATGPT_HOSTED_SEARCH_ROUTE: HostedSearchRoute;
@@ -475,6 +483,18 @@ export function complete(transport: {
 // @public
 export function completeText(req: TextCompletionRequest, signal?: AbortSignal): Promise<string>;
 
+// @public
+export interface CompletionUsage {
+    // (undocumented)
+    cacheReadTokens: number;
+    // (undocumented)
+    cacheWriteTokens: number;
+    // (undocumented)
+    inputTokens: number;
+    // (undocumented)
+    outputTokens: number;
+}
+
 // Warning: (ae-forgotten-export) The symbol "StoredMessage" needs to be exported by the entry point index.d.ts
 //
 // @public (undocumented)
@@ -492,6 +512,7 @@ export interface CompressorOptions {
     generateText?: (systemPrompt: string, transcript: string, signal: AbortSignal) => Promise<string>;
     // (undocumented)
     model: string;
+    onUsage?: (usage: CompletionUsage) => void;
     // (undocumented)
     provider: ProviderName;
 }
@@ -504,6 +525,9 @@ export type ContentBlock = TextBlock | ThinkingBlock | RedactedThinkingBlock | T
 
 // @public
 export function converseBedrock(opts: ConverseOptions, signal?: AbortSignal): Promise<BedrockConverseResponse>;
+
+// @public
+export function converseCompletionUsage(usage: BedrockUsage | undefined): CompletionUsage | undefined;
 
 // @public (undocumented)
 export interface ConverseOptions {
@@ -594,6 +618,9 @@ export function formatDelay(ms: number): string;
 
 // @public (undocumented)
 export function freshLatches(): TransportLatches;
+
+// @public
+export function getClaudeModelPricing(modelId: string, provider?: ProviderName): ModelPricing | undefined;
 
 // @public
 export function getContextLength(provider: ProviderName, modelId: string): number | undefined;
@@ -759,6 +786,8 @@ export interface MantleMessageResponse {
     usage: {
         input_tokens: number;
         output_tokens: number;
+        cache_read_input_tokens?: number;
+        cache_creation_input_tokens?: number;
     };
 }
 
@@ -836,6 +865,13 @@ export interface ModelInfo {
     id: string;
     // (undocumented)
     inputPricePerM?: number;
+    longContextPricing?: {
+        aboveInputTokens: number;
+        inputPricePerM?: number;
+        outputPricePerM?: number;
+        cacheReadPricePerM?: number;
+        cacheWritePricePerM?: number;
+    };
     maxOutputTokens?: number;
     // (undocumented)
     name: string;
@@ -860,7 +896,7 @@ export interface ModelInfo {
 }
 
 // @public
-export type ModelPricing = Pick<ModelInfo, "inputPricePerM" | "outputPricePerM" | "cacheReadPricePerM" | "cacheWritePricePerM">;
+export type ModelPricing = Pick<ModelInfo, "inputPricePerM" | "outputPricePerM" | "cacheReadPricePerM" | "cacheWritePricePerM" | "longContextPricing">;
 
 // @public
 export interface ModelRequest {
@@ -980,6 +1016,9 @@ export interface OAIToolCall {
     // (undocumented)
     type: "function";
 }
+
+// @public
+export function openAICompletionUsage(usage: Record<string, unknown> | undefined): CompletionUsage | undefined;
 
 // @public
 export function openAIEffectiveSystem(system: string, summary: string): string;
@@ -1323,6 +1362,9 @@ export interface RedactedThinkingBlock {
 }
 
 // @public
+export function reportCompletionUsage(onUsage: ((usage: CompletionUsage) => void) | undefined, usage: CompletionUsage | undefined): void;
+
+// @public
 export function resolveAnthropicBetaExtras(model: string, opts: AnthropicBetaOptions, isMantle: boolean): AnthropicBetaExtras;
 
 // @public
@@ -1354,6 +1396,11 @@ export type ResolvedThinking =
 *  absent field runs adaptive anyway. */
 | {
     kind: "disabled";
+}
+/** `thinking: {type: "between_tools"}` and nothing else — Sonnet 5.5's off switch, which rejects
+*  `disabled`. Thinks only between tool calls, at effort `high` or below. */
+| {
+    kind: "between_tools";
 }
 /** `thinking: {type: "adaptive", display?}`. Depth comes from {@link ThinkingPlan.effort}. */
 | {
@@ -1461,10 +1508,10 @@ export function shallowestReasoningEffort(model: string): OpenAIReasoningEffort;
 // @public
 export function signBedrockRequest(creds: BedrockCredentials, method: string, url: string, headers: Record<string, string>, body: string, service?: string): Promise<Record<string, string>>;
 
-// @public (undocumented)
-export function sonnet5Pricing(now?: number): Pick<ModelInfo, "inputPricePerM" | "outputPricePerM" | "cacheReadPricePerM" | "cacheWritePricePerM">;
-
 // @public
+export function sonnet5Pricing(_now?: number): Pick<ModelInfo, "inputPricePerM" | "outputPricePerM" | "cacheReadPricePerM" | "cacheWritePricePerM">;
+
+// @public @deprecated (undocumented)
 export const SONNET_5_INTRO_PRICING_ENDS: number;
 
 // @public
@@ -1595,6 +1642,7 @@ export interface TextCompletionRequest {
     maxTokens: number;
     // (undocumented)
     model: string;
+    onUsage?: (usage: CompletionUsage) => void;
     // (undocumented)
     provider: ProviderName;
     reasoningEffort?: OpenAIReasoningEffort;
@@ -1633,6 +1681,9 @@ export type ThinkingMode =
 | "budget"
 /** Not a Claude model, or a Claude model with no thinking support. */
 | "none";
+
+// @public
+export function thinkingOffShape(modelId: string | null | undefined): "disabled" | "between_tools" | "omit";
 
 // @public (undocumented)
 export interface ThinkingPlan {

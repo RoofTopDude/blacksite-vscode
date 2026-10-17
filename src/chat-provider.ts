@@ -18,6 +18,7 @@ import {
   CLAUDE_EFFORT_LADDER,
   type ClaudeEffort,
   completeText,
+  type CompletionUsage,
   compressHistory,
   defaultBedrockModel,
   estimateUsageCostUsd,
@@ -204,8 +205,10 @@ import {
 } from "./chat/attachments.js";
 import { prepareVisionImage } from "./vision-image.js";
 import { readOrchestrationFlags, type ClaimsMode, type WorkContractsMode } from "./orchestration/flags.js";
+import { resolveProgressThresholds, type ProgressThresholds } from "./orchestration/progress-monitor.js";
 import { ReceiptStore } from "./orchestration/receipt-store.js";
 import { LaneContracts, LaneMeter, type LaneEndFacts } from "./orchestration/lane-contracts.js";
+import type { ExchangeHost } from "./orchestration/artifact-exchange/host.js";
 import {
   createContractEditProvider,
   createContractLspProvider,
@@ -1142,18 +1145,41 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   estimateSubagentUsageCostUsd(
     usage: Extract<BaseAgentEvent, { type: "usage_update" }>,
   ): number | undefined {
+    return this._priceUsage(usage, "subagent")?.costUsd;
+  }
+
+  /** The model a delegated lane runs on: the configured subagent model, else that provider's own. */
+  private _subagentModel(settings: ExtendedSettings, provider: ProviderName): string {
+    return settings.subagent?.model || this._providerSettings(provider, settings).model;
+  }
+
+  /**
+   * Price one usage event under the provider and model that made the call. Every AgentSession
+   * turn names them on the event; settings are only the fallback for an event that does not. The
+   * settings-based guess used to price lanes at the configured subagent model even when the lane
+   * ran another one, and an unset subagent model (an empty string) priced nothing at all.
+   */
+  private _priceUsage(
+    usage: Pick<Extract<BaseAgentEvent, { type: "usage_update" }>, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "serviceTier" | "provider" | "model">,
+    fallback: "chat" | "subagent",
+  ): ReturnType<typeof estimateUsageCostUsd> {
     const settings = this._readSettings();
-    const provider = settings.subagent?.provider ?? settings.provider;
+    const provider = usage.provider
+      ?? (fallback === "subagent" ? (settings.subagent?.provider ?? settings.provider) : settings.provider);
     const providerSettings = this._providerSettings(provider, settings);
-    const model = settings.subagent?.model ?? providerSettings.model;
+    const model = usage.model
+      || (fallback === "subagent" ? this._subagentModel(settings, provider) : providerSettings.model);
     return estimateUsageCostUsd(this._cachedPricing(provider, model), {
       input: usage.inputTokens,
       output: usage.outputTokens,
       cacheRead: usage.cacheReadTokens,
       cacheWrite: usage.cacheWriteTokens,
       serviceTier: usage.serviceTier,
+      // Request-side setting, so it comes from settings rather than the response. Sessions are
+      // rebuilt whenever a provider setting changes, so this cannot drift from the TTL the call
+      // was actually sent with.
       cacheTtl: this._billedCacheTtl(provider, model, providerSettings.cacheTtl, settings),
-    })?.costUsd;
+    });
   }
 
   /** Attach the parent-only Ticket Loop proposal/control surface during activation. */
@@ -1198,6 +1224,28 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   /** Set by the extension once the continuation service exists. */
   setPlanContinuation(service: PlanContinuationService): void {
     this._planContinuation = service;
+  }
+
+  /** The artifact exchange (#17): records lane handoffs and gives lanes prior work by reference. */
+  private _exchange?: ExchangeHost;
+  setExchangeHost(host: ExchangeHost): void {
+    this._exchange = host;
+  }
+
+  /**
+   * What a delegated lane should know about prior work on the same ticket, its blockers, or the
+   * same plan step, as a bounded packet of references. Undefined while the exchange is off.
+   */
+  private _priorWorkPacket(active: ActiveWorkContract | undefined): string | undefined {
+    if (!this._exchange || !active) return undefined;
+    const origin = active.contract.origin;
+    const relevant = [
+      origin.ticketId,
+      ...active.contract.dependencies.filter((dependency) => dependency.kind === "ticket").map((dependency) => dependency.id),
+      origin.planId,
+      origin.planId && origin.phaseId && origin.stepId ? `${origin.planId}/${origin.phaseId}/${origin.stepId}` : undefined,
+    ].filter((id): id is string => !!id);
+    return this._exchange.packetFor(relevant);
   }
 
   /** The read-only work graph behind the work_graph tool (blacksite.orchestration.workGraph). */
@@ -1547,6 +1595,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const bedrock = settings.provider === "bedrock" ? await this._secrets.getBedrockConfig() : undefined;
 
     const session = new AgentSession({
+      normalizeToolRounds: readOrchestrationFlags((key) => vscode.workspace.getConfiguration().get(key)).normalizeToolRounds,
+      progressSignals: this._progressSignalsOption(),
       hookProvider: configuredHooks,
       subscriptionStream: this._subscriptionStream(settings.provider, settings),
       apiKey,
@@ -1929,7 +1979,22 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       reasoningEffort: pSettings.reasoningEffort,
       httpReferer: settings.openrouterConfig?.httpReferer,
       xTitle: settings.openrouterConfig?.xTitle,
+      onUsage: (usage) => this._recordAuxiliaryUsage(provider, model, usage),
     });
+  }
+
+  /**
+   * Bill a model call made outside a turn's own stream: the conductor, the auto-mode reviewer,
+   * research review, query planning, image description and history compaction. They cost the same
+   * as any turn, but used to reach neither session spend, the plan budget nor a run's spend
+   * ceiling, so a long unattended run under-reported what it had spent.
+   *
+   * Only the spend is recorded. Posting their tokens as stream usage would move the context meter,
+   * which describes the conversation's own prompt, not these side calls.
+   */
+  private _recordAuxiliaryUsage(provider: ProviderName, model: string, usage: CompletionUsage): void {
+    if (this._usesChatGpt(provider)) return; // billed by subscription, not per token
+    this._recordSessionSpend(this._liveTurnId ?? "", this._priceUsage({ ...usage, provider, model }, "chat"));
   }
 
   private _restoreSessionFromState(
@@ -2250,8 +2315,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         // The compression provider may differ from the main provider — resolve the endpoint
         // override from ITS settings record, not the session's.
         const baseUrl = this._providerSettings(provider, settings).baseUrl?.trim() || undefined;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        return compressHistory({ apiKey: cmpKey, model, provider, bedrock, bedrockApi, baseUrl }, messages as any);
+        return compressHistory({
+          apiKey: cmpKey, model, provider, bedrock, bedrockApi, baseUrl,
+          onUsage: (usage) => this._recordAuxiliaryUsage(provider, model, usage),
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }, messages as any);
       },
     };
   }
@@ -2737,6 +2805,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       claims?: LaneClaims;
     },
   ): ReceiptSummary | undefined {
+    // A lane going in circles inside a plan run is worth the conductor's attention too (#20).
+    this._forwardProgressSignals(context.session);
     if (!active) return undefined;
     const reason = context.controller.signal.aborted ? String(context.controller.signal.reason ?? "") : "";
     // A lane the approval path stopped did not fail at its work: it is blocked on a decision.
@@ -2768,6 +2838,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       answer: context.answer,
       toolRounds: context.toolRounds,
       elapsedMs: context.elapsedMs,
+      ...(context.session.progressFacts() ? { progress: context.session.progressFacts()! } : {}),
       ...(meter?.spendTracked ? { usd: meter.usd } : {}),
       spendTracked: meter?.spendTracked ?? false,
       ...(budgetHit ? { budgetHit } : {}),
@@ -2781,6 +2852,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         ...(origin.stepId ? { stepId: origin.stepId } : {}),
       },
     });
+    if (receipt) this._exchange?.recordLaneReceipt(receipt);
     return receipt ? summarizeReceipt(receipt) : undefined;
   }
 
@@ -2837,14 +2909,16 @@ export class ChatProvider implements vscode.WebviewViewProvider {
 
     // Resolve subagent provider/model — may differ from parent if configured
     const subProvider = settings.subagent?.provider ?? settings.provider;
-    const subModel = settings.subagent?.model ?? pSettings.model;
     const subApiKey = subProvider !== settings.provider
       ? ((await this._modelCredential(subProvider, false)) ?? (apiKey === "chatgpt-subscription" ? "" : apiKey))
       : apiKey;
     const subPSettings = subProvider !== settings.provider
       ? this._providerSettings(subProvider, settings)
       : pSettings;
-    const resolvedSubModel = subModel || subPSettings.model;
+    // An unset subagent model means that provider's own model. It used to fall back to the
+    // parent's model id even when the subagent ran on another provider, which sent (say) an
+    // Anthropic id to Bedrock, and priced the lane at a model it never ran.
+    const resolvedSubModel = this._subagentModel(settings, subProvider);
     const subBedrock = subProvider === "bedrock" ? await this._secrets.getBedrockConfig() : undefined;
     const [subContextLength, subMaxOutputTokens] = await Promise.all([
       this._resolveContextLength(subProvider, resolvedSubModel, subApiKey),
@@ -2926,6 +3000,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     let liveChild: AgentSession | null = null;
     try {
       const childSession = new AgentSession({
+        normalizeToolRounds: readOrchestrationFlags((key) => vscode.workspace.getConfiguration().get(key)).normalizeToolRounds,
+        progressSignals: this._progressSignalsOption(),
         hookProvider: configuredHooks,
         subscriptionStream: this._subscriptionStream(subProvider, settings),
         apiKey: subApiKey,
@@ -3057,7 +3133,11 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       };
 
       const outcome = newLaneOutcome();
-      const laneEvents = childSession.send(delegatedLanePrompt(request.input.task, request.input.context), laneRequestMode(request.requestMode));
+      // #17: prior work on the same ticket or plan, by reference and bounded. Nothing is added
+      // while the exchange is off, or when there is nothing relevant.
+      const priorWork = this._priorWorkPacket(activeContract);
+      const laneContext = priorWork ? [request.input.context, priorWork].filter(Boolean).join("\n\n") : request.input.context;
+      const laneEvents = childSession.send(delegatedLanePrompt(request.input.task, laneContext), laneRequestMode(request.requestMode));
       yield* streamLaneRun(
         meter ? meter.watch(laneEvents) : laneEvents,
         request.parentToolCallId,
@@ -5084,6 +5164,8 @@ ${this._pendingRewindNote}`;
     turnError: string | undefined,
     awaitingUser: boolean,
   ): Promise<void> {
+    // Before the conductor decides, so a run that is going in circles is flagged in its digest.
+    if (this._session) this._forwardProgressSignals(this._session);
     if (!this._planContinuation) return;
     try {
       await this._planContinuation.afterTurn({
@@ -5232,26 +5314,16 @@ ${this._pendingRewindNote}`;
         break;
       case "usage_update": {
         const s  = this._readSettings();
-        const usageProvider = lane ? (s.subagent?.provider ?? s.provider) : s.provider;
-        const usageSettings = this._providerSettings(usageProvider, s);
-        const modelId = lane ? (s.subagent?.model ?? usageSettings.model) : usageSettings.model;
-        const ctxLen = lane ? undefined : (this._session?.runtimeState.contextLength ?? this._cachedContextLength(usageProvider, modelId));
+        const ctxLen = lane ? undefined : (this._session?.runtimeState.contextLength ?? this._cachedContextLength(s.provider, this._providerSettings(s.provider, s).model));
         // Cost is estimated per usage event (not from an aggregate session total) because only
         // the provider/model active *at this call* is known here — the webview just accumulates
         // whatever costUsd arrives, which stays correct even if the user switches models mid-session.
         // serviceTier is the tier that actually served the turn (echoed by OpenAI), not the one
         // configured — a flex request downgraded to standard on a capacity miss must be costed
         // at standard rates, and a flex request that was honoured at half of them.
-        // Priced under the provider that made the call: a lane may run on a different provider than
-        // the chat, and the parent's price table would bill it at the wrong rates.
-        const cost = estimateUsageCostUsd(this._cachedPricing(usageProvider, modelId), {
-          input: event.inputTokens, output: event.outputTokens, cacheRead: event.cacheReadTokens, cacheWrite: event.cacheWriteTokens,
-          serviceTier: event.serviceTier,
-          // Request-side setting, so it comes from settings rather than the response. Sessions
-          // are rebuilt whenever a provider setting changes, so this cannot drift from the TTL
-          // the turn was actually sent with.
-          cacheTtl: this._billedCacheTtl(usageProvider, modelId, usageSettings.cacheTtl, s),
-        });
+        // Priced under the provider and model that made the call: a lane may run on a different
+        // provider or model than the chat, and the parent's price table would bill it wrongly.
+        const cost = this._priceUsage(event, lane ? "subagent" : "chat");
         this._post({
           type: "stream_usage", id: turnId, inputTokens: event.inputTokens, outputTokens: event.outputTokens,
           cacheReadTokens: event.cacheReadTokens, cacheWriteTokens: event.cacheWriteTokens, contextLength: ctxLen,
@@ -5690,6 +5762,34 @@ ${this._pendingRewindNote}`;
    *  `resolveAnthropicBetaExtras` and can actually send `context_management` compaction. */
   private _sendsServerSideCompaction(settings: ExtendedSettings): boolean {
     return settings.provider === "anthropic" || (settings.provider === "bedrock" && settings.bedrockApi === "mantle");
+  }
+
+  /** #20: the false-progress monitor for a new session, or undefined while it is off. */
+  private _progressSignalsOption(): { mode: "observe" | "nudge"; thresholds: ProgressThresholds } | undefined {
+    const config = vscode.workspace.getConfiguration();
+    const mode = readOrchestrationFlags((key) => config.get(key)).progressSignals;
+    if (mode === "off") return undefined;
+    return { mode, thresholds: resolveProgressThresholds(config.get("blacksite.orchestration.progressThresholds")) };
+  }
+
+  /**
+   * #20: hand the progress signals the session raised to the plan run it serves, as reassessments
+   * the conductor reads with its digest. Outside a run they stay where they were reported: the
+   * transcript.
+   */
+  private _forwardProgressSignals(session: AgentSession): void {
+    const signals = session.takeProgressSignals();
+    const run = this._planRuns?.active;
+    if (!run || signals.length === 0) return;
+    for (const signal of signals) {
+      this._planRuns?.noteReassessment(run.id, {
+        signalId: `progress:${crypto.createHash("sha256").update(`${session.sessionId}\u0000${signal.kind}\u0000${signal.detail}`).digest("hex").slice(0, 16)}`,
+        kind: signal.kind,
+        taskId: run.planId,
+        detail: signal.detail,
+        source: "host",
+      });
+    }
   }
 
   private async _sendSettingsToWebview(): Promise<void> {

@@ -23,6 +23,14 @@ Besides `lane`, `user`, `crash` and `verifier`, a loop trace can script:
 - `ticket`: a person (or an agent) changes a ticket: closes a blocker, adds a dependency. With `crashBeforeReconcile`, the host dies after the change is journaled and before any consumer saw it.
 - `redeliver`: every source hands over everything again; repeats must change nothing.
 
+Issue #20 also has `fixtures/repeated-failure-loop/scenario.json`, exercised by
+`replay/repeated-failure-loop.spec.ts` through a real `AgentSession` (supervisor replay lanes
+do not execute tools). With `normalizeToolRounds` enabled, timestamped identical failures
+must produce a nudge at round 3, before the default 40-iteration budget. The disabled control
+preserves the old behavior. `fixtures/incremental-progress/scenario.json` is the false-positive
+control: every rerun fails on different, fewer cases, and neither setting may intervene. This
+acceptance check is separate from the supervisor scorecard.
+
 Every replay:
 
 - runs three times and must be byte-identical;

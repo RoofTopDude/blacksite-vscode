@@ -93,6 +93,8 @@ export interface LaneEndFacts {
   answer: string;
   toolRounds: number;
   elapsedMs: number;
+  /** What the false-progress monitor saw (#20), when it was on. */
+  progress?: WorkReceipt["progress"];
   usd?: number;
   spendTracked: boolean;
   budgetHit?: WorkReceipt["usage"]["budgetHit"];
@@ -252,6 +254,7 @@ export class LaneContracts {
           elapsedMs: facts.elapsedMs,
           ...(facts.budgetHit ? { budgetHit: facts.budgetHit } : {}),
         },
+        ...(facts.progress ? { progress: facts.progress } : {}),
         answer: facts.answer,
         createdAt: new Date(this._now()).toISOString(),
       });

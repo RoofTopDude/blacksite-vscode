@@ -78,10 +78,7 @@ export interface BedrockConverseRequest {
    * than per preference (see planThinking in agent-session).
    */
   additionalModelRequestFields?: {
-    thinking?:
-      | { type: "adaptive"; display?: "summarized" }
-      | { type: "enabled"; budget_tokens: number }
-      | { type: "disabled" };
+    thinking?: BedrockThinkingConfig;
     /** Messages-API `output_config` forwarded verbatim, exactly like `thinking` above — the
      *  effort rung (Opus 4.5+/4.6+ vocabulary). Without this, Converse-path Claude always ran
      *  at the server default while the Mantle path honored the user's effort setting. */
@@ -146,4 +143,6 @@ export interface BedrockConverseStreamEvent {
 export type BedrockThinkingConfig =
   | { type: "adaptive"; display?: "summarized" }
   | { type: "enabled"; budget_tokens: number }
-  | { type: "disabled" };
+  | { type: "disabled" }
+  /** Sonnet 5.5's off switch. Carries no other field. */
+  | { type: "between_tools" };

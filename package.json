@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.33.0-pre.5",
+  "version": "1.33.0-pre.6",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -1205,6 +1205,68 @@
           ],
           "default": "legacy",
           "markdownDescription": "**Experimental.** How ticket loops choose what to run next. `shadow` and `graph` need `blacksite.orchestration.workGraph`; without it they behave as `legacy`. Set to `legacy` to return to the previous behaviour."
+        },
+        "blacksite.orchestration.normalizeToolRounds": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Experimental.** Ignore volatile timing metadata when detecting repeated tool rounds. Applies to new chat and delegated sessions. Set to `false` to restore the original detector."
+        },
+        "blacksite.orchestration.artifactExchange": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Experimental.** Record lane handoffs (change receipts) and verification verdicts as typed records under `.blacksite/orchestration/artifact-exchange`, and give each delegated lane a short, bounded list of prior work on the same ticket or plan, by reference, with stale items marked. Never another lane's transcript. Set to `false` to stop; existing records stay on disk."
+        },
+        "blacksite.orchestration.explicitQueueStatusGuard": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Experimental.** Stop explicit-ID ticket loops from dispatching tickets in review, done or cancelled. Applies on each scheduling pass in legacy and graph modes. Set to `false` to restore the original status-blind membership."
+        },
+        "blacksite.orchestration.progressSignals": {
+          "type": "string",
+          "enum": [
+            "off",
+            "observe",
+            "nudge"
+          ],
+          "default": "off",
+          "markdownDescription": "**Experimental.** Watch chat and delegated sessions for false progress: tests failing the same way despite edits, failure counts that never drop, the same change applied and undone, the same file re-read with nothing new. `observe` reports each one in the transcript with its evidence, and flags it for the conductor in a plan run. `nudge` also asks the agent to change approach. Thresholds: `blacksite.orchestration.progressThresholds`. Set to `off` to stop."
+        },
+        "blacksite.orchestration.progressThresholds": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": false,
+          "properties": {
+            "repeatedFailure": { "type": "integer", "minimum": 2, "maximum": 20, "description": "Test runs in a row failing the same way, with edits between, before it is reported. Default 3." },
+            "stagnation": { "type": "integer", "minimum": 3, "maximum": 30, "description": "Failing test runs in a row whose failure count never drops, with edits between. Default 5." },
+            "repeatedEdit": { "type": "integer", "minimum": 2, "maximum": 20, "description": "Times one change (or it and its undo) is applied to a file. Default 3." },
+            "repeatedRead": { "type": "integer", "minimum": 2, "maximum": 30, "description": "Identical reads of an unchanged file. Default 4." }
+          },
+          "markdownDescription": "**Experimental.** When `blacksite.orchestration.progressSignals` reports false progress. Missing or out-of-range values use the defaults, which are deliberately conservative: a real fix often takes two or three tries."
+        },
+        "blacksite.orchestration.verificationLane": {
+          "type": "string",
+          "enum": [
+            "off",
+            "observe",
+            "enforce"
+          ],
+          "default": "off",
+          "markdownDescription": "**Experimental.** Verify each loop ticket's work against its acceptance criteria and the host's receipt before it reaches review. Needs `blacksite.orchestration.workContracts`. `observe` records the verdict on the loop iteration and changes nothing. `enforce` sends work with a failed check back for another attempt, parks work it cannot judge safely, and labels anything not verified when it reaches review. Tickets are never closed by it. Set to `off` to stop."
+        },
+        "blacksite.orchestration.verificationReviewer": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Experimental.** Add an independent model review to the verification lane, with no tools: it reads the criteria, the evidence and the lane's claim, and can send work back or hold it, never pass a failed check. Each review is a billed model call. Set to `false` to verify from host evidence only."
+        },
+        "blacksite.orchestration.integrationGate": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Experimental.** With graph scheduling, hold a ticket whose work contract consumes something another open ticket has said it will produce, until that ticket is verified or closed and what it produced matches what this one pinned. Needs `blacksite.orchestration.workGraph` and `blacksite.orchestration.scheduler` set to `graph`. Set to `false` to stop holding tickets on inputs."
+        },
+        "blacksite.orchestration.strategicConductor": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Experimental.** Let the plan conductor propose a plan change, a delegation, a verification or a block when a step stalls or fails twice. Proposals are shown to you and never applied by the model; a plan change needs your approval. Each run has a limit on conductor calls. Set to `false` to return to continue, halt and ask only."
         },
         "blacksite.notifications.runEvents": {
           "type": "string",

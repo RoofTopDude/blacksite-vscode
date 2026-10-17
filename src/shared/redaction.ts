@@ -69,3 +69,32 @@ function truncateString(value: string, limit?: number): string {
   if (!limit || limit <= 0 || value.length <= limit) return value;
   return `${value.slice(0, Math.max(0, limit)).trimEnd()}\n...[truncated ${value.length - limit} chars]`;
 }
+
+/** Credential-looking text: bearer tokens, sk- keys, and key/token/password/secret assignments. */
+const SECRET_TEXT_PATTERNS: RegExp[] = [
+  /\bBearer\s+[A-Za-z0-9._-]+\b/gi,
+  /\bsk-[A-Za-z0-9_-]{12,}\b/g,
+  /\b(?:api[_ -]?key|token|password|secret)\s*[:=]\s*[^\s,;]+/gi,
+];
+
+/**
+ * Mask credential-looking text in free-form strings: prompt previews, and summaries that leave the
+ * process boundary they were written in (exchange packets handed to another lane).
+ */
+export function redactSecretsInText(text: string): string {
+  let output = text;
+  for (const pattern of SECRET_TEXT_PATTERNS) {
+    output = output.replace(pattern, redactMatch);
+  }
+  return output;
+}
+
+function redactMatch(match: string): string {
+  if (/^Bearer\s+/i.test(match)) return "Bearer [redacted]";
+  const separatorIndex = match.search(/[:=]/);
+  if (separatorIndex >= 0) {
+    const prefix = match.slice(0, separatorIndex + 1);
+    return `${prefix} [redacted]`;
+  }
+  return "[redacted]";
+}

@@ -211,6 +211,9 @@ export interface LoopIteration {
    *  reads an unknown outcome as "failed". */
   receiptId?: string;
   receiptStatus?: string;
+  /** #18: the verification lane's verdict on that receipt, and why. Recorded in observe mode too. */
+  verificationVerdict?: string;
+  verificationReasons?: string[];
   /** #15: why the scheduler picked this ticket when it did. */
   scheduledBecause?: string[];
 }

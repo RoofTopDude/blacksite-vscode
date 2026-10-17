@@ -103,6 +103,45 @@ async function runToCompletion(supervisor: LoopSupervisor, loopId: string): Prom
 }
 
 describe("LoopSupervisor", () => {
+  it("dispatches an explicit queue once, hands work to review, and stays drained after restart", async () => {
+    const tickets = new FakeTickets([
+      ticket("A"), ticket("B", { status: "in_progress" }), ticket("C", { status: "review" }),
+      ticket("D", { status: "done" }), ticket("E", { status: "cancelled" }),
+    ]);
+    const dispatcher = scriptedDispatcher({});
+    const options = { explicitQueueStatusGuard: () => true };
+    const supervisor = new LoopSupervisor(store, tickets, dispatcher, {}, undefined, undefined, options);
+    const loop = store.create({ title: "explicit drain", queue: { ids: ["A", "B", "C", "D", "E"] } });
+    expect(supervisor.previewReady(loop.definition.id).sort()).toEqual(["A", "B"]);
+    await runToCompletion(supervisor, loop.definition.id);
+    expect(dispatcher.seen.map((request) => request.ticket.id).sort()).toEqual(["A", "B"]);
+    expect(tickets.reviewed.map((entry) => entry.id).sort()).toEqual(["A", "B"]);
+    expect(store.get(loop.definition.id)!.definition.status).toBe("drained");
+    expect(tickets.tickets().map((item) => item.status)).toEqual(["review", "review", "review", "done", "cancelled"]);
+    store.dispose();
+    store = new LoopStore(tmpDir);
+    store.ensureInitialized();
+    const restored = new LoopSupervisor(store, tickets, dispatcher, {}, undefined, undefined, options);
+    expect(restored.previewReady(loop.definition.id)).toEqual([]);
+    await runToCompletion(restored, loop.definition.id);
+    expect(dispatcher.seen).toHaveLength(2);
+    expect(store.get(loop.definition.id)!.definition.status).toBe("drained");
+  });
+
+  it("reads the status guard per pass even if graph scheduling is unavailable", () => {
+    const tickets = new FakeTickets([ticket("A", { status: "review" })]);
+    let enabled = false;
+    const supervisor = new LoopSupervisor(store, tickets, scriptedDispatcher({}), {}, undefined, undefined, {
+      explicitQueueStatusGuard: () => enabled,
+      scheduling: () => { throw new Error("graph unavailable"); },
+    });
+    const loop = store.create({ title: "guard fallback", queue: { ids: ["A"] } });
+    expect(supervisor.previewReady(loop.definition.id)).toEqual(["A"]);
+    enabled = true;
+    expect(supervisor.previewReady(loop.definition.id)).toEqual([]);
+    enabled = false;
+    expect(supervisor.previewReady(loop.definition.id)).toEqual(["A"]);
+  });
   it("drains a queue and hands every ticket to review rather than closing it", () => {
     // Closure is the user's under user_review. A lane that both did the work and marked it
     // done would be grading its own homework.

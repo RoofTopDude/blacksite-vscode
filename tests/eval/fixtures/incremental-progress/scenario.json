@@ -1,0 +1,10 @@
+{
+  "issue": 20,
+  "description": "Genuine progress: each rerun fails on different cases with fewer failures. Must never trigger the duplicate-round intervention, with or without normalization.",
+  "iterationBudget": 40,
+  "tool": "test_run",
+  "input": {},
+  "failedStart": 8,
+  "clockStart": 1800000000000,
+  "durationStepMs": 17
+}

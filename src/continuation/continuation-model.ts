@@ -321,7 +321,7 @@ export function parseContinuationVerdict(raw: string): ContinuationVerdict {
  * more forgiving than a fence regex and costs nothing here — but it is deliberately not a
  * repair pass: anything that is not actually an object still fails, and failing means halting.
  */
-function extractJsonObject(raw: string): Record<string, unknown> | null {
+export function extractJsonObject(raw: string): Record<string, unknown> | null {
   const text = raw.trim();
   if (!text) return null;
 

@@ -900,6 +900,10 @@ export class PlanRunService {
         const lines = flags.map((entry) => `- ${entry.detail}${entry.source === "model" ? " (the agent's own account, not observed)" : ""}`);
         return [this._lastDigest, `Flagged by the host for a second look:\n${lines.join("\n")}`].filter(Boolean).join("\n\n");
       },
+      flagged: () => {
+        const since = this._run?.conductorDecisions?.at(-1)?.at ?? 0;
+        return (this._run?.reassessments ?? []).some((entry) => entry.at > since);
+      },
       priorDecisions: () => (this._run?.conductorDecisions ?? [])
         .filter((entry) => entry.decision !== "halt")
         .slice(-MAX_PRIOR_DECISIONS)

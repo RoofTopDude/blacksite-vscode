@@ -49,6 +49,20 @@ function inputs(tickets: Ticket[], overrides: Partial<Parameters<typeof computeR
 }
 
 describe("matchesQueue", () => {
+  it.each(["review", "done", "cancelled"] as const)("guards explicit %s tickets only when enabled", (status) => {
+    const spec = { ...defaultQueueSpec(), ids: ["BLK-1"] };
+    const item = ticket("BLK-1", { status });
+    expect(matchesQueue(item, spec)).toBe(true);
+    expect(matchesQueue(item, spec, true)).toBe(false);
+  });
+
+  it("keeps named open tickets independent of selection filters", () => {
+    const spec = { ...defaultQueueSpec(), ids: ["BLK-1"], labels: ["other"], priorities: ["urgent" as const], areas: ["other"] };
+    for (const status of ["triage", "backlog", "in_progress", "blocked"] as const) {
+      expect(matchesQueue(ticket("BLK-1", { status }), spec, true)).toBe(true);
+    }
+    expect(matchesQueue(ticket("BLK-2"), spec, true)).toBe(false);
+  });
   it("treats an explicit id list as the whole queue", () => {
     // A user who named twelve tickets one by one meant those twelve. Making them also satisfy
     // the status filter would silently drop the ones already in progress.
@@ -116,6 +130,31 @@ describe("territory", () => {
 });
 
 describe("computeReadySet", () => {
+  it.each(["review", "done", "cancelled"] as const)("does not re-dispatch an explicit-id ticket after it enters %s", (status) => {
+    const item = ticket("BLK-1");
+    const spec = { ...defaultQueueSpec(), ids: [item.id] };
+    expect(computeReadySet(inputs([item], { spec, explicitQueueStatusGuard: true })).ready).toHaveLength(1);
+    item.status = status;
+    const result = computeReadySet(inputs([item], { spec, explicitQueueStatusGuard: true }));
+    expect(result.ready).toHaveLength(0);
+    expect(result.queueSize).toBe(0);
+    expect(result.withheld).toHaveLength(0);
+    const state = new Map<string, LoopTicketState>([[item.id, { ticketId: item.id, attempts: 1, touchedFiles: [] }]]);
+    expect(computeReadySet(inputs([item], { spec, state, explicitQueueStatusGuard: true })).queueSize).toBe(0);
+    // A human reopening the ticket makes it eligible again; this is not a permanent ID ban.
+    item.status = "in_progress";
+    expect(computeReadySet(inputs([item], { spec, state, explicitQueueStatusGuard: true })).ready).toHaveLength(1);
+  });
+
+  it("continues to withhold named tickets that are blocked or awaiting approval", () => {
+    const item = ticket("BLK-1", { status: "blocked" });
+    const spec = { ...defaultQueueSpec(), ids: [item.id] };
+    expect(computeReadySet(inputs([item], { spec, explicitQueueStatusGuard: true })).withheld[0]?.reason).toBe("blocked");
+    item.status = "in_progress";
+    const state = new Map<string, LoopTicketState>([[item.id, { ticketId: item.id, attempts: 1, touchedFiles: [], parkedOnGate: "gate-1" }]]);
+    expect(computeReadySet(inputs([item], { spec, state, explicitQueueStatusGuard: true })).withheld[0]?.reason).toBe("parked");
+  });
+
   it("withholds a ticket whose blocker is still open, and reports why", () => {
     const tickets = [
       ticket("BLK-1", { territory: { files: ["src/a.ts"], areas: [] } }),

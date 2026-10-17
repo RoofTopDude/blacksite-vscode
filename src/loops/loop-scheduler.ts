@@ -56,13 +56,16 @@ export interface SchedulingGraph {
   criticalPath(): { ids: ReadonlySet<string>; weight: number };
   /** The dependency cycle this ticket is part of, if any. */
   cycleOf(ticketId: string): string[] | undefined;
-  /** Inputs this ticket consumes that open work has yet to produce (#17 fills these in). */
+  /** Inputs this ticket consumes that open work has yet to produce, or must produce again (#21).
+   *  Each entry reads as what is awaited: "BLK-3 to produce src/api.ts". */
   waitingInputs(ticketId: string): string[];
   /** Files receipts saw this ticket's lanes change, across attempts. */
   observedFiles(ticketId: string): string[];
 }
 
 export interface SchedulerInputs {
+  /** Opt-in repair for explicit queues re-admitting tickets awaiting review or already closed. */
+  explicitQueueStatusGuard?: boolean;
   tickets: readonly Ticket[];
   spec: LoopQueueSpec;
   /** Per-ticket loop state, keyed by ticket id. Absent means untried. */
@@ -84,10 +87,11 @@ export interface SchedulerInputs {
 }
 
 /** Whether a ticket is in this loop's queue at all, before any readiness question. */
-export function matchesQueue(ticket: Ticket, spec: LoopQueueSpec): boolean {
-  // An explicit id list *is* the queue. Making those ids also satisfy a status filter would
-  // silently drop tickets the user named one by one, which is never what they meant.
-  if (spec.ids.length) return spec.ids.includes(ticket.id);
+export function matchesQueue(ticket: Ticket, spec: LoopQueueSpec, explicitQueueStatusGuard = false): boolean {
+  // Named tickets bypass selection filters (including backlog-only), but the opt-in guard
+  // releases them at the worker's terminal state: review. Only a human closes the ticket.
+  if (spec.ids.length) return spec.ids.includes(ticket.id)
+    && (!explicitQueueStatusGuard || (isOpenStatus(ticket.status) && ticket.status !== "review"));
 
   if (!isOpenStatus(ticket.status)) return false;
   if (spec.statuses.length && !spec.statuses.includes(ticket.status)) return false;
@@ -186,7 +190,7 @@ export function computeReadySet(inputs: SchedulerInputs): SchedulerResult {
   const { tickets, spec, state, inFlight, indexedFiles } = inputs;
   const maxAttempts = inputs.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
 
-  const inQueue = tickets.filter((ticket) => matchesQueue(ticket, spec) || loopRetains(ticket, state));
+  const inQueue = tickets.filter((ticket) => matchesQueue(ticket, spec, inputs.explicitQueueStatusGuard) || loopRetains(ticket, state));
   const byId = new Map(tickets.map((ticket) => [ticket.id, ticket] as const));
 
   // rankTickets only ranks open tickets and already scores blocked ones last; the ordering it
@@ -276,7 +280,7 @@ export function computeGraphReadySet(inputs: SchedulerInputs, graph: SchedulingG
   const { tickets, spec, state, inFlight, indexedFiles } = inputs;
   const maxAttempts = inputs.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const byId = new Map(tickets.map((ticket) => [ticket.id, ticket] as const));
-  const inQueue = tickets.filter((ticket) => matchesQueue(ticket, spec) || loopRetains(ticket, state));
+  const inQueue = tickets.filter((ticket) => matchesQueue(ticket, spec, inputs.explicitQueueStatusGuard) || loopRetains(ticket, state));
   const ranked = new Map(rankTickets(tickets, inputs.now).map((entry) => [entry.ticket.id, entry] as const));
   const critical = graph.criticalPath();
   const resolver = createTerritoryResolver(indexedFiles);
@@ -320,7 +324,7 @@ export function computeGraphReadySet(inputs: SchedulerInputs, graph: SchedulingG
     }
     const inputsPending = graph.waitingInputs(ticket.id);
     if (inputsPending.length) {
-      withheld.push({ ticket, reason: "waiting_input", detail: `Waiting on ${inputsPending.slice(0, 3).join(", ")} to be produced.` });
+      withheld.push({ ticket, reason: "waiting_input", detail: `Waiting on ${inputsPending.slice(0, 3).join("; ")}.` });
       continue;
     }
 

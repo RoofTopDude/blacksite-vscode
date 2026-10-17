@@ -14,8 +14,30 @@ export type WorkContractsMode = "off" | "observe" | "enforce";
 export type SignalsMode = "off" | "observe" | "act";
 export type ClaimsMode = "off" | "observe" | "enforce";
 export type SchedulerMode = "legacy" | "shadow" | "graph";
+export type VerificationLaneMode = "off" | "observe" | "enforce";
+export type ProgressSignalsMode = "off" | "observe" | "nudge";
 
 export interface OrchestrationFlags {
+  /** #20. Watch for false progress: the same failure despite edits, edits undone and redone,
+   *  reads that bring nothing new. `observe` reports; `nudge` also asks the agent to change tack. */
+  progressSignals: ProgressSignalsMode;
+  /** #18. The verification lane for loop tickets with a receipt. `observe` records a verdict on each
+   *  iteration; `enforce` lets it send work back, park it, or label it unverified for review. */
+  verificationLane: VerificationLaneMode;
+  /** #18. An independent no-tools model review inside the verification lane. Metered. */
+  verificationReviewer: boolean;
+  /** #21. In graph scheduling, hold a ticket whose contract consumes what other open work has said
+   *  it will produce, until that work is verified or closed and its output matches the pin. */
+  integrationGate: boolean;
+  /** #15 follow-up. Release review/closed tickets from explicit-ID loop queues. */
+  explicitQueueStatusGuard: boolean;
+  /** #16. The conductor may propose replans, delegation, verification or a block at milestones.
+   *  Proposals are shown and deferred or rejected by the host; none is applied by the model. */
+  strategicConductor: boolean;
+  /** #17. Explicit read/write access to typed artifact exchange records. */
+  artifactExchange: boolean;
+  /** #20. Ignore volatile timing metadata when detecting duplicate tool rounds. */
+  normalizeToolRounds: boolean;
   /** #11. `observe` records contracts and receipts without changing behaviour; `enforce` adds
    *  scope gates and lets receipts decide loop outcomes. */
   workContracts: WorkContractsMode;
@@ -46,6 +68,72 @@ export interface OrchestrationFlagSpec {
 }
 
 export const ORCHESTRATION_FLAGS: readonly OrchestrationFlagSpec[] = [
+  {
+    id: "progressSignals",
+    setting: "blacksite.orchestration.progressSignals",
+    values: ["off", "observe", "nudge"],
+    baseline: "off",
+    shadow: "observe",
+    issue: 20,
+    rollback: "Set to off. Sessions stop watching for false progress; signals already reported stay in transcripts and run ledgers as history.",
+  },
+  {
+    id: "verificationLane",
+    setting: "blacksite.orchestration.verificationLane",
+    values: ["off", "observe", "enforce"],
+    baseline: "off",
+    shadow: "observe",
+    issue: 18,
+    rollback: "Set to off. Verdicts already recorded stay on loop iterations as history; tickets are never closed by the lane, so nothing needs undoing.",
+  },
+  {
+    id: "verificationReviewer",
+    setting: "blacksite.orchestration.verificationReviewer",
+    values: [true, false],
+    baseline: false,
+    issue: 18,
+    rollback: "Set to false. The verification lane decides from host evidence only and makes no model calls.",
+  },
+  {
+    id: "integrationGate",
+    setting: "blacksite.orchestration.integrationGate",
+    values: [true, false],
+    baseline: false,
+    issue: 21,
+    rollback: "Set to false. Graph scheduling stops holding tickets on inputs other work produces; nothing is stored.",
+  },
+  {
+    id: "strategicConductor",
+    setting: "blacksite.orchestration.strategicConductor",
+    values: [true, false],
+    baseline: false,
+    issue: 16,
+    rollback: "Set to false. The conductor returns to continue, halt and ask only; proposals already shown stay in the transcript and are not acted on.",
+  },
+  {
+    id: "explicitQueueStatusGuard",
+    setting: "blacksite.orchestration.explicitQueueStatusGuard",
+    values: [true, false],
+    baseline: false,
+    issue: 15,
+    rollback: "Set to false. Explicit-ID queues return to their original status-blind membership; no ticket state is rewritten.",
+  },
+  {
+    id: "artifactExchange",
+    setting: "blacksite.orchestration.artifactExchange",
+    values: [true, false],
+    baseline: false,
+    issue: 17,
+    rollback: "Set to false. Exchange reads and writes stop; immutable records stay under .blacksite/orchestration/artifact-exchange.",
+  },
+  {
+    id: "normalizeToolRounds",
+    setting: "blacksite.orchestration.normalizeToolRounds",
+    values: [true, false],
+    baseline: false,
+    issue: 20,
+    rollback: "Set to false. Duplicate-round detection uses the original unnormalized results again; no durable state changes.",
+  },
   {
     id: "workContracts",
     setting: "blacksite.orchestration.workContracts",
@@ -93,6 +181,14 @@ export const ORCHESTRATION_FLAGS: readonly OrchestrationFlagSpec[] = [
 ];
 
 export const BASELINE_ORCHESTRATION_FLAGS: OrchestrationFlags = Object.freeze({
+  progressSignals: "off",
+  verificationLane: "off",
+  verificationReviewer: false,
+  integrationGate: false,
+  strategicConductor: false,
+  explicitQueueStatusGuard: false,
+  artifactExchange: false,
+  normalizeToolRounds: false,
   workContracts: "off",
   workGraph: false,
   signals: "off",

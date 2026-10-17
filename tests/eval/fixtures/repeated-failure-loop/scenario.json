@@ -1,0 +1,15 @@
+{
+  "issue": 20,
+  "iterationBudget": 40,
+  "interventionByRound": 3,
+  "tool": "test_run",
+  "input": {},
+  "result": {
+    "ok": false,
+    "passed": 0,
+    "failed": 1,
+    "failures": [{ "name": "synthetic assertion", "message": "expected 2, received 1" }]
+  },
+  "clockStart": 1800000000000,
+  "durationStepMs": 17
+}

@@ -15,24 +15,20 @@ describe("orchestration flags", () => {
   });
 
   it("accepts declared values and falls back to the baseline for anything else", () => {
-    const settings: Record<string, unknown> = {
-      "blacksite.orchestration.workContracts": "enforce",
-      "blacksite.orchestration.workGraph": true,
-      "blacksite.orchestration.signals": "act",
-      "blacksite.orchestration.claims": "observe",
-      "blacksite.orchestration.scheduler": "graph",
-    };
-    expect(readOrchestrationFlags((key) => settings[key])).toEqual({
-      workContracts: "enforce", workGraph: true, signals: "act", claims: "observe", scheduler: "graph",
-    });
+    // Driven by the registry, so a new flag is covered the moment it is registered.
+    const chosen: Record<string, unknown> = Object.fromEntries(
+      ORCHESTRATION_FLAGS.map((spec) => [spec.setting, spec.values.find((value) => value !== spec.baseline)]),
+    );
+    const expected = Object.fromEntries(ORCHESTRATION_FLAGS.map((spec) => [spec.id, chosen[spec.setting]]));
+    expect(readOrchestrationFlags((key) => chosen[key])).toEqual(expected);
 
-    const bad: Record<string, unknown> = {
-      "blacksite.orchestration.workContracts": "ENFORCE",
-      "blacksite.orchestration.workGraph": "yes",
-      "blacksite.orchestration.signals": true,
-      "blacksite.orchestration.claims": "on",
-      "blacksite.orchestration.scheduler": "smart",
-    };
+    // The right value in the wrong type, or the wrong spelling, falls back to the baseline.
+    const bad: Record<string, unknown> = Object.fromEntries(ORCHESTRATION_FLAGS.map((spec) => [
+      spec.setting,
+      typeof spec.baseline === "boolean" ? String(!spec.baseline) : `${String(spec.values.find((value) => value !== spec.baseline)).toUpperCase()}`,
+    ]));
+    bad["blacksite.orchestration.signals"] = true;
+    bad["blacksite.orchestration.scheduler"] = "smart";
     expect(readOrchestrationFlags((key) => bad[key])).toEqual(BASELINE_ORCHESTRATION_FLAGS);
   });
 

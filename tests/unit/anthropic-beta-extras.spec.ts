@@ -49,11 +49,12 @@ describe("resolveAnthropicBetaExtras", () => {
       expect(extras.taskBudgetTokens).toBe(64_000);
     });
 
-    it("is eligible on Fable 5, Sonnet 5, Opus 4.8/4.7 — not Sonnet 4.6, Haiku, or older Opus", () => {
-      for (const model of ["claude-fable-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7"]) {
+    it("is eligible on Fable, Opus 4.7+, Sonnet 5.5 and Haiku 5.5 — not Sonnet 5 or 4.6, Haiku 4.5, or older Opus", () => {
+      for (const model of ["claude-fable-5", "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-4-8", "claude-opus-4-7"]) {
         expect(resolveAnthropicBetaExtras(model, { taskBudgetTokens: 30_000 }, false).taskBudgetTokens).toBe(30_000);
       }
-      for (const model of ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-6"]) {
+      // Sonnet 5 rejects the field; sending it 400'd every turn that had a task budget set.
+      for (const model of ["claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-6"]) {
         expect(resolveAnthropicBetaExtras(model, { taskBudgetTokens: 30_000 }, false).taskBudgetTokens).toBeUndefined();
       }
     });

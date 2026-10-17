@@ -15,12 +15,14 @@ import {
   isFableFamily,
   needsSummarizedDisplay,
   parseClaudeVersion,
+  recommendsRefusalFallback,
   resolveEffort,
   resolveThinkingMode,
   supportedEfforts,
   supportsFastMode,
   supportsTaskBudget,
   supportsThinking,
+  thinkingOffShape,
 } from "@blacksite-agent/llm";
 
 describe("model id normalization", () => {
@@ -173,14 +175,37 @@ describe("display and disable rules", () => {
     expect(needsSummarizedDisplay("claude-sonnet-4-6")).toBe(false);
   });
 
-  it("cannot disable thinking on Fable/Mythos — they think unconditionally and 400 on disabled", () => {
-    expect(canDisableThinking("claude-fable-5")).toBe(false);
-    expect(canDisableThinking("claude-mythos-5")).toBe(false);
+  it("cannot disable thinking on Fable/Mythos or Opus 5.5 — they think unconditionally and 400 on disabled", () => {
+    for (const id of ["claude-fable-5", "claude-fable-5-1", "claude-mythos-5", "claude-opus-5-5", "anthropic.claude-opus-5-5"]) {
+      expect(canDisableThinking(id), id).toBe(false);
+    }
   });
 
-  it("can disable thinking everywhere else", () => {
-    for (const id of ["claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"]) {
+  it("can disable thinking everywhere else, Sonnet 5.5 included through between_tools", () => {
+    for (const id of ["claude-opus-4-8", "claude-opus-5", "claude-sonnet-5", "claude-sonnet-5-5", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-haiku-5-5"]) {
       expect(canDisableThinking(id), id).toBe(true);
+    }
+  });
+
+  it("spells thinking off the way each model accepts", () => {
+    expect(thinkingOffShape("claude-opus-5")).toBe("disabled");
+    expect(thinkingOffShape("claude-opus-5-5")).toBe("omit");
+    expect(thinkingOffShape("claude-sonnet-5")).toBe("disabled");
+    expect(thinkingOffShape("claude-sonnet-5-5")).toBe("between_tools");
+    expect(thinkingOffShape("anthropic/claude-sonnet-5.5")).toBe("between_tools");
+    expect(thinkingOffShape("claude-haiku-5-5")).toBe("disabled");
+    expect(thinkingOffShape("claude-fable-5-1")).toBe("omit");
+    // Budget-era and non-Claude models are off when the field is absent.
+    expect(thinkingOffShape("claude-sonnet-4-5")).toBe("omit");
+    expect(thinkingOffShape("gpt-5.6-sol")).toBe("omit");
+  });
+
+  it("offers the server-side refusal fallback where the API accepts it, not on Haiku 5.5", () => {
+    for (const id of ["claude-fable-5-1", "claude-opus-5", "claude-opus-5-5", "claude-sonnet-5-5"]) {
+      expect(recommendsRefusalFallback(id), id).toBe(true);
+    }
+    for (const id of ["claude-haiku-5-5", "claude-sonnet-5", "claude-opus-4-8"]) {
+      expect(recommendsRefusalFallback(id), id).toBe(false);
     }
   });
 });
@@ -212,15 +237,18 @@ describe("supportsFastMode (beta, Opus 4.8+ only)", () => {
   });
 });
 
-describe("supportsTaskBudget (beta, Fable5/Sonnet5/Opus4.8/4.7)", () => {
+describe("supportsTaskBudget (beta)", () => {
   it("true for the documented eligible set", () => {
-    for (const id of ["claude-fable-5", "claude-mythos-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7"]) {
+    for (const id of [
+      "claude-fable-5", "claude-fable-5-1", "claude-mythos-5", "claude-opus-5-5", "claude-opus-5",
+      "claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-4-8", "claude-opus-4-7",
+    ]) {
       expect(supportsTaskBudget(id), id).toBe(true);
     }
   });
 
-  it("false for Sonnet 4.6, Haiku, and older Opus — not eligible per the docs", () => {
-    for (const id of ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-6", "claude-opus-4-5"]) {
+  it("false for Sonnet 5 and 4.6, Haiku 4.5, and older Opus — not eligible per the docs", () => {
+    for (const id of ["claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-6", "claude-opus-4-5"]) {
       expect(supportsTaskBudget(id), id).toBe(false);
     }
   });

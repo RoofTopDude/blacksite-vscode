@@ -16,7 +16,11 @@ import {
   type ContinuationGate,
 } from "./plan-continuation.js";
 import { buildPlanBrief } from "./plan-recovery.js";
-import { decideContinuation, type ContinuationModel, type ContinuationTrigger } from "../continuation/continuation-model.js";
+import { type ContinuationModel, type ContinuationTrigger } from "../continuation/continuation-model.js";
+import {
+  decideWithStrategy, DEFAULT_STRATEGIC_POLICY, EMPTY_STRATEGIC_STATE,
+  type StrategicPolicy, type StrategicRunState,
+} from "../continuation/strategic-verdict.js";
 import type { PlanningStore } from "../planning-store.js";
 
 export interface PlanContinuationHooks {
@@ -42,6 +46,8 @@ export interface PlanContinuationRunContext {
   active(): { planId: string; consecutive: number } | undefined;
   /** What the harness observed in the turn that just ended. */
   digest(): string | undefined;
+  /** The host flagged something for a second look since the conductor last decided (#14, #20). */
+  flagged?(): boolean;
   /** Decisions already taken this run, so the same question is not asked twice. */
   priorDecisions(): string[];
   /** Times each step moved to in_progress, keyed `phaseId/stepId` (step ids repeat across phases). */
@@ -87,7 +93,13 @@ export class PlanContinuationService {
     private readonly _settings: () => PlanContinuationSettings,
     private readonly _hooks: PlanContinuationHooks,
     private readonly _run?: PlanContinuationRunContext,
+    /** The strategic conductor (#16). Absent or disabled, every decision is the legacy one. */
+    private readonly _strategic?: () => StrategicPolicy,
   ) {}
+
+  /** Proposal bookkeeping for the plan being run. Reset when the plan changes. */
+  private _strategicPlanId?: string;
+  private _strategicState: StrategicRunState = EMPTY_STRATEGIC_STATE;
 
   /** The user spoke, so the runaway budget resets. This is the only evidence that a human is
    *  still engaged, which is exactly what the budget exists to require. */
@@ -167,16 +179,27 @@ export class PlanContinuationService {
       this._hooks.trace?.("Asking the conductor whether this plan should continue…");
 
       const prior = run ? this._run?.priorDecisions() : undefined;
-      const verdict = await decideContinuation(model, buildPlanBrief({
+      const brief = buildPlanBrief({
         plan,
         userPrompts: this._userPrompts(),
         executorLastMessage: outcome.lastMessage,
         trigger: gate.trigger,
         ...(prior?.length ? { priorDecisions: prior } : {}),
         ...(run ? { turnDigest: this._run?.digest(), ledgerAttempts: this._run?.ledgerAttempts() } : {}),
-      }));
+      });
+      if (this._strategicPlanId !== plan.id) {
+        this._strategicPlanId = plan.id;
+        this._strategicState = EMPTY_STRATEGIC_STATE;
+      }
+      const decided = await decideWithStrategy(model, brief, this._strategic?.() ?? DEFAULT_STRATEGIC_POLICY, this._strategicState, {
+        flagged: run ? this._run?.flagged?.() === true : false,
+      });
+      this._strategicState = decided.state;
+      if (decided.decision) {
+        this._hooks.trace?.(`Conductor proposal ${decided.decision.disposition}: ${decided.decision.reason}`);
+      }
 
-      const action = continuationAction(verdict);
+      const action = continuationAction(decided.verdict);
       if (run) {
         this._run?.record({
           trigger: gate.trigger,
@@ -186,7 +209,7 @@ export class PlanContinuationService {
       }
       await this._act(action, !!run);
     } catch (error) {
-      // decideContinuation already converts a provider failure into a halt, so reaching here
+      // decideWithStrategy already converts a provider failure into a halt, so reaching here
       // means something else broke. Report rather than continue: an unexplained failure is not
       // permission to keep working unattended.
       this._hooks.report("halt", `The conductor could not decide, so the plan was not continued: ${
