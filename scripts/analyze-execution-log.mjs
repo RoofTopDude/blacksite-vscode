@@ -57,6 +57,8 @@ function analyze(files) {
   const diagnostics = new Map();
   const stopReasons = new Map();
   const friction = newFriction();
+  // Context reports are cumulative per session, so the last one a session wrote is its summary.
+  const contextBySession = new Map();
   let toolTotal = 0;
   let toolFail = 0;
 
@@ -101,6 +103,9 @@ function analyze(files) {
           for (const [label, pattern] of GAVE_UP) if (pattern.test(message)) bump(friction.gaveUp, label);
           break;
         }
+        case "context_report":
+          if (d.report) contextBySession.set(`${o.sessionId ?? "?"}${o.lane ? `:${o.lane}` : ""}`, d.report);
+          break;
         case "turn_complete":
           bump(stopReasons, d.stopReason ?? "?");
           if (d.stopReason === "cancelled") friction.cancelled++;
@@ -110,7 +115,48 @@ function analyze(files) {
       }
     }
   }
-  return { perTool, errors, diagnostics, stopReasons, toolTotal, toolFail, friction };
+  return { perTool, errors, diagnostics, stopReasons, toolTotal, toolFail, friction, contextBySession };
+}
+
+/* Context economy (blacksite.context.report). Per session: what the requests carried and what was
+   paid for. Informational, never affects the exit code. See docs/context-economy-implementation-plan.md. */
+function printContext(sessions) {
+  if (sessions.size === 0) return;
+  const k = (n) => (n >= 10000 ? `${Math.round(n / 1000)}k` : String(Math.round(n ?? 0)));
+  const pct = (n) => (n == null ? "n/a" : `${Math.round(n * 100)}%`);
+  console.log(`\nContext (${sessions.size} session${sessions.size === 1 ? "" : "s"} with reports):`);
+  const totals = { requests: 0, input: 0, cacheRead: 0, cacheWrite: 0, output: 0, superseded: 0, unreferenced: 0, recovery: 0 };
+  for (const [id, r] of sessions) {
+    const s = r.session ?? {};
+    totals.requests += s.requests ?? 0;
+    totals.input += s.input ?? 0;
+    totals.cacheRead += s.cacheRead ?? 0;
+    totals.cacheWrite += s.cacheWrite ?? 0;
+    totals.output += s.output ?? 0;
+    totals.superseded += r.toolResults?.superseded?.tokens ?? 0;
+    totals.unreferenced += r.toolResults?.unreferenced?.tokens ?? 0;
+    totals.recovery += r.recoveryCalls ?? 0;
+    const perRequest = s.requests ? (s.input + s.cacheRead + s.cacheWrite) / s.requests : 0;
+    console.log(`  ${id.slice(-14)}  requests=${s.requests}  in=${k(s.input)}  cacheR=${k(s.cacheRead)}  cacheW=${k(s.cacheWrite)}  uncached=${pct(s.uncachedShare)}  peak=${k(s.peakContextTokens)}  per-request=${k(perRequest)}`);
+    const latest = r.latest?.byClassTokens;
+    if (latest) {
+      const parts = Object.entries(latest).filter(([, v]) => v > 0).map(([cls, v]) => `${cls}=${k(v)}`);
+      console.log(`      latest request by class: ${parts.join("  ")}`);
+    }
+    const carried = Object.entries(r.byClass ?? {}).filter(([, v]) => v.carriedTokens > 0).sort((a, b) => b[1].carriedTokens - a[1].carriedTokens);
+    if (carried.length) console.log(`      carried over the session: ${carried.map(([cls, v]) => `${cls}=${k(v.carriedTokens)}`).join("  ")}`);
+    for (const item of (r.costliest ?? []).slice(0, 5)) {
+      console.log(`      ${k(item.carriedTokens).padStart(6)}  ${item.class}${item.label ? ` (${item.label})` : ""}  ${k(item.tokens)} × ${item.carried} requests`);
+    }
+    if (r.toolResults) {
+      const t = r.toolResults;
+      console.log(`      tool results: ${t.count} (${k(t.tokens)})  superseded: ${t.superseded.count} (${k(t.superseded.tokens)})  never referred to again: ${t.unreferenced.count} (${k(t.unreferenced.tokens)})`);
+      if (t.repeatedReads?.length) console.log(`      read more than once: ${t.repeatedReads.slice(0, 5).map((x) => `${x.path} ×${x.reads}`).join(", ")}`);
+    }
+    if (r.calibrationRatio != null) console.log(`      estimator calibration (reported ÷ estimated): ${r.calibrationRatio.toFixed(2)}`);
+  }
+  const denom = totals.input + totals.cacheRead + totals.cacheWrite;
+  console.log(`  All: requests=${totals.requests}  in=${k(totals.input)}  cacheR=${k(totals.cacheRead)}  cacheW=${k(totals.cacheWrite)}  out=${k(totals.output)}  uncached=${denom ? pct(totals.input / denom) : "n/a"}  superseded=${k(totals.superseded)}  unreferenced=${k(totals.unreferenced)}  recovery calls=${totals.recovery}`);
 }
 
 function printFriction(f, toolTotal) {
@@ -162,6 +208,7 @@ function main() {
   }
 
   printFriction(r.friction, r.toolTotal);
+  printContext(r.contextBySession);
 
   const pass = rate <= threshold;
   console.log(`\n${pass ? "PASS" : "FAIL"}: ${rate.toFixed(2)}% ${pass ? "<=" : ">"} ${threshold}% threshold\n`);

@@ -1,70 +1,83 @@
 /*
-  Overflow store for oversized tool results.
+  Model-facing capping of tool results, and the paging tools that read them back.
 
-  A tool result that exceeds the per-result character budget is truncated before it goes to
-  the model, and the full text is kept here so `tool_output_page` and `tool_output_search`
-  can serve the rest on request. Extracted from AgentSession, where it was four methods over
-  one Map that touched no other session state — the whole concern fits behind this object,
-  and the session now just delegates to it.
+  Every tool result's full text goes to the context archive (src/context/archive.ts) when it is
+  produced, whether or not it fit. A result over the inline limit is truncated before it goes to
+  the model, with a notice saying how to read the rest. `tool_output_page` and
+  `tool_output_search` serve any archived result, so a result that was later stubbed (by the
+  emergency path, or by aging) can be read back the same way as one that was truncated.
 
-  Bounded by insertion-order eviction: a long-running session with many truncated results
-  must not grow this map without limit.
+  Before the archive, only overflowing results were kept, and only the newest 30 of them.
 */
 import {
   capToolResult,
+  capToolResultKeepingEnds,
   pageResult,
   searchResult,
   DEFAULT_PAGE_CHAR_LIMIT,
   JSON_ESCAPED_NEWLINE,
 } from "../tool-result-paging.js";
-
-/** Oldest-truncated-result eviction cap — bounds memory on a long session. */
-export const RESULT_OVERFLOW_MAX_ENTRIES = 30;
+import { ContextArchive } from "../context/archive.js";
+import { browserTool } from "../browser/privacy.js";
 
 type OverflowLookup = { ok: true; fullText: string } | { ok: false; error: string };
 
 export class ToolOutputStore {
-  private readonly _overflow = new Map<string, string>();
+  readonly archive: ContextArchive;
 
-  constructor(private readonly _maxEntries: number = RESULT_OVERFLOW_MAX_ENTRIES) {}
+  private readonly _inlineLimit: () => number;
+
+  /** `inlineLimit` may be a getter, read on every cap, so a settings change applies to the next
+   *  result. At the default limit results are cut as they always were (the head); at any other
+   *  limit the cut keeps the head, the tail and the error lines between. */
+  constructor(archive: ContextArchive = new ContextArchive(), inlineLimit: number | (() => number) = DEFAULT_PAGE_CHAR_LIMIT) {
+    this.archive = archive;
+    this._inlineLimit = typeof inlineLimit === "function" ? inlineLimit : () => inlineLimit;
+  }
 
   /** Number of full texts currently retained. Exposed for tests and diagnostics. */
   get size(): number {
-    return this._overflow.size;
+    return this.archive.size;
+  }
+
+  /** The inline limit results are capped at. */
+  get inlineLimit(): number {
+    const limit = this._inlineLimit();
+    return Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_PAGE_CHAR_LIMIT;
   }
 
   /**
-   * Truncate `stringified` to the model-facing budget, retaining the full text for later
-   * paging when it overflowed. Returns the (possibly truncated) content to send.
+   * Archive the full text of `stringified` and return what goes to the model: the text itself, or
+   * a capped prefix with a paging notice when it is over the inline limit.
    */
-  cap(toolCallId: string, stringified: string): string {
-    const capped = capToolResult(stringified, toolCallId, DEFAULT_PAGE_CHAR_LIMIT, JSON_ESCAPED_NEWLINE);
-    if (capped.overflowed) {
-      if (this._overflow.size >= this._maxEntries) {
-        // Map iterates in insertion order, so the first key is the oldest retained result.
-        const oldest = this._overflow.keys().next().value;
-        if (oldest !== undefined) this._overflow.delete(oldest);
-      }
-      this._overflow.set(toolCallId, stringified);
-    }
-    return capped.content;
+  cap(toolCallId: string, stringified: string, toolName?: string): string {
+    // Browser and web results are redacted before anything else persists them (see
+    // browser/privacy.ts), so their raw text stays in memory. So does a result whose tool is not
+    // known, since nothing then says it is safe to write.
+    const persist = toolName !== undefined && !browserTool(toolName);
+    this.archive.put(toolCallId, stringified, toolName, { persist });
+    const limit = this.inlineLimit;
+    return limit === DEFAULT_PAGE_CHAR_LIMIT
+      ? capToolResult(stringified, toolCallId, limit, JSON_ESCAPED_NEWLINE).content
+      : capToolResultKeepingEnds(stringified, toolCallId, limit, JSON_ESCAPED_NEWLINE).content;
   }
 
   /** Shared lookup for both paging tools: a stored full text, or a uniform not-found error. */
   private _lookup(toolCallId: string): OverflowLookup {
-    const fullText = this._overflow.get(toolCallId);
+    const fullText = this.archive.get(toolCallId);
     if (fullText === undefined) {
       return {
         ok: false,
-        error: `No stored output found for toolCallId "${toolCallId}". It may never have been truncated, `
-          + `may already have been fully read, or may have been evicted — only the ${this._maxEntries} `
-          + "most recently truncated results are kept.",
+        error: `No stored output found for toolCallId "${toolCallId}". Use the id of a tool call from this conversation. `
+          + (this.archive.persistent
+            ? `The archive keeps up to ${this.archive.maxEntries.toLocaleString()} results; the oldest may have been removed.`
+            : `This session keeps results in memory only, and the oldest may have been released.`),
       };
     }
     return { ok: true, fullText };
   }
 
-  /** Handles the tool_output_page tool: serves a requested slice of a truncated result. */
+  /** Handles the tool_output_page tool: serves a requested slice of an archived result. */
   page(payload: Record<string, unknown>): unknown {
     const toolCallId = String(payload["toolCallId"] ?? "").trim();
     if (!toolCallId) return { ok: false, error: "toolCallId is required." };
@@ -87,7 +100,7 @@ export class ToolOutputStore {
     };
   }
 
-  /** Handles the tool_output_search tool: matching lines with context inside a truncated result. */
+  /** Handles the tool_output_search tool: matching lines with context inside an archived result. */
   search(payload: Record<string, unknown>): unknown {
     const toolCallId = String(payload["toolCallId"] ?? "").trim();
     if (!toolCallId) return { ok: false, error: "toolCallId is required." };

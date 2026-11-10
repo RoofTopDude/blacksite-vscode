@@ -1,24 +1,27 @@
 /*
-  Unit coverage for ToolOutputStore, the overflow retention behind tool_output_page and
-  tool_output_search. agent-session.tool-output-paging.spec.ts already drives this through a
-  real AgentSession turn; these tests cover the edges that are awkward to reach that way —
-  eviction under the entry cap, and the not-found paths — now that the store is its own object.
+  Unit coverage for ToolOutputStore: model-facing capping, and tool_output_page /
+  tool_output_search over the context archive. agent-session.tool-output-paging.spec.ts drives
+  this through a real AgentSession turn; these tests cover the edges that are awkward to reach
+  that way. Archive tiers and eviction are covered in context-archive.spec.ts.
 */
 import { describe, expect, it } from "vitest";
-import { ToolOutputStore, RESULT_OVERFLOW_MAX_ENTRIES } from "../../src/agent/tool-output-store.js";
+import { ToolOutputStore } from "../../src/agent/tool-output-store.js";
+import { ContextArchive } from "../../src/context/archive.js";
 import { DEFAULT_PAGE_CHAR_LIMIT } from "../../src/tool-result-paging.js";
 
-/** Comfortably past the per-result ceiling, so cap() always overflows and retains. */
+/** Comfortably past the per-result ceiling, so cap() always truncates. */
 function oversized(marker: string): string {
   return `${marker}:${"x".repeat(DEFAULT_PAGE_CHAR_LIMIT * 2)}`;
 }
 
 describe("ToolOutputStore", () => {
-  it("returns small results unchanged and retains nothing", () => {
+  it("returns small results unchanged and still archives them", () => {
     const store = new ToolOutputStore();
     const small = JSON.stringify({ ok: true, value: "short" });
     expect(store.cap("call_1", small)).toBe(small);
-    expect(store.size).toBe(0);
+    expect(store.size).toBe(1);
+    // A result that fit can be read back too: what makes setting it aside later recoverable.
+    expect(store.page({ toolCallId: "call_1" })).toMatchObject({ ok: true, content: small, hasMore: false });
   });
 
   it("truncates an oversized result and retains the full text for paging", () => {
@@ -27,6 +30,7 @@ describe("ToolOutputStore", () => {
     const capped = store.cap("call_1", full);
 
     expect(capped.length).toBeLessThan(full.length);
+    expect(capped).toContain("tool_output_page");
     expect(store.size).toBe(1);
 
     const page = store.page({ toolCallId: "call_1", offset: 0, limit: 20 }) as {
@@ -39,19 +43,54 @@ describe("ToolOutputStore", () => {
     expect(page.nextOffset).toBe(20);
   });
 
-  it("evicts the oldest retained result once the entry cap is reached", () => {
-    const store = new ToolOutputStore(3);
-    for (const id of ["a", "b", "c"]) store.cap(id, oversized(id));
-    expect(store.size).toBe(3);
+  it("keeps browser and web results, and results of unknown tools, off disk", () => {
+    const puts: Array<{ id: string; persist?: boolean }> = [];
+    const archive = new ContextArchive();
+    const put = archive.put.bind(archive);
+    archive.put = (id, text, toolName, options) => { puts.push({ id, persist: options?.persist }); put(id, text, toolName, options); };
+    const store = new ToolOutputStore(archive);
+    store.cap("b", "{}", "browser_type");
+    store.cap("w", "{}", "web_fetch");
+    store.cap("u", "{}");
+    store.cap("f", "{}", "file_read");
+    expect(puts).toEqual([
+      { id: "b", persist: false },
+      { id: "w", persist: false },
+      { id: "u", persist: false },
+      { id: "f", persist: true },
+    ]);
+  });
 
-    store.cap("d", oversized("d"));
-    expect(store.size).toBe(3);
+  it("at the default limit, cuts after the start as it always has", () => {
+    const store = new ToolOutputStore();
+    const capped = store.cap("call_1", `${"y".repeat(DEFAULT_PAGE_CHAR_LIMIT)}TAIL`);
+    expect(capped).toContain("Output truncated at");
+    expect(capped).not.toContain("TAIL");
+  });
 
-    // "a" was the oldest insertion, so it is the one that went.
-    expect((store.page({ toolCallId: "a" }) as { ok: boolean }).ok).toBe(false);
-    for (const id of ["b", "c", "d"]) {
-      expect((store.page({ toolCallId: id }) as { ok: boolean }).ok).toBe(true);
-    }
+  it("at any other limit, keeps the start, the end and the error lines, read live", () => {
+    let limit = 1_000;
+    const store = new ToolOutputStore(new ContextArchive(), () => limit);
+    const lines = ["START", ...Array.from({ length: 200 }, (_, i) => (i === 120 ? "Error: boom at line 120" : `ok line ${i}`)), "END"];
+    // JSON-escaped newlines, as every stringified result has them.
+    const text = lines.join("\\n");
+    const capped = store.cap("call_1", text);
+    expect(store.inlineLimit).toBe(1_000);
+    expect(capped.startsWith("START")).toBe(true);
+    expect(capped).toContain("Error: boom at line 120");
+    expect(capped).toContain("END");
+    expect(capped).toContain("omitted from the middle");
+    expect(capped).toContain('toolCallId "call_1"');
+
+    limit = DEFAULT_PAGE_CHAR_LIMIT;
+    expect(store.cap("call_2", text)).toBe(text);
+  });
+
+  it("no longer stops at the newest 30 truncated results", () => {
+    const store = new ToolOutputStore();
+    for (let i = 0; i < 40; i++) store.cap(`call_${i}`, oversized(`r${i}`));
+    expect(store.size).toBe(40);
+    expect((store.page({ toolCallId: "call_0" }) as { ok: boolean }).ok).toBe(true);
   });
 
   it("reports a useful error for an unknown toolCallId", () => {
@@ -59,9 +98,9 @@ describe("ToolOutputStore", () => {
     const result = store.page({ toolCallId: "never_stored" }) as { ok: boolean; error: string };
     expect(result.ok).toBe(false);
     expect(result.error).toContain("never_stored");
-    // The message has to explain the eviction cap, or a model that hits it has no way to know
-    // whether retrying with a different offset could help.
-    expect(result.error).toContain(String(RESULT_OVERFLOW_MAX_ENTRIES));
+    // The message has to say whether eviction could explain it, or a model that hits it has no
+    // way to know whether retrying with a different offset could help.
+    expect(result.error).toMatch(/memory only|oldest/);
   });
 
   it("requires toolCallId on page and toolCallId + pattern on search", () => {
@@ -89,11 +128,5 @@ describe("ToolOutputStore", () => {
     };
     expect(missing.ok).toBe(true);
     expect(missing.totalMatches).toBe(0);
-  });
-
-  it("defaults its entry cap to RESULT_OVERFLOW_MAX_ENTRIES", () => {
-    const store = new ToolOutputStore();
-    for (let i = 0; i < RESULT_OVERFLOW_MAX_ENTRIES + 5; i++) store.cap(`call_${i}`, oversized(`r${i}`));
-    expect(store.size).toBe(RESULT_OVERFLOW_MAX_ENTRIES);
   });
 });

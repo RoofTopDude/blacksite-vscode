@@ -122,6 +122,62 @@ export function capToolResult(content: string, toolCallId: string, ceiling = DEF
   return { content: content.slice(0, end) + notice, overflowed: true };
 }
 
+const FAILURE_LINE = /error|exception|fail|fatal|panic|traceback/i;
+
+/**
+ * Caps `content` keeping its start, its end, and the lines in between that mention a failure
+ * (Phase 3.6 of the context-economy plan). A build log's verdict and a stack trace's cause are
+ * usually at the end or scattered in the middle, which a head-only cut drops. The archive holds the
+ * full text, so the notice says how to read the middle by offset.
+ *
+ * Shares `capToolResult`'s contract: content within the ceiling passes through unchanged, and
+ * `overflowed` is true otherwise. Falls back to a head-only cut when the ceiling is too small to
+ * keep both ends.
+ */
+export function capToolResultKeepingEnds(content: string, toolCallId: string, ceiling: number, boundary = "\n"): CappedToolResult {
+  if (content.length <= ceiling) return { content, overflowed: false };
+  const headEnd = snapToLineEnd(content, 0, Math.floor(ceiling * 0.6), boundary);
+  const tailBudget = Math.floor(ceiling * 0.25);
+  let tailStart = content.length - tailBudget;
+  const nextBoundary = content.indexOf(boundary, tailStart);
+  if (nextBoundary !== -1 && nextBoundary - tailStart < 500 && nextBoundary + boundary.length < content.length) {
+    tailStart = nextBoundary + boundary.length;
+  }
+  // Below about a thousand characters the markers alone crowd out the content.
+  if (ceiling < 1_000 || tailStart <= headEnd) return capToolResult(content, toolCallId, ceiling, boundary);
+
+  const middle = content.slice(headEnd, tailStart);
+  const middleLines = middle.split(boundary);
+  const signalBudget = Math.max(0, ceiling - headEnd - (content.length - tailStart));
+  const signalLines: string[] = [];
+  let failures = 0;
+  let used = 0;
+  for (const line of middleLines) {
+    if (!FAILURE_LINE.test(line)) continue;
+    failures += 1;
+    const clipped = line.length > 300 ? `${line.slice(0, 299)}…` : line;
+    if (used + clipped.length + boundary.length > signalBudget) continue;
+    signalLines.push(clipped);
+    used += clipped.length + boundary.length;
+  }
+  const shownFailures = signalLines.length
+    ? `${signalLines.length} of the ${failures} lines there that mention an error or failure follow.`
+    : failures
+      ? `${failures} lines there mention an error or failure; none fit.`
+      : "No line there mentions an error or failure.";
+  const omitted = `[… ${middle.length.toLocaleString()} characters (${middleLines.length.toLocaleString()} lines) omitted from the middle. ${shownFailures}]`;
+  const body = [
+    content.slice(0, headEnd),
+    omitted,
+    ...(signalLines.length ? [...signalLines, "[… end of the lines from the middle …]"] : []),
+    content.slice(tailStart),
+  ].join(boundary);
+  const notice = `\n\n[Output shortened from ${content.length.toLocaleString()} characters: the start, the end, and lines from the middle `
+    + `that mention an error. Call tool_output_page with toolCallId "${toolCallId}" and offset ${headEnd} to read the middle, `
+    + "or tool_output_search with a pattern to jump to specific content.]";
+  return { content: body + notice, overflowed: true };
+}
+
 /**
  * Slices `fullText` for a page request. The end always snaps to `boundary`, and
  * `nextOffset` reports that exact snapped position — so chaining page requests with

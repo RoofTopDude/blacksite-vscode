@@ -49,6 +49,25 @@ Each run writes `eval-results/replay-scorecard.json` and `.md`, which compare ba
 - Cost per verified success is `null` when nothing was verified.
 - With contracts on, the scorecard also counts how often a receipt's claim (verified or failed) agreed with the verifier.
 
+## Context scorecard
+
+`replay/context-scorecard.spec.ts` covers Phase 0.3 of [`docs/context-economy-implementation-plan.md`](../../docs/context-economy-implementation-plan.md). It replays the synthetic sessions in `fixtures/context-economy/scenario.json` through a real `AgentSession` with the context report on. Each scenario runs under every context arm:
+
+| Arm | Flags |
+| --- | --- |
+| `baseline` | every context flag at its baseline |
+| `stable-caching` | `blacksite.context.stableCaching: true` |
+| `aging-observe` | `historyBudgetTokens: 30000`, `aging: observe`. Must equal `baseline` in everything the model sees |
+| `aging-on` | `historyBudgetTokens: 30000`, `aging: on` |
+| `sight` | `awareness: status` |
+| `sight+control` | `awareness: status+tool` |
+
+The sessions keep a 4-message recent window, since the scenarios are only a few rounds long. A scripted model never reacts to what it is shown, so the `sight` arms only price the status line and the tool definition. Whether sight changes behaviour needs the live suite. "Would set aside" is summed over aging passes.
+
+For each scenario and arm it records rounds, requests, tokens per request, peak context, what rode at the uncached tail, what sat behind the cache boundary, superseded tool output and repeated reads. Rounds sit next to tokens, so a change that saves tokens but costs extra rounds shows up. Judge by cost per completed task, not per request.
+
+The figures are ledger estimates (characters ÷ 3.6) from a scripted transport. Use them to compare arms, not as provider counts. Each run writes `eval-results/context-scorecard.json` and `.md`.
+
 ## Updating golden files
 
 `npm run eval:baseline` rewrites every golden file from the current code. It also saves a dated summary in `baselines/`. Review the golden diff like code: a golden file that changed means behaviour changed.

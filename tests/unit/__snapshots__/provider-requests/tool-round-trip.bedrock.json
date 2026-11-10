@@ -7,7 +7,7 @@
       "content-type": "application/json",
       "x-amz-date": "<volatile>"
     },
-    "bodySha256": "b473cd68b4775b23",
+    "bodySha256": "327e1d49cf002104",
     "body": {
       "modelId": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
       "messages": [
@@ -105,7 +105,7 @@
             "ui_preview_render",
             "<cachePoint>"
           ],
-          "sha256": "0c269a6a8c1b3667"
+          "sha256": "bf94bdfd70036177"
         }
       },
       "additionalModelRequestFields": {
@@ -124,7 +124,7 @@
       "content-type": "application/json",
       "x-amz-date": "<volatile>"
     },
-    "bodySha256": "0e6bba62acf2c3f2",
+    "bodySha256": "45c2bb76181ac764",
     "body": {
       "modelId": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
       "messages": [
@@ -264,7 +264,7 @@
             "ui_preview_render",
             "<cachePoint>"
           ],
-          "sha256": "0c269a6a8c1b3667"
+          "sha256": "bf94bdfd70036177"
         }
       },
       "additionalModelRequestFields": {

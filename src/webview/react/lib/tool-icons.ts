@@ -70,6 +70,7 @@ export function toolIconCategory(toolName: string): ToolIconCategory {
     case "loop_propose": case "loop_control": return "todo";
     case "subagent_spawn": case "subagent_followup": return "delegate";
     case "tool_output_page": return "page";
+    case "context": return "page";
     case "tool_output_search": return "search";
     case "tool_search": return "search";
     case "mcp_list_tools": case "mcp_call_tool": case "mcp_list_resources": case "mcp_read_resource": return "mcp";

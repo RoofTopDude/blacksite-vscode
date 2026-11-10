@@ -82,6 +82,12 @@ export interface ModelRequest {
   /** The per-request block (workspace state and the like), sent after the cache breakpoints so
    *  the cached prefix survives it changing every turn. Empty for none. */
   contextTail: string;
+  /** Attached state that changes rarely (instructions, skills, project memory). Sent as a system
+   *  block after the static prompt and before the summary, with the system cache breakpoint moved
+   *  onto it, so it is read from cache instead of re-billed at the tail on every call. Routes
+   *  without a system cache (ChatGPT sign-in) send it ahead of the tail instead. Empty or absent:
+   *  none, and every route builds exactly the request it built before this field existed. */
+  contextStable?: string;
   /** The conversation. Each route normalizes it for its own wire format. */
   messages: AgentMessage[];
   tools: ModelToolPlan;

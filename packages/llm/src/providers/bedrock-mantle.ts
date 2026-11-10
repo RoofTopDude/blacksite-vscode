@@ -30,7 +30,7 @@ export async function* streamBedrockMantle(ctx: TransportContext, req: ModelRequ
       max_tokens: plan.maxTokens,
       // Mantle uses the Anthropic Messages wire format — reuse the same cached-blocks
       // builder so the stable system-prompt head is cache-eligible here too.
-      system: buildAnthropicSystemBlocks(req.system, req.systemSummary, ctx.config.cacheTtl),
+      system: buildAnthropicSystemBlocks(req.system, req.systemSummary, ctx.config.cacheTtl, req.contextStable),
       messages: anthropicWireMessages(ctx, req, new Set(toolPlan.wire.map((tool) => tool.name))),
       tools: buildAnthropicWireTools(ctx, toolPlan),
       stream: true,

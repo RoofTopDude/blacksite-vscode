@@ -7,7 +7,7 @@
       "content-type": "application/json",
       "x-amz-date": "<volatile>"
     },
-    "bodySha256": "c8cc01efdd3db4c0",
+    "bodySha256": "bd219598abb27f81",
     "body": {
       "model": "anthropic.claude-sonnet-4-6",
       "max_tokens": 32768,
@@ -50,7 +50,7 @@
           "question_card",
           "tool_search"
         ],
-        "sha256": "691d4d21b9238b07"
+        "sha256": "73345adfef5b7ab0"
       },
       "stream": true,
       "thinking": {

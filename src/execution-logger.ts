@@ -10,6 +10,7 @@ import {
   createTurnStartEntry,
   type TurnLogMetadata,
 } from "./execution-log-format.js";
+import { formatContextReportLine } from "./context/report.js";
 
 // ExecutionLogger
 //
@@ -187,6 +188,10 @@ export class ExecutionLogger {
                 ? `  amortized=${event.receipt.economics.amortized ? "yes" : "no"}`
                 : ""),
         );
+        break;
+
+      case "context_report":
+        this._write(`${p}◇ Context  ${formatContextReportLine(event.report)}`);
         break;
 
       case "runtime_state":

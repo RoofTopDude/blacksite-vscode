@@ -5,7 +5,7 @@
       "authorization": "<volatile>",
       "content-type": "application/json"
     },
-    "bodySha256": "8e926ab0373d3fdc",
+    "bodySha256": "d406653d878d9aaf",
     "body": {
       "model": "gpt-4.1",
       "messages": [
@@ -83,7 +83,7 @@
           "ui_design_tokens",
           "ui_preview_render"
         ],
-        "sha256": "991590248874b212"
+        "sha256": "6123bd67147a916d"
       },
       "tool_choice": "auto",
       "stream": true,
@@ -101,7 +101,7 @@
       "authorization": "<volatile>",
       "content-type": "application/json"
     },
-    "bodySha256": "b22c76e7fa0f3ffe",
+    "bodySha256": "e29282ac882e6e05",
     "body": {
       "model": "gpt-4.1",
       "messages": [
@@ -198,7 +198,7 @@
           "ui_design_tokens",
           "ui_preview_render"
         ],
-        "sha256": "991590248874b212"
+        "sha256": "6123bd67147a916d"
       },
       "tool_choice": "auto",
       "stream": true,

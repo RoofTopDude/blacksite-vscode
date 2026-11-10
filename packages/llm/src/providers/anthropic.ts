@@ -87,7 +87,7 @@ export async function* streamAnthropic(ctx: TransportContext, req: ModelRequest)
     const body: Record<string, unknown> = {
       model: req.model,
       max_tokens: plan.maxTokens,
-      system: buildAnthropicSystemBlocks(req.system, req.systemSummary, ctx.config.cacheTtl),
+      system: buildAnthropicSystemBlocks(req.system, req.systemSummary, ctx.config.cacheTtl, req.contextStable),
       messages: anthropicWireMessages(ctx, req, new Set(toolPlan.wire.map((tool) => tool.name)), hosted?.provider === "anthropic"),
       tools: buildAnthropicWireTools(ctx, toolPlan, hosted?.provider === "anthropic" ? hosted : undefined),
       stream: true,

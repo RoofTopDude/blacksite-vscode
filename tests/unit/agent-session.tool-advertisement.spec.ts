@@ -5,6 +5,7 @@
    the catalog to the advertisement list, so assert the correspondence here instead of
    relying on whoever adds the next family remembering both places. */
 
+import { BASELINE_CONTEXT_FLAGS } from "../../src/context/flags.js";
 import { describe, expect, it, vi } from "vitest";
 import { AgentSession } from "../../src/agent-session.js";
 import { loadCheckpoint } from "../../src/checkpoint.js";
@@ -69,10 +70,20 @@ function fullyWiredOverrides(): Partial<Opts> {
     editProvider: stub(),
     // undefined configuredServices means "no credential info" ⇒ advertise every integration.
     configuredServices: undefined,
+    // The context tool is offered only at this awareness level.
+    contextFlags: () => ({ ...BASELINE_CONTEXT_FLAGS, awareness: "status+tool" }),
   };
 }
 
 describe("AgentSession tool advertisement", () => {
+  it("offers the context tool only with awareness at status+tool", () => {
+    for (const awareness of ["off", "status"] as const) {
+      const names = advertisedNames(createSession({ ...fullyWiredOverrides(), contextFlags: () => ({ ...BASELINE_CONTEXT_FLAGS, awareness }) }));
+      expect(names).not.toContain("context");
+    }
+    expect(advertisedNames(createSession(fullyWiredOverrides()))).toContain("context");
+  });
+
   it("advertises every tool in the catalog when all providers are wired", () => {
     const advertised = new Set(advertisedNames(createSession(fullyWiredOverrides())));
     // The on-demand loader exists only when on-demand loading is on (next test).

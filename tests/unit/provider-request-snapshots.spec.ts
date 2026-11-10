@@ -268,6 +268,38 @@ describe("provider request snapshots", () => {
       await run(session, "What is the current Node LTS?");
       await expectRequests(fetchMock, session, "hosted-search", route);
     });
+
+    /* Stable caching: the rarely changing part of the attached context goes behind the system cache
+       boundary, and only the live part rides at the tail. The live part changes between the two
+       rounds here; the system section must not. */
+    it(`${route}: stable context behind the system cache boundary`, async () => {
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({ ok: true, status: 200, body: toolTurn(route) })
+        .mockResolvedValueOnce({ ok: true, status: 200, body: textTurn(route) });
+      vi.stubGlobal("fetch", fetchMock);
+      let refresh = 0;
+      const session = createSession(route, {
+        contextFlags: () => ({ report: false, stableCaching: true }),
+        workspaceContextProvider: async () => {
+          refresh += 1;
+          return {
+            combined: `# Current workspace state\nInstructions: be brief.\nGit: ${refresh} changed`,
+            stable: "# Workspace: repository and project state\nInstructions: be brief.",
+            live: `# Current workspace state: live\nGit: ${refresh} changed`,
+          };
+        },
+      });
+      await run(session, "Read the readme and summarise it.");
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String((call[1] as RequestInit).body)) as Record<string, unknown>);
+      const systemOf = (body: Record<string, unknown>): unknown => body["system"] ?? body["instructions"]
+        ?? (body["messages"] as Array<Record<string, unknown>>)[0];
+      expect(JSON.stringify(systemOf(bodies[0]!))).toContain("Instructions: be brief.");
+      expect(JSON.stringify(systemOf(bodies[1]!))).toBe(JSON.stringify(systemOf(bodies[0]!)));
+      expect(JSON.stringify(bodies[0])).toContain("Git: 1 changed");
+      expect(JSON.stringify(bodies[1])).toContain("Git: 2 changed");
+      await expectRequests(fetchMock, session, "stable-context", route);
+    });
   }
 
   /* The ChatGPT subscription route never calls fetch: the session hands a request object to the

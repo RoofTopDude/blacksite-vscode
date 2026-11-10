@@ -5,7 +5,7 @@
       "authorization": "<volatile>",
       "content-type": "application/json"
     },
-    "bodySha256": "cb2491278ede9496",
+    "bodySha256": "333603631bba776d",
     "body": {
       "model": "o4-mini",
       "input": [
@@ -89,7 +89,7 @@
           "ui_design_tokens",
           "ui_preview_render"
         ],
-        "sha256": "7df2394984522bbb"
+        "sha256": "8c417ba0f5d15235"
       },
       "tool_choice": "auto",
       "stream": true,
@@ -112,7 +112,7 @@
       "authorization": "<volatile>",
       "content-type": "application/json"
     },
-    "bodySha256": "dd299429575b0928",
+    "bodySha256": "ec0b641be16db8a1",
     "body": {
       "model": "o4-mini",
       "input": [
@@ -218,7 +218,7 @@
           "ui_design_tokens",
           "ui_preview_render"
         ],
-        "sha256": "7df2394984522bbb"
+        "sha256": "8c417ba0f5d15235"
       },
       "tool_choice": "auto",
       "stream": true,

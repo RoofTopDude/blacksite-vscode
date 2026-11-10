@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.33.0-pre.7",
+  "version": "1.33.0-pre.8",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -1314,6 +1314,59 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "**Beta.** Measure what's consuming the agent's context window each turn (token load, duplication, replay across turns, hog segments) using the [PAU Profiler](https://github.com/RoofTopDude/pau-profiler) library, shown in the PAU panel. Read-only instrumentation: it does not change what is sent to the model or how compaction behaves, and analysis runs after the turn's request has already been sent. **Off by default while this gets real-world testing.**"
+        },
+        "blacksite.context.report": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Experimental.** At the end of each turn, write a context report to the execution log (`.blacksite/execution.jsonl`): tokens by kind (system prompt, tool definitions, attached context, messages, tool results), how much input was read from cache, peak context, the items that cost the most across the session, and tool results that a later read superseded or that were never referred to again. Read it with `npm run analyze:execution`. Measurement only: it changes nothing that is sent to the model."
+        },
+        "blacksite.context.stableCaching": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Experimental.** Send the parts of the attached context that change rarely (repository instructions, project shape and memory, the request profile, loaded skills, the skill roster) once, behind a prompt-cache boundary, instead of re-sending them uncached on every model call. Only open editors, diagnostics, git status, plans and the closing checklist stay at the end of each request. Lowers uncached input tokens on every tool round; the agent sees the same information. Takes full effect in a new chat. Set to `false` to go back."
+        },
+        "blacksite.context.historyBudgetTokens": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "**Experimental.** A ceiling, in tokens, on the whole request as the provider counts it. Aging and compaction start at this size, or at the usual percentage of the model's window, whichever comes first. Without it, a 1M-token model carries five times the history of a 200K one before anything happens. `0` means no ceiling."
+        },
+        "blacksite.context.aging": {
+          "type": "string",
+          "enum": [
+            "off",
+            "observe",
+            "on"
+          ],
+          "enumDescriptions": [
+            "Older tool output stays in the conversation until compaction, as before.",
+            "Records in the execution log what aging would set aside and how many tokens that would save. Changes nothing.",
+            "Sets older tool output aside before compaction: superseded reads first, then old, large results. Each is replaced by a short record of the call, its outcome and how to read it back, and stays readable with tool_output_page."
+          ],
+          "default": "off",
+          "markdownDescription": "**Experimental.** Set older tool output aside to keep the context small. It runs at the start of a turn when the context is near its threshold, or whenever it is over. Below the threshold, it runs only when the saving outweighs re-caching the history after the change. Nothing in the most recent messages, and no question card answer, is ever set aside. Set to `off` to go back; results already set aside stay readable."
+        },
+        "blacksite.context.inlineResultChars": {
+          "type": "number",
+          "default": 20000,
+          "minimum": 2000,
+          "maximum": 200000,
+          "markdownDescription": "**Experimental.** How many characters of one tool result the agent sees inline. At `20000`, a longer result is cut after its start, as before. At any other value, the cut keeps the start, the end, and lines from the middle that mention an error. Either way, the agent can read the rest with tool_output_page."
+        },
+        "blacksite.context.awareness": {
+          "type": "string",
+          "enum": [
+            "off",
+            "status",
+            "status+tool"
+          ],
+          "enumDescriptions": [
+            "The agent is not told how full its context is.",
+            "Each request carries a short section of fact: how large the last request was against the compaction threshold, how much of it is older tool output, and how many results are set aside.",
+            "The same, plus a `context` tool the agent can use to list what its context holds, set results aside with a note in their place, and leave a note that the next compaction keeps verbatim."
+          ],
+          "default": "off",
+          "markdownDescription": "**Experimental.** Let the agent see, and with the tool manage, its own context. The section states facts and gives no instruction; what the agent does with it is up to the agent. The system prompt's description of it is fixed when a chat starts."
         },
         "blacksite.hooks.commands": {
           "type": "array",

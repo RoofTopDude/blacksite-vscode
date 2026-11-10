@@ -6,7 +6,7 @@
       "content-type": "application/json",
       "x-api-key": "test-key"
     },
-    "bodySha256": "0b1b97a45d4b753b",
+    "bodySha256": "cfd04008d520dfcf",
     "body": {
       "model": "claude-sonnet-4-6",
       "max_tokens": 32768,
@@ -106,7 +106,7 @@
           "ui_design_tokens",
           "ui_preview_render"
         ],
-        "sha256": "d8dd199863f0f10e"
+        "sha256": "9d947b81ff341112"
       },
       "stream": true,
       "thinking": {

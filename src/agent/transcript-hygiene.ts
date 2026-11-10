@@ -30,6 +30,22 @@ export function wrapAttachedContext(body: string): string {
   ].join("\n");
 }
 
+/** Envelope for the stable part of the attached context, when stable caching sends it as a system
+ *  block. It is not in anyone's turn, so it needs no "the user did not write this"; it does need to
+ *  say how it relates to the live block on the newest turn. */
+export const STABLE_CONTEXT_TAG = "blacksite-session-context";
+
+export function wrapStableAttachedContext(body: string): string {
+  if (!body.trim()) return "";
+  return [
+    `<${STABLE_CONTEXT_TAG}>`,
+    `Attached by Blacksite: repository guidance and project state that change rarely, kept here so they are read from the prompt cache instead of being re-sent on every request. When something in it changes, the new copy replaces this one. The parts that change between tool rounds are in the <${ATTACHED_CONTEXT_TAG}> block on the newest turn; where the two differ, that block is newer.`,
+    "",
+    body,
+    `</${STABLE_CONTEXT_TAG}>`,
+  ].join("\n");
+}
+
 const MAX_PERSISTED_PREVIEW_CODE_CHARS = 512 * 1024;
 
 /** Runtime state and checkpoints do not need to duplicate a large compiled preview: the live

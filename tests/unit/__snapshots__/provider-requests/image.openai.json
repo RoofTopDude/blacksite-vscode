@@ -5,7 +5,7 @@
       "authorization": "<volatile>",
       "content-type": "application/json"
     },
-    "bodySha256": "450c70d513106fed",
+    "bodySha256": "f7a0d20396f4198b",
     "body": {
       "model": "gpt-4.1",
       "messages": [
@@ -94,7 +94,7 @@
           "ui_design_tokens",
           "ui_preview_render"
         ],
-        "sha256": "991590248874b212"
+        "sha256": "6123bd67147a916d"
       },
       "tool_choice": "auto",
       "stream": true,

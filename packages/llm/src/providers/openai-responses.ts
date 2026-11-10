@@ -47,9 +47,10 @@ export async function* streamOpenAIResponses(ctx: TransportContext, req: ModelRe
   const url = ctx.config.baseUrl
     ? ctx.config.baseUrl.replace(/\/chat\/completions\/?$/, "/responses")
     : PROVIDER_BASE_URLS.openaiResponses;
+  const instructionsBase = req.contextStable ? `${req.system}\n\n${req.contextStable}` : req.system;
   const effectiveInstructions = req.systemSummary
-    ? `${req.system}\n\n---\n[COMPRESSED CONVERSATION HISTORY]\n${req.systemSummary}\n---`
-    : req.system;
+    ? `${instructionsBase}\n\n---\n[COMPRESSED CONVERSATION HISTORY]\n${req.systemSummary}\n---`
+    : instructionsBase;
 
   const plan = req.thinking;
   const maxTok = plan.maxTokens;

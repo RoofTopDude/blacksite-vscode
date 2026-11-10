@@ -7,7 +7,7 @@
       "content-type": "application/json",
       "x-amz-date": "<volatile>"
     },
-    "bodySha256": "06b8caa01b08f74a",
+    "bodySha256": "9f6a7c0b8d92a577",
     "body": {
       "modelId": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
       "messages": [
@@ -56,7 +56,7 @@
             "tool_search",
             "<cachePoint>"
           ],
-          "sha256": "0d56791da0d06fb4"
+          "sha256": "209600998b4bc753"
         }
       },
       "additionalModelRequestFields": {

@@ -37,10 +37,18 @@ export function buildAnthropicSystemBlocks(
   systemPrompt: string,
   compressedSummary: string,
   cacheTtl?: CacheTtl,
+  stableContext?: string,
 ): Array<{ type: "text"; text: string; cache_control?: AnthropicCacheControl }> {
-  const blocks: Array<{ type: "text"; text: string; cache_control?: AnthropicCacheControl }> = [
-    { type: "text", text: systemPrompt, cache_control: cacheControlFor(cacheTtl) },
-  ];
+  // The breakpoint sits on the last stable block. With stable context that is the second block:
+  // a request may carry four breakpoints and all four are spoken for (tools, system, two rolling
+  // message anchors), so the breakpoint moves rather than a fifth being added. The static prompt
+  // stays inside the cached prefix either way.
+  const blocks: Array<{ type: "text"; text: string; cache_control?: AnthropicCacheControl }> = stableContext
+    ? [
+        { type: "text", text: systemPrompt },
+        { type: "text", text: stableContext, cache_control: cacheControlFor(cacheTtl) },
+      ]
+    : [{ type: "text", text: systemPrompt, cache_control: cacheControlFor(cacheTtl) }];
   if (compressedSummary) {
     blocks.push({
       type: "text",

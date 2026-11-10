@@ -1,0 +1,42 @@
+{
+  "plan": "docs/context-economy-implementation-plan.md",
+  "phase": "0.3",
+  "note": "Synthetic sessions replayed through a real AgentSession over a scripted transport. Sizes are characters. Each round reads one file; a file named twice is read twice, unchanged.",
+  "attached": {
+    "instructionsChars": 12000,
+    "projectMemoryChars": 3000,
+    "skillRosterChars": 1500,
+    "liveChars": 900
+  },
+  "scenarios": [
+    {
+      "name": "read-heavy-investigation",
+      "rounds": [
+        { "path": "packages/core/src/index.ts", "chars": 6000 },
+        { "path": "packages/core/src/router.ts", "chars": 14000 },
+        { "path": "packages/core/src/handlers.ts", "chars": 9000 },
+        { "path": "packages/core/src/router.ts", "chars": 14000 },
+        { "path": "packages/api/src/server.ts", "chars": 18000 },
+        { "path": "packages/api/src/routes.ts", "chars": 7000 },
+        { "path": "packages/core/src/index.ts", "chars": 6000 },
+        { "path": "packages/api/test/server.test.ts", "chars": 11000 }
+      ]
+    },
+    {
+      "name": "short-fix",
+      "rounds": [
+        { "path": "src/util/format.ts", "chars": 2500 },
+        { "path": "src/util/format.test.ts", "chars": 3000 }
+      ]
+    },
+    {
+      "name": "long-build-logs",
+      "rounds": [
+        { "path": "logs/build-1.txt", "chars": 30000 },
+        { "path": "logs/build-2.txt", "chars": 30000 },
+        { "path": "logs/build-3.txt", "chars": 30000 },
+        { "path": "logs/build-1.txt", "chars": 30000 }
+      ]
+    }
+  ]
+}

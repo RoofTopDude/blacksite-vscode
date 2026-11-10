@@ -130,6 +130,9 @@ export interface ConverseOptions {
   modelId: string;
   messages: BedrockMessage[];
   systemPrompt?: string;
+  /** Attached state that changes rarely. A second system block, with the system cache point moved
+   *  after it (Bedrock allows four cache points and all four are in use). */
+  stableContext?: string;
   /** Growing compressed-history summary — kept as a separate, uncached system block
    *  so mutations never bust the stable system-prompt cache entry. */
   compressedSummary?: string;
@@ -181,6 +184,7 @@ export function buildRequestBody(opts: ConverseOptions): BedrockConverseRequest 
     // Mirrors the Anthropic path's buildAnthropicSystemBlocks design.
     const systemBlocks: Array<{ text: string } | BedrockCachePoint> = [
       { text: opts.systemPrompt },
+      ...(opts.stableContext ? [{ text: opts.stableContext }] : []),
       ...(opts.cacheEnabled === false ? [] : [CACHE_POINT]),
     ];
     if (opts.compressedSummary) {

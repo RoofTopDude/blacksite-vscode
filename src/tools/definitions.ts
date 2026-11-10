@@ -1427,8 +1427,8 @@ export const RESULT_PAGING_TOOLS: ToolDefinition[] = [
     "Continue reading a previous tool call's output that was too large and got truncated. " +
     "A truncated result ends with a notice giving you the exact toolCallId and offset to pass here — copy them " +
     "verbatim rather than guessing. Prefer narrowing the original call (a smaller range, a tighter filter, a more " +
-    "specific query) over paging through everything when that would get you the answer faster. Only works for " +
-    "results truncated earlier in this same conversation.",
+    "specific query) over paging through everything when that would get you the answer faster. Also reads back " +
+    "any earlier result in this conversation that was set aside, by the toolCallId its record gives.",
     {
       toolCallId: str("The tool call id shown in the truncation notice, e.g. \"toolu_01Ab2C…\"."),
       offset: num("Character offset to resume reading from (0-based). Use the offset the notice suggests, or 0 to start from the beginning."),
@@ -1441,8 +1441,8 @@ export const RESULT_PAGING_TOOLS: ToolDefinition[] = [
     "session.tool_output_search",
     "Search within a previous tool call's output that was too large to read in full. Finds matching lines with " +
     "surrounding context, without paging through everything. Prefer this over tool_output_page when you know " +
-    "roughly what you're looking for — the truncation notice's line/keyword counts are a good hint. Only works " +
-    "for results truncated earlier in this same conversation.",
+    "roughly what you're looking for — the truncation notice's line/keyword counts are a good hint. Works on any " +
+    "earlier result in this conversation, including one that was set aside.",
     {
       toolCallId: str("The tool call id shown in the truncation notice."),
       pattern: str("Case-insensitive substring to search for, e.g. \"AssertionError\"."),
@@ -1450,6 +1450,34 @@ export const RESULT_PAGING_TOOLS: ToolDefinition[] = [
       maxMatches: num("Maximum number of matches to return (default 20, max 50)."),
     },
     ["toolCallId", "pattern"],
+  ),
+];
+
+/** Phase 4 of the context-economy plan: the agent's view of, and say over, its own context.
+ *  Offered only with `blacksite.context.awareness` at `status+tool`. */
+export const CONTEXT_TOOLS: ToolDefinition[] = [
+  tool(
+    "context",
+    "session.context",
+    "Your working memory: what this conversation's context holds, and a way to manage it.\n" +
+    "- `review` lists what the context carries, grouped and sized: the system prompt, tool definitions, attached " +
+    "state, messages, and each tool result with its tool, size, age, and whether a later read superseded it or it " +
+    "is already set aside.\n" +
+    "- `set_aside` replaces the results you name with a short record: the call, its outcome, its size, your note if " +
+    "you give one, and how to read it back. The full text goes to the archive; tool_output_page returns it by " +
+    "toolCallId at any time. The note stays in context, so it can carry what the result established. Setting a " +
+    "result aside frees its tokens on every later request, and makes the provider re-cache the history after it " +
+    "once; `review` reports both figures.\n" +
+    "- `carry_forward` stores a note that compaction keeps verbatim, ahead of its own summary, the next time older " +
+    "history is summarised. A later note replaces an earlier one. Without one, compaction summarises as usual.\n" +
+    "Results of question_card cannot be set aside.",
+    {
+      action: enumStr("What to do.", ["review", "set_aside", "carry_forward"]),
+      ids: arr(str("A toolCallId."), "set_aside: the toolCallIds of the results to set aside."),
+      through: str("set_aside: set aside every eligible result up to and including this toolCallId, oldest first."),
+      note: str("set_aside: what the results established, kept in their place. carry_forward: the note to keep through compaction."),
+    },
+    ["action"],
   ),
 ];
 
@@ -2514,6 +2542,7 @@ export const ALL_TOOLS: ToolDefinition[] = [
   ...AGENT_MEMORY_TOOLS,
   ...SKILL_TOOLS,
   ...RESULT_PAGING_TOOLS,
+  ...CONTEXT_TOOLS,
   ...SERVICE_TOOLS,
   ...BROWSER_TOOLS,
   ...RESEARCH_TOOLS,

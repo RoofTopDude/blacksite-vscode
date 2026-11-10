@@ -69,7 +69,7 @@ import {
 } from "@blacksite-agent/llm";
 import type { LocalRuntime, McpServer } from "@blacksite/local-runtime";
 import {
-  WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, RESEARCH_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, WORK_GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, DIAGRAM_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS, SKILL_TOOLS,
+  CONTEXT_TOOLS, WORKSPACE_TOOLS, MEMORY_TOOLS, DIAGNOSTICS_TOOLS, CODE_INTEL_TOOLS, GIT_TOOLS, TEST_TOOLS, WORKTREE_TOOLS, SUBAGENT_TOOLS, SERVICE_TOOLS, BROWSER_TOOLS, RESEARCH_TOOLS, SEQUENCE_TOOLS, LOOP_TOOLS, UI_TOOLS, PLANNING_TOOLS, TICKET_TOOLS, GRAPH_TOOLS, WORK_GRAPH_TOOLS, DATA_TOOLS, TRANSCRIPT_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS, DIAGRAM_TOOLS, AGENT_MEMORY_TOOLS, RESULT_PAGING_TOOLS, REFERENCE_TOOLS, SKILL_TOOLS,
   resolveToolDispatch,
   validateToolInput,
   describeExpectedToolShape,
@@ -84,6 +84,16 @@ import {
 export { isMutatingServiceTool } from "./tools/definitions.js";
 import type { ToolDefinition, QCardOption, QCardQuestion } from "./tools/definitions.js";
 import { ToolOutputStore } from "./agent/tool-output-store.js";
+import { ContextArchive } from "./context/archive.js";
+import { ContextLedger, type RequestShape } from "./context/ledger.js";
+import { ContextReportAccumulator, toolResultStats, type ContextReport } from "./context/report.js";
+import { layoutAttachedContext, type WorkspaceContextParts } from "./context/layout.js";
+import { BASELINE_CONTEXT_FLAGS, contextLedgerActive, type ContextFlags } from "./context/flags.js";
+import { AGING_TARGET_FRACTION, AGING_TURN_START_FRACTION, planAging, tokensFrom, type AgingCache } from "./context/policy.js";
+import { buildSetAsideStub, isSetAside, type SetAsideWhy } from "./context/stubs.js";
+import { estimateTokens } from "./context/model.js";
+import type { LedgerSnapshot } from "./context/ledger.js";
+import { cacheEconomicsFor } from "./pau-cache-economics.js";
 import { isVerificationCommand } from "./agent/verification-commands.js";
 import { failedFiles, outstandingFiles, recordCheck, recordMutation, withoutFiles, type CheckCoverage } from "./agent/verification-ledger.js";
 import type { AgentMemoryIndex } from "./agent-memory-index.js";
@@ -149,7 +159,7 @@ import type { Checkpoint } from "./checkpoint.js";
    re-exports them so the ~60 call sites and specs that import them from "agent-session.js"
    keep working, and so the split stays an internal file-layout change rather than an API
    break. Import them directly from their own modules in new code. */
-import { sanitizePendingGateForPersistence, stripImagesForPersistence, wrapAttachedContext } from "./agent/transcript-hygiene.js";
+import { sanitizePendingGateForPersistence, stripImagesForPersistence, wrapAttachedContext, wrapStableAttachedContext } from "./agent/transcript-hygiene.js";
 
 
 export { stripImagesForPersistence };
@@ -528,6 +538,10 @@ export type BaseAgentEvent =
    *  measurement for the turn that just produced `usage_update` — see pau-metrics.ts. Absent
    *  entirely when the flag is off; never affects what was already sent to the provider. */
   | { type: "pau_receipt"; receipt: PauReceipt }
+  /** Opt-in (`blacksite.context.report`). What the turn's requests carried and what the session
+   *  has paid for so far, from the context ledger. Emitted once per turn, before turn_complete.
+   *  Measurement only. */
+  | { type: "context_report"; report: ContextReport }
   | { type: "runtime_state"; state: SessionRuntimeState }
   | { type: "execution_diagnostic"; level: "info" | "warn" | "error"; message: string }
   | { type: "tool_call_start"; toolCallId: string; toolName: string; inputPreview: string; input: Record<string, unknown> }
@@ -881,6 +895,12 @@ export interface AgentSessionOptions {
    *  agent/tool-loading.ts); "all" sends the whole catalog every request. Read live, like the PAU
    *  flag, so the setting takes effect on a running conversation. Absent means "all". */
   toolLoading?: () => "on_demand" | "all";
+  /** Context-economy settings (src/context/flags.ts), read live like the PAU flag. Absent means
+   *  every setting at its baseline: today's behaviour. */
+  contextFlags?: () => ContextFlags;
+  /** Directory under which this session's tool-result archive lives (one subdirectory per
+   *  session id). Absent: results are archived in memory only. */
+  contextArchiveRoot?: string;
   /** Chat auto mode (see auto-approval-policy.ts). Consulted by the approval gate before anyone is
    *  prompted: "allow" runs the call once, "escalate" asks the user with the reason, null (ask
    *  mode) leaves the ordinary path in charge. Never consulted for a covered "Allow all" grant. */
@@ -935,7 +955,7 @@ export interface AgentSessionOptions {
    * Injected at the message tail so it stays current without invalidating the cached
    * static system prompt. Omit to send no live workspace block.
    */
-  workspaceContextProvider?: () => Promise<string>;
+  workspaceContextProvider?: () => Promise<string | WorkspaceContextParts>;
   /** Provides service-layer credentials for github/gitlab/jira/confluence/salesforce calls. */
   serviceKeyProvider?: (service: string) => Promise<string | undefined>;
   /** Provides the user-configured credential destination for non-GitHub integrations.
@@ -1490,7 +1510,7 @@ export class AgentSession {
   /** Set once a browser call reports the runtime missing; stops re-advertising browser tools. */
   private _browserUnavailable = false;
   /** Live "Current workspace state" block, refreshed before each provider turn and injected at the message tail. */
-  private _workspaceContext = "";
+  private _workspaceContext: WorkspaceContextParts = { combined: "", stable: "", live: "" };
   /** Per-user-request behavior layer. Kept out of the static system prompt so mode changes do
       not invalidate provider prompt caches and remain current across tool continuations. */
   private _requestMode: RequestMode = "auto";
@@ -1515,7 +1535,19 @@ export class AgentSession {
    * tool_call id the model already has from its own tool_use block — so resuming a read
    * needs no new id scheme, just the offset from the truncation notice. See ToolOutputStore.
    */
-  private readonly _toolOutput = new ToolOutputStore();
+  private _toolOutput!: ToolOutputStore;
+  /** What each request carries, for reports and (later) aging. See src/context/ledger.ts. */
+  private readonly _contextLedger = new ContextLedger({
+    unsheddableTools: UNSHEDDABLE_TOOL_NAMES,
+    isArchived: (id) => this._toolOutput.archive.has(id),
+  });
+  private readonly _contextReport = new ContextReportAccumulator();
+  /** The request most recently handed to the transport: what the next usage_update describes. */
+  private _lastModelRequest?: ModelRequest;
+  /** The ledger's view of that request, taken when its usage arrived. Feeds the status line. */
+  private _lastContextSnapshot?: LedgerSnapshot;
+  /** Phase 4.3: the agent's note for the next compaction, kept verbatim ahead of the summary. */
+  private _carryForwardNote = "";
   /** Provider-turn session driving the next model turn. */
   private readonly _providerTurnSession: ProviderTurnSession;
   /**
@@ -1561,6 +1593,7 @@ export class AgentSession {
        parameter property, and under ES2022 class-field semantics initializers
        can run before it is assigned. */
     this._freshness = new FileFreshnessLedger(opts.workspaceRoot);
+    this._toolOutput = this._openToolOutputStore();
     this._providerTurnSession = opts.providerTurnSessionFactory
       ? opts.providerTurnSessionFactory(this)
       : this._createBuiltinProviderTurnSession();
@@ -1569,6 +1602,28 @@ export class AgentSession {
   /** Attach (or replace) the abort signal used to cancel in-flight requests and tool calls. */
   attachSignal(signal: AbortSignal): void {
     this._signal = signal;
+  }
+
+  /** The tool-output store over this session id's archive: on disk under `contextArchiveRoot`
+   *  when the host gave one, so results survive memory eviction and a window reload. */
+  private _openToolOutputStore(): ToolOutputStore {
+    const root = this.opts.contextArchiveRoot;
+    const inlineLimit = (): number => this._contextFlags().inlineResultChars;
+    if (!root) return new ToolOutputStore(new ContextArchive(), inlineLimit);
+    const dir = path.join(root, this.sessionId.replace(/[^A-Za-z0-9_-]/g, "_"));
+    try { ContextArchive.pruneStale(root, path.basename(dir)); } catch { /* best effort */ }
+    return new ToolOutputStore(new ContextArchive({ dir }), inlineLimit);
+  }
+
+  private _contextFlags(): ContextFlags {
+    try {
+      // Merged over the baselines: a host or test that passes only some settings must leave the
+      // rest at today's behaviour, not undefined (which reads as "not off" and half-enables them).
+      const given = this.opts.contextFlags?.();
+      return given ? { ...BASELINE_CONTEXT_FLAGS, ...given } : BASELINE_CONTEXT_FLAGS;
+    } catch {
+      return BASELINE_CONTEXT_FLAGS;
+    }
   }
 
   /**
@@ -1581,7 +1636,8 @@ export class AgentSession {
   private async _refreshWorkspaceContext(): Promise<void> {
     if (!this.opts.workspaceContextProvider) return;
     try {
-      this._workspaceContext = await this.opts.workspaceContextProvider();
+      const block = await this.opts.workspaceContextProvider();
+      this._workspaceContext = typeof block === "string" ? { combined: block, stable: "", live: block } : block;
     } catch { /* keep the last-known workspace block */ }
   }
 
@@ -1639,6 +1695,10 @@ export class AgentSession {
     this._approvalGrants.clear();
     this._pendingGate = undefined;
     this._freshness.clear();
+    // Calls after the rewind point are gone from history; a superseded mark that pointed at one
+    // would be wrong. Calls still in history lose their records, which only makes them look
+    // unsuperseded and unrecoverable by re-read: the conservative direction.
+    this._contextLedger.forgetToolCalls();
     this._lastToolRoundFingerprint = "";
     this._duplicateToolRoundCount = 0;
   }
@@ -1694,12 +1754,27 @@ export class AgentSession {
     ].join("\n");
   }
 
-  private _dynamicContext(): string {
-    return wrapAttachedContext(
-      [this._requestModePrompt, this._skillContext(), this._workspaceContext, this._activeRunNotice ?? "", this._completionChecklist()]
-        .filter(Boolean)
-        .join("\n\n"),
-    );
+  /**
+   * The attached context, as the request carries it. With stable caching off, `stable` is empty
+   * and `live` is the single block every request has always carried. With it on, the parts that
+   * change rarely move into `stable`, which the wire sends behind a cache boundary.
+   */
+  private _attachedContext(): { stable: string; live: string } {
+    const { stable, live } = layoutAttachedContext({
+      requestProfile: this._requestModePrompt,
+      skills: this._skillContext(),
+      workspace: this._workspaceContext,
+      runNotice: this._activeRunNotice ?? "",
+      contextStatus: this._contextStatusLine(),
+      checklist: this._completionChecklist(),
+    }, this._contextFlags().stableCaching);
+    return { stable: wrapStableAttachedContext(stable), live: wrapAttachedContext(live) };
+  }
+
+  /** The tail block: everything attached, or with stable caching on, the live part only. Not used
+   *  inside the class any more (the request builder takes both parts at once); specs read it. */
+  protected _dynamicContext(): string {
+    return this._attachedContext().live;
   }
 
   /**
@@ -1803,6 +1878,7 @@ export class AgentSession {
         ? [...this._toolReferenceResults.entries()].map(([toolUseId, names]) => ({ toolUseId, names: [...names] }))
         : undefined,
       compressedSummary: this._compressedSummary || undefined,
+      carryForwardNote: this._carryForwardNote || undefined,
       compressionCount: this._compressionCount || undefined,
       lastInputTokens: this._lastInputTokens || undefined,
       lastCompressedAt: this._lastCompressedAt,
@@ -1827,10 +1903,15 @@ export class AgentSession {
   }
 
   restoreState(state: SessionRestoreState): void {
-    if (state.sessionId) this.sessionId = state.sessionId;
+    if (state.sessionId && state.sessionId !== this.sessionId) {
+      this.sessionId = state.sessionId;
+      // The restored conversation's results were archived under its own id.
+      this._toolOutput = this._openToolOutputStore();
+    }
     this.messages = sanitizeOversizedToolInputs([...state.messages as AgentMessage[]]);
     this._fullHistory = sanitizeOversizedToolInputs([...(state.fullHistory ?? state.messages) as AgentMessage[]]);
     this._compressedSummary = state.compressedSummary ?? "";
+    this._carryForwardNote = state.carryForwardNote ?? "";
     this._requestMode = state.requestMode ?? "auto";
     this._activeRequestMode = state.activeRequestMode
       ?? (this._requestMode === "auto" ? "general" : this._requestMode);
@@ -1907,10 +1988,16 @@ export class AgentSession {
    * result is passed through untouched, because a notice on every edit is a
    * notice nobody reads. See file-freshness.ts.
    */
-  private _annotateFileFreshness(toolName: string, input: unknown, result: unknown, ok: boolean): unknown {
+  private _annotateFileFreshness(toolName: string, input: unknown, result: unknown, ok: boolean, toolCallId?: string): unknown {
     const callInput = input && typeof input === "object" ? input as Record<string, unknown> : undefined;
     const stale = this._freshness.staleTargets(toolName, callInput);
     this._freshness.record(toolName, callInput, ok);
+    if (toolCallId) {
+      try {
+        this._contextLedger.recordToolCall(toolCallId, toolName, callInput, this._freshness.touchedPaths(toolName, callInput), ok);
+        this._contextReport.noteToolCall(toolName);
+      } catch { /* bookkeeping must never fail a tool call */ }
+    }
     if (stale.length === 0 || !result || typeof result !== "object") return result;
     const errorText = String((result as Record<string, unknown>).error ?? "");
     const warning = freshnessWarning(toolName, callInput, ok, stale, errorText);
@@ -2626,8 +2713,8 @@ export class AgentSession {
    * long, compacted sessions the measurement matters most for, it was analysing a system prompt
    * the provider never saw.
    */
-  private _openAIEffectiveSystem(): string {
-    return openAIEffectiveSystem(this.opts.systemPrompt, this._compressedSummary);
+  private _openAIEffectiveSystem(stableContext?: string): string {
+    return openAIEffectiveSystem(this.opts.systemPrompt, this._compressedSummary, stableContext);
   }
 
   /** The Anthropic wire tool list for `plan`, exactly as the transport builds it. */
@@ -2694,10 +2781,11 @@ export class AgentSession {
       // accounting grade the rest of the feature gates on. The one deliberate omission is the
       // cache_control markers: they carry no tokens, and their positions travel separately.
       const normalized = normalizeForProvider([...this.messages]);
+      const attached = this._attachedContext();
       const traceInput = format === "anthropic"
         ? {
-            system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary, this.opts.cacheTtl),
-            messages: appendWorkspaceContextTail(stripUnsignedThinking(resolveAnthropicNativeBlocks(normalized, this.provider === "anthropic" && this._hostedSearch()?.provider === "anthropic")), this._dynamicContext()),
+            system: buildAnthropicSystemBlocks(this.opts.systemPrompt, this._compressedSummary, this.opts.cacheTtl, attached.stable || undefined),
+            messages: appendWorkspaceContextTail(stripUnsignedThinking(resolveAnthropicNativeBlocks(normalized, this.provider === "anthropic" && this._hostedSearch()?.provider === "anthropic")), attached.live),
           }
         // toOpenAIMessages folds the system prompt in as the first message; also used as the
         // best available approximation for the Responses API path, which sends a differently
@@ -2705,8 +2793,8 @@ export class AgentSession {
         // token estimation from the same canonical messages is close enough for v1 measurement,
         // even though it isn't the literal wire body in that one case.
         : appendOpenAIWorkspaceContextTail(
-            toOpenAIMessages(normalized, this._openAIEffectiveSystem()),
-            this._dynamicContext(),
+            toOpenAIMessages(normalized, this._openAIEffectiveSystem(attached.stable || undefined)),
+            attached.live,
           );
       const toolSchemas = this._pauToolSchemas(format);
       const receipt = capturePauReceipt({
@@ -2768,12 +2856,21 @@ export class AgentSession {
 
   /** Everything this turn's request needs, as plain data for the model client. */
   private _buildModelRequest(): ModelRequest {
+    const request = this._composeModelRequest();
+    this._lastModelRequest = request;
+    return request;
+  }
+
+  /** The request the next call would send, without recording it as sent. */
+  private _composeModelRequest(): ModelRequest {
     const toolPlan = this._toolPlan();
-    return {
+    const attached = this._attachedContext();
+    const request: ModelRequest = {
       model: this.opts.model,
       system: this.opts.systemPrompt,
       systemSummary: this._compressedSummary,
-      contextTail: this._dynamicContext(),
+      contextTail: attached.live,
+      ...(attached.stable ? { contextStable: attached.stable } : {}),
       messages: this.messages,
       tools: { wire: toolPlan.wire, deferred: toolPlan.deferred, references: this._toolReferenceResults },
       thinking: this._planThinking(),
@@ -2783,6 +2880,62 @@ export class AgentSession {
       turnIndex: this._iteration,
       anthropicBeta: { ...pickBetaOptions(this.opts), contextEditingExcludeTools: UNSHEDDABLE_TOOL_NAMES },
     };
+    return request;
+  }
+
+  /** The ledger's view of a request: the same fields the wire builders read. */
+  private _requestShape(request: ModelRequest): RequestShape {
+    const deferred = request.tools.deferred;
+    return {
+      system: request.system,
+      systemSummary: request.systemSummary,
+      contextStable: request.contextStable,
+      contextTail: request.contextTail,
+      tools: request.tools.wire
+        .filter((tool) => !deferred.has(tool.name))
+        .map((tool) => ({ name: tool.name, chars: JSON.stringify(tool).length })),
+      messages: request.messages,
+    };
+  }
+
+  /**
+   * Fold the request that just produced `usage` into the ledger's calibration and, when reports
+   * are on, the session report. Never throws: measurement must not reach the agent loop.
+   */
+  private _recordContextUsage(usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }): void {
+    const request = this._lastModelRequest;
+    const flags = this._contextFlags();
+    if (!request || !contextLedgerActive(flags)) return;
+    try {
+      const snapshot = this._contextLedger.snapshot(this._requestShape(request));
+      const reported = usage.inputTokens + usage.cacheReadTokens + usage.cacheWriteTokens;
+      this._contextLedger.calibrate(snapshot.estimatedTokens, reported);
+      this._lastContextSnapshot = snapshot;
+      if (!flags.report) return;
+      this._contextReport.addRequest(snapshot, {
+        input: usage.inputTokens,
+        cacheRead: usage.cacheReadTokens,
+        cacheWrite: usage.cacheWriteTokens,
+        output: usage.outputTokens,
+      });
+    } catch { /* measurement only */ }
+  }
+
+  /** The turn's context report, or null when reports are off or nothing was sent this turn. */
+  private _takeContextReport(): AgentEvent | null {
+    if (!this._contextFlags().report || this._contextReport.turnRequests === 0) return null;
+    try {
+      const request = this._lastModelRequest;
+      const toolResults = request
+        ? toolResultStats(this._contextLedger.snapshot(this._requestShape(request)), request.messages, this._contextLedger)
+        : null;
+      return {
+        type: "context_report",
+        report: this._contextReport.report({ calibrationRatio: this._contextLedger.calibrationRatio, toolResults, endTurn: true }),
+      };
+    } catch {
+      return null;
+    }
   }
 
   /** The transport context the PAU measurement shares with the wire. */
@@ -2998,6 +3151,7 @@ export class AgentSession {
       all.push(...SUBAGENT_TOOLS.filter((t) => canFollowUp || t.name !== "subagent_followup"));
     }
     all.push(...RESULT_PAGING_TOOLS);
+    if (this._contextFlags().awareness === "status+tool") all.push(...CONTEXT_TOOLS);
     if (this.opts.transcriptProvider || this._compressedSummary) all.push(...TRANSCRIPT_TOOLS);
     if (this.opts.transcriptDocumentProvider) all.push(...TRANSCRIPT_DOCUMENT_TOOLS);
     if (this.opts.diagramProvider) all.push(...DIAGRAM_TOOLS);
@@ -3616,8 +3770,308 @@ export class AgentSession {
     return { granted, decision, deniedByPolicy, ...(deferredMessage ? { deferredMessage } : {}) };
   }
 
-  private _capToolResult(toolCallId: string, stringified: string): string {
-    return this._toolOutput.cap(toolCallId, stringified);
+  // ── Context economy, Phases 3 and 4 ─────────────────────────────────────────────────────
+
+  /** Tokens at which older history is compacted: the window percentage, or the history budget
+   *  when that is lower. */
+  private _compactionThresholdTokens(): number {
+    const windowLine = this._effectiveContextLength() * (this.opts.compressionTriggerPct ?? 60) / 100;
+    const budget = this._contextFlags().historyBudgetTokens;
+    return budget > 0 ? Math.min(windowLine, budget) : windowLine;
+  }
+
+  /**
+   * The fill the compaction checks compare against their percentages. Without a budget, the share
+   * of the window. With one, scaled so reaching the budget reads as reaching the trigger
+   * percentage, and the larger of the two wins: the budget can only bring compaction forward.
+   */
+  private _compactionFillPct(): number {
+    const windowPct = this._lastInputTokens / this._effectiveContextLength() * 100;
+    const budget = this._contextFlags().historyBudgetTokens;
+    if (!(budget > 0)) return windowPct;
+    return Math.max(windowPct, this._lastInputTokens / budget * (this.opts.compressionTriggerPct ?? 60));
+  }
+
+  private _contextFillLabel(pct: number): string {
+    const budget = this._contextFlags().historyBudgetTokens;
+    const windowPct = this._lastInputTokens / this._effectiveContextLength() * 100;
+    if (budget > 0 && pct > windowPct) return `${Math.round(this._lastInputTokens / 1000)}k tokens against a ${Math.round(budget / 1000)}k history budget`;
+    return `${Math.round(pct)}%`;
+  }
+
+  /** Tool use blocks in history, by id. */
+  private _toolUseIndex(): Map<string, ToolUseBlock> {
+    const uses = new Map<string, ToolUseBlock>();
+    for (const message of this.messages) {
+      if (message.role !== "assistant" || typeof message.content === "string") continue;
+      for (const block of message.content as ContentBlock[]) if (block.type === "tool_use") uses.set(block.id, block);
+    }
+    return uses;
+  }
+
+  /** Results in history that are already set-aside records, by any path. */
+  private _setAsideIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const message of this.messages) {
+      if (message.role !== "user" || typeof message.content === "string") continue;
+      for (const block of message.content as ContentBlock[]) {
+        if (block.type === "tool_result" && isSetAside(block.content)) ids.add(block.tool_use_id);
+      }
+    }
+    return ids;
+  }
+
+  /**
+   * Replace the named results with set-aside records. Structure-preserving, as the emergency path
+   * is: every tool_use keeps its tool_result, only the content shrinks, and the replaced messages
+   * are fresh objects so the full history keeps the originals. A result with no way back, a
+   * pinned one, or one whose record would be no smaller is left as it is.
+   */
+  private _setAsideResults(targets: ReadonlyArray<{ id: string; why: SetAsideWhy; supersededBy?: string; note?: string }>): { ids: string[]; freedTokens: number; earliestIndex: number } {
+    const byId = new Map(targets.map((target) => [target.id, target]));
+    const uses = this._toolUseIndex();
+    const ids: string[] = [];
+    let freedChars = 0;
+    let earliestIndex = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < this.messages.length; i++) {
+      const message = this.messages[i]!;
+      if (message.role !== "user" || typeof message.content === "string") continue;
+      let changed = false;
+      const next = (message.content as ContentBlock[]).map((block) => {
+        if (block.type !== "tool_result") return block;
+        const target = byId.get(block.tool_use_id);
+        if (!target || isSetAside(block.content)) return block;
+        const use = uses.get(block.tool_use_id);
+        if (use && UNSHEDDABLE_TOOL_NAMES.includes(use.name)) return block;
+        const recall = this._contextLedger.recallFor(block.tool_use_id);
+        if (recall.kind === "none") return block;
+        const stub = buildSetAsideStub(block.tool_use_id, {
+          tool: use?.name ?? "unknown", input: use?.input, content: block.content,
+          why: target.why, recall, supersededBy: target.supersededBy, note: target.note,
+        });
+        if (stub.length >= block.content.length) return block;
+        freedChars += block.content.length - stub.length;
+        ids.push(block.tool_use_id);
+        changed = true;
+        earliestIndex = Math.min(earliestIndex, i);
+        return { ...block, content: stub };
+      });
+      if (changed) this.messages[i] = { role: message.role, content: next };
+    }
+    return { ids, freedTokens: estimateTokens(freedChars), earliestIndex };
+  }
+
+  /** Prices for the aging cost check, or undefined where the provider's are unknown. */
+  private _agingCache(): AgingCache | undefined {
+    const econ = cacheEconomicsFor(this.provider, this.opts.cacheTtl, this.opts.pauPricing?.());
+    if (!econ.known) return undefined;
+    // The saving accrues per request; count it over the session's own pace, capped, the same
+    // estimate PAU's cache economics uses.
+    return { readMultiplier: econ.readMultiplier, writeMultiplier: econ.writeMultiplier, horizonRequests: Math.min(20, Math.max(1, this._iteration)) };
+  }
+
+  private _contextTokensNow(snapshot: LedgerSnapshot): number {
+    return this._contextLedger.calibrationRatio != null
+      ? snapshot.calibratedTokens
+      : Math.max(snapshot.estimatedTokens, this._lastInputTokens);
+  }
+
+  /**
+   * One aging pass (Phase 3.2–3.4). Runs at a turn's first call when the context is near its
+   * threshold, or at any call once it is over: batched, so one cache rewrite buys a long stretch
+   * of smaller requests. Under the threshold it acts only when the cost check says the rewrite
+   * pays. `observe` reports what it would do and changes nothing.
+   */
+  private *_ageContext(atTurnStart: boolean): Generator<AgentEvent> {
+    const flags = this._contextFlags();
+    if (flags.aging === "off") return;
+    try {
+      const threshold = this._compactionThresholdTokens();
+      const snapshot = this._contextLedger.snapshot(this._requestShape(this._composeModelRequest()));
+      const current = this._contextTokensNow(snapshot);
+      const over = current >= threshold;
+      if (!over && !(atTurnStart && current >= threshold * AGING_TURN_START_FRACTION)) return;
+      // A reused ChatGPT thread holds its own copy of the history; changing ours starts a new
+      // thread, which costs far more than the cost check knows. Only the budget justifies it.
+      if (this.opts.subscriptionStream && !over) return;
+      const decision = planAging(snapshot, {
+        currentTokens: current,
+        targetTokens: threshold * AGING_TARGET_FRACTION,
+        recentStart: safeRecentStart(this.messages, this._keepRecentCount()),
+        alreadySetAside: this._setAsideIds(),
+        force: over,
+        cache: this._agingCache(),
+      });
+      if (decision.candidates.length === 0) return;
+      const tokens = decision.candidates.reduce((sum, candidate) => sum + candidate.tokens, 0);
+      const k = (n: number): string => `${Math.round(n / 1000)}k`;
+      if (flags.aging === "observe") {
+        this._contextReport.noteAgingPass("observed", decision.candidates.length, tokens);
+        yield { type: "execution_diagnostic", level: "info", message: `Aging (observe): would set aside ${decision.candidates.length} older tool results (~${k(tokens)} tokens) at ~${k(current)} of ${k(threshold)}${decision.worthIt ? "" : ", but would hold off: the cache rewrite costs more than it saves"}.` };
+        return;
+      }
+      if (!decision.worthIt) {
+        this._contextReport.noteAgingPass("not-worth-it", 0, 0);
+        return;
+      }
+      const applied = this._setAsideResults(decision.setAside.map((candidate) => ({ id: candidate.id, why: candidate.reason, supersededBy: candidate.supersededBy })));
+      if (applied.ids.length === 0) return;
+      this._contextReport.noteAgingPass("applied", applied.ids.length, applied.freedTokens);
+      // The compaction check that follows reads the last reported size. Take off what was just
+      // freed until the next response reports the real figure.
+      this._lastInputTokens = Math.max(0, this._lastInputTokens - Math.round(applied.freedTokens * (this._contextLedger.calibrationRatio ?? 1)));
+      yield { type: "execution_diagnostic", level: "info", message: `Set aside ${applied.ids.length} older tool results (~${k(applied.freedTokens)} tokens) at ~${k(current)} of ${k(threshold)}; each is readable with tool_output_page.` };
+      yield { type: "runtime_state", state: this.runtimeState };
+    } catch { /* aging is an optimisation; a failure leaves history as it was */ }
+  }
+
+  private _noteRecovery(payload: Record<string, unknown>): void {
+    const id = String(payload["toolCallId"] ?? "");
+    if (id && this._setAsideIds().has(id)) this._contextReport.noteRecoveredSetAside();
+  }
+
+  /**
+   * Phase 4.1: facts about the context, for the live block. No instruction: what the agent does
+   * with them is its own decision. From the last request whose usage arrived, so the first
+   * request of a session has none.
+   */
+  private _contextStatusLine(): string {
+    const flags = this._contextFlags();
+    const snapshot = this._lastContextSnapshot;
+    if (flags.awareness === "off" || !snapshot) return "";
+    const k = (n: number): string => (n >= 10_000 ? `${Math.round(n / 1000)}k` : n.toLocaleString("en-US"));
+    const threshold = Math.round(this._compactionThresholdTokens());
+    const size = this._lastInputTokens > 0 ? this._lastInputTokens : snapshot.calibratedTokens;
+    const recentStart = safeRecentStart(this.messages, this._keepRecentCount());
+    const results = snapshot.items.filter((item) => item.class === "tool-result");
+    const older = results.filter((item) => item.messageIndex !== undefined && item.messageIndex < recentStart);
+    const olderTokens = older.reduce((sum, item) => sum + item.tokens, 0);
+    const superseded = results.filter((item) => item.supersededBy);
+    const setAside = this._setAsideIds().size;
+    const pct = threshold > 0 ? Math.round(size / threshold * 100) : 0;
+    const process = flags.aging === "on" ? "older tool output is set aside, then older history is summarised" : "older history is summarised";
+    const lines = [
+      "# Context",
+      `Last request: ~${k(size)} tokens, ${pct}% of the ${k(threshold)} at which ${process} (window ${k(this._effectiveContextLength())}).`,
+      `Tool output before the most recent ${this._keepRecentCount()} messages: ~${k(olderTokens)} tokens in ${older.length} results.`
+        + (superseded.length ? ` ${superseded.length} results were superseded by later reads of the same thing.` : "")
+        + ` ${setAside} ${setAside === 1 ? "result is" : "results are"} set aside; tool_output_page reads any result back by toolCallId.`,
+    ];
+    if (this._carryForwardNote) lines.push(`A carry-forward note (${k(this._carryForwardNote.length)} characters) is stored for the next compaction.`);
+    if (flags.awareness === "status+tool") lines.push("The context tool lists what is held and can set results aside or store a carry-forward note.");
+    return lines.join("\n");
+  }
+
+  /** Phase 4.2: the context tool. */
+  private _handleContextTool(payload: Record<string, unknown>): unknown {
+    if (this._contextFlags().awareness !== "status+tool") {
+      return { ok: false, error: "The context tool is off in this session (blacksite.context.awareness)." };
+    }
+    const action = String(payload["action"] ?? "");
+    try {
+      if (action === "review") return this._contextReview();
+      if (action === "set_aside") return this._contextSetAside(payload);
+      if (action === "carry_forward") {
+        const note = String(payload["note"] ?? "").trim();
+        if (!note) return { ok: false, error: "carry_forward needs a note." };
+        const MAX_NOTE = 8_000;
+        const replaced = !!this._carryForwardNote;
+        this._carryForwardNote = note.length > MAX_NOTE ? note.slice(0, MAX_NOTE) : note;
+        return {
+          ok: true,
+          stored: this._carryForwardNote.length,
+          ...(note.length > MAX_NOTE ? { truncatedTo: MAX_NOTE } : {}),
+          replacedEarlierNote: replaced,
+          next: `Kept verbatim ahead of the summary the next time older history is summarised, at ~${Math.round(this._compactionThresholdTokens() / 1000)}k tokens.`,
+        };
+      }
+      return { ok: false, error: `Unknown action "${action}". Use review, set_aside or carry_forward.` };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  private _contextReview(): unknown {
+    const snapshot = this._contextLedger.snapshot(this._requestShape(this._composeModelRequest()));
+    const uses = this._toolUseIndex();
+    const setAside = this._setAsideIds();
+    const last = this.messages.length;
+    const results = snapshot.items
+      .filter((item) => item.class === "tool-result")
+      .map((item) => {
+        const use = uses.get(item.id);
+        const input = use ? JSON.stringify(use.input) : "";
+        return {
+          toolCallId: item.id,
+          tool: item.label ?? use?.name ?? "unknown",
+          ...(input ? { input: input.length > 120 ? `${input.slice(0, 119)}…` : input } : {}),
+          tokens: item.tokens,
+          messagesAgo: item.messageIndex === undefined ? undefined : last - item.messageIndex,
+          ...(item.supersededBy ? { supersededBy: item.supersededBy } : {}),
+          ...(setAside.has(item.id) ? { setAside: true } : {}),
+          ...(item.pinned ? { pinned: true } : {}),
+        };
+      });
+    const LIMIT = 60;
+    const shown = [...results].sort((a, b) => b.tokens - a.tokens).slice(0, LIMIT);
+    return {
+      ok: true,
+      tokens: this._contextTokensNow(snapshot),
+      estimate: this._contextLedger.calibrationRatio == null ? "characters ÷ 3.6, not yet checked against the provider's count" : "calibrated against the provider's count",
+      compactionAtTokens: Math.round(this._compactionThresholdTokens()),
+      windowTokens: this._effectiveContextLength(),
+      byClass: Object.fromEntries(Object.entries(snapshot.byClass).filter(([, total]) => total.tokens > 0).map(([cls, total]) => [cls, total.tokens])),
+      toolResults: shown,
+      ...(results.length > LIMIT ? { notShown: `${results.length - LIMIT} smaller results` } : {}),
+      setAsideCount: setAside.size,
+      carryForwardNote: this._carryForwardNote ? `${this._carryForwardNote.length} characters stored` : "none",
+    };
+  }
+
+  private _contextSetAside(payload: Record<string, unknown>): unknown {
+    const ids = Array.isArray(payload["ids"]) ? (payload["ids"] as unknown[]).map(String) : [];
+    const through = typeof payload["through"] === "string" ? payload["through"] : "";
+    const note = typeof payload["note"] === "string" && payload["note"].trim() ? payload["note"].trim().slice(0, 2_000) : undefined;
+    const snapshot = this._contextLedger.snapshot(this._requestShape(this._composeModelRequest()));
+    const results = snapshot.items.filter((item) => item.class === "tool-result");
+    const byId = new Map(results.map((item) => [item.id, item]));
+    const wanted = new Set(ids);
+    if (through) {
+      const end = byId.get(through);
+      if (!end) return { ok: false, error: `No tool result "${through}" in the current context.` };
+      for (const item of results) if ((item.messageIndex ?? Infinity) <= end.messageIndex!) wanted.add(item.id);
+    }
+    if (wanted.size === 0) return { ok: false, error: "Name results with ids, or a range with through." };
+    const already = this._setAsideIds();
+    const skipped: Array<{ toolCallId: string; reason: string }> = [];
+    const targets: Array<{ id: string; why: SetAsideWhy; note?: string }> = [];
+    for (const id of wanted) {
+      const item = byId.get(id);
+      if (!item) skipped.push({ toolCallId: id, reason: "not in the current context" });
+      else if (already.has(id)) skipped.push({ toolCallId: id, reason: "already set aside" });
+      else if (item.pinned) skipped.push({ toolCallId: id, reason: "kept: re-running it would ask the user again" });
+      else if (item.recall.kind === "none") skipped.push({ toolCallId: id, reason: "no copy to read it back from" });
+      else targets.push({ id, why: "agent", ...(note ? { note } : {}) });
+    }
+    const applied = this._setAsideResults(targets);
+    const done = new Set(applied.ids);
+    for (const target of targets) if (!done.has(target.id)) skipped.push({ toolCallId: target.id, reason: "its record would be no smaller" });
+    if (applied.ids.length) this._contextReport.noteSetAside("agent", applied.ids.length, applied.freedTokens);
+    const rewrite = applied.ids.length && Number.isFinite(applied.earliestIndex)
+      ? this._contextLedger.snapshot(this._requestShape(this._composeModelRequest()))
+      : undefined;
+    return {
+      ok: true,
+      setAside: applied.ids,
+      ...(skipped.length ? { skipped } : {}),
+      freedTokensPerRequest: applied.freedTokens,
+      ...(rewrite ? { recachedOnceTokens: tokensFrom(rewrite, applied.earliestIndex) } : {}),
+      recover: "tool_output_page with a toolCallId returns the full text.",
+    };
+  }
+
+  private _capToolResult(toolCallId: string, stringified: string, toolName?: string): string {
+    return this._toolOutput.cap(toolCallId, stringified, toolName);
   }
 
   private async _compressHistory(
@@ -3637,7 +4091,13 @@ export class AgentSession {
       // network blip). Retry with a short backoff before giving up — a single
       // transient failure used to leave the session at full context, compounding
       // toward a fatal over-length provider 400.
-      const summary = await this._compressWithRetry(compressionProvider, toCompress);
+      const generated = await this._compressWithRetry(compressionProvider, toCompress);
+      // Phase 4.3: the agent's own carry-forward note leads, in its words; the summariser's
+      // reading of the same history follows.
+      const carried = this._carryForwardNote;
+      const summary = carried
+        ? `[Carried forward by the agent before this compaction, verbatim]\n${carried}\n\n[Summary of the compacted history]\n${generated}`
+        : generated;
 
       // Index the compressed chunk in the vector store for semantic retrieval.
       // The ref appears in the summary header so the agent can query it later.
@@ -3677,6 +4137,8 @@ export class AgentSession {
       // wrong messages and attach a summary of a conversation that no longer exists.
       if (toCompress.some((message, index) => this.messages[index] !== message)) return "skipped";
       this._compressedSummary = nextSummary;
+      // Used once: a note written now is about the history it was written alongside.
+      if (carried && this._carryForwardNote === carried) this._carryForwardNote = "";
       // Remove exactly the summarised prefix rather than replacing the whole array. When
       // compaction runs in the background, messages may have been appended while the
       // summariser ran; slicing off only the first `toCompress.length` preserves them.
@@ -3863,13 +4325,10 @@ export class AgentSession {
     // re-interrupting the user (see UNSHEDDABLE_TOOL_NAMES). Resolved from the assistant
     // tool_use blocks, since a tool_result block carries only the id.
     const protectedIds = new Set<string>();
-    for (const msg of this.messages) {
-      if (msg.role !== "assistant" || typeof msg.content === "string") continue;
-      for (const block of msg.content as ContentBlock[]) {
-        if (block.type === "tool_use" && UNSHEDDABLE_TOOL_NAMES.includes(block.name)) protectedIds.add(block.id);
-      }
-    }
+    const uses = this._toolUseIndex();
+    for (const [id, use] of uses) if (UNSHEDDABLE_TOOL_NAMES.includes(use.name)) protectedIds.add(id);
     let freed = 0;
+    let stubbed = 0;
     for (let i = 0; i < boundary && freed < targetChars; i++) {
       const msg = this.messages[i];
       if (!msg || msg.role !== "user" || typeof msg.content === "string") continue;
@@ -3879,16 +4338,25 @@ export class AgentSession {
         if (block.type !== "tool_result") return block;
         if (protectedIds.has(block.tool_use_id)) return block;
         const len = block.content?.length ?? 0;
-        if (len <= MIN_PAYLOAD || block.content.includes('"_elided"')) return block;
-        const stub = JSON.stringify({
-          _elided: `tool result (${len} chars) dropped to free context after compression failed — re-run the tool if you still need this output`,
-        });
+        if (len <= MIN_PAYLOAD || isSetAside(block.content)) return block;
+        // With a way back (the archive, or an unchanged file), say so; only without one is
+        // re-running the tool the advice.
+        const recall = this._contextLedger.recallFor(block.tool_use_id);
+        const use = uses.get(block.tool_use_id);
+        const stub = recall.kind === "none"
+          ? JSON.stringify({
+              _elided: `tool result (${len} chars) dropped to free context after compression failed — re-run the tool if you still need this output`,
+            })
+          : buildSetAsideStub(block.tool_use_id, { tool: use?.name ?? "unknown", input: use?.input, content: block.content, why: "emergency", recall });
+        if (stub.length >= len) return block;
+        stubbed += 1;
         freed += len - stub.length;
         changed = true;
         return { ...block, content: stub };
       });
       if (changed) this.messages[i] = { role: msg.role, content: nextBlocks };
     }
+    if (stubbed > 0) this._contextReport.noteSetAside("emergency", stubbed, estimateTokens(freed));
     return freed;
   }
 
@@ -4032,6 +4500,8 @@ export class AgentSession {
         this._pauseRequested = false;
         for await (const event of this._sendCore(content, options)) {
           if (event.type === "turn_complete") {
+            const contextReport = this._takeContextReport();
+            if (contextReport) yield contextReport;
             const outcome = await this._runHook({ event: "Stop", stopReason: event.stopReason, ...(resumes ? { stopHookActive: true } : {}) });
             stopReason = "";
             for (const message of outcome.warnings ?? []) yield { type: "execution_diagnostic", level: "warn", message };
@@ -4185,8 +4655,12 @@ export class AgentSession {
       // compaction runs in the background and its round-trip overlaps this turn rather than
       // stalling it; at or above the critical line we must free headroom before sending, so
       // we block (bounded) — awaiting a pass already running if there is one.
+      // Phase 3: set older tool output aside before compaction is considered, at the turn's first
+      // call or once the budget is crossed. Usually it makes compaction unnecessary.
+      yield* this._ageContext(this._iteration === turnStartIteration + 1);
+
       if (this.opts.compressionProvider && this._lastInputTokens > 0) {
-        const preTurnPct = this._lastInputTokens / this._effectiveContextLength() * 100;
+        const preTurnPct = this._compactionFillPct();
         const threshold = this.opts.compressionTriggerPct ?? 60;
         const compressible = this._compressibleMessageCount();
         if ((preTurnPct >= COMPACTION_CRITICAL_PCT || (this.opts.compressionMode === "paused" && preTurnPct >= threshold && !this._compactionCircuitOpen)) && (this._compactionInFlight || compressible > 4)) {
@@ -4198,14 +4672,14 @@ export class AgentSession {
               type: "execution_diagnostic",
               level: "warn",
               message: freed > 0
-                ? `Context at ${Math.round(preTurnPct)}% — ${this._compactionSuspensionReason}; shed ~${Math.round(freed / 1000)}k chars of old tool output instead.`
-                : `Context at ${Math.round(preTurnPct)}% and ${this._compactionSuspensionReason} — nothing left to shed either.`,
+                ? `Context at ${this._contextFillLabel(preTurnPct)} — ${this._compactionSuspensionReason}; shed ~${Math.round(freed / 1000)}k chars of old tool output instead.`
+                : `Context at ${this._contextFillLabel(preTurnPct)} and ${this._compactionSuspensionReason} — nothing left to shed either.`,
             };
           } else {
             yield {
               type: "execution_diagnostic",
               level: "info",
-              message: `Context at ${Math.round(preTurnPct)}% before model call — compacting to free headroom before sending…`,
+              message: `Context at ${this._contextFillLabel(preTurnPct)} before model call — compacting to free headroom before sending…`,
             };
             const compaction = this._awaitCompactionBounded(this.opts.compressionProvider);
             yield { type: "runtime_state", state: this.runtimeState };
@@ -4219,7 +4693,7 @@ export class AgentSession {
           yield {
             type: "execution_diagnostic",
             level: "info",
-            message: `Context at ${Math.round(preTurnPct)}% — compacting ${compressible} older messages in the background…`,
+            message: `Context at ${this._contextFillLabel(preTurnPct)} — compacting ${compressible} older messages in the background…`,
           };
           void this._beginBackgroundCompaction(this.opts.compressionProvider, "auto");
           yield { type: "runtime_state", state: this.runtimeState };
@@ -4301,6 +4775,7 @@ export class AgentSession {
             };
           } else if (ev.type === "usage_update") {
             this._recordUsage(ev);
+            this._recordContextUsage(ev);
             yield {
               type: "usage_update", inputTokens: ev.inputTokens, outputTokens: ev.outputTokens,
               cacheReadTokens: ev.cacheReadTokens, cacheWriteTokens: ev.cacheWriteTokens, serviceTier: ev.serviceTier,
@@ -4794,7 +5269,7 @@ export class AgentSession {
               toolResults[idx] = {
                 type: "tool_result",
                 tool_use_id: tc.id,
-                content: this._capToolResult(tc.id, JSON.stringify(validationError)),
+                content: this._capToolResult(tc.id, JSON.stringify(validationError), tc.name),
               };
               const toolName = tc.name;
               const toolId = tc.id;
@@ -4811,7 +5286,7 @@ export class AgentSession {
                 toolResults[idx] = {
                   type: "tool_result",
                   tool_use_id: tc.id,
-                  content: self._capToolResult(tc.id, JSON.stringify(res)),
+                  content: self._capToolResult(tc.id, JSON.stringify(res), tc.name),
                 };
                 yield {
                   type: "tool_call_result",
@@ -4867,7 +5342,7 @@ export class AgentSession {
               toolResults[idx] = {
                 type: "tool_result",
                 tool_use_id: tc.id,
-                content: self._capToolResult(tc.id, JSON.stringify(finalResult)),
+                content: self._capToolResult(tc.id, JSON.stringify(finalResult), tc.name),
               };
 
               yield {
@@ -4911,7 +5386,7 @@ export class AgentSession {
               toolResults[idx] = {
                 type: "tool_result",
                 tool_use_id: tc.id,
-                content: this._capToolResult(tc.id, JSON.stringify(validationError)),
+                content: this._capToolResult(tc.id, JSON.stringify(validationError), tc.name),
               };
               yield {
                 type: "tool_call_result",
@@ -4930,7 +5405,7 @@ export class AgentSession {
               toolResults[idx] = {
                 type: "tool_result",
                 tool_use_id: tc.id,
-                content: this._capToolResult(tc.id, JSON.stringify(scopeRefusal)),
+                content: this._capToolResult(tc.id, JSON.stringify(scopeRefusal), tc.name),
               };
               yield {
                 type: "tool_call_result",
@@ -4958,7 +5433,7 @@ export class AgentSession {
                 toolResults[idx] = {
                   type: "tool_result",
                   tool_use_id: tc.id,
-                  content: this._capToolResult(tc.id, JSON.stringify(resolutionError)),
+                  content: this._capToolResult(tc.id, JSON.stringify(resolutionError), tc.name),
                 };
                 yield {
                   type: "tool_call_result",
@@ -4977,7 +5452,7 @@ export class AgentSession {
                 toolResults[idx] = {
                   type: "tool_result",
                   tool_use_id: tc.id,
-                  content: this._capToolResult(tc.id, JSON.stringify(invalid)),
+                  content: this._capToolResult(tc.id, JSON.stringify(invalid), tc.name),
                 };
                 yield {
                   type: "tool_call_result",
@@ -5270,9 +5745,13 @@ export class AgentSession {
               } else if (runtimeType === "session.workspace_refresh") {
                 result = await this._handleWorkspaceRefresh();
               } else if (runtimeType === "session.tool_output_page") {
+                this._noteRecovery(payload);
                 result = this._toolOutput.page(payload);
               } else if (runtimeType === "session.tool_output_search") {
+                this._noteRecovery(payload);
                 result = this._toolOutput.search(payload);
+              } else if (runtimeType === "session.context") {
+                result = this._handleContextTool(payload);
               } else if (runtimeType.startsWith("planning.")) {
                 if (!this.opts.planningProvider) {
                   result = { ok: false, error: "Planning is not available in this context." };
@@ -5606,7 +6085,7 @@ export class AgentSession {
             }
 
             const ok = isOk(result);
-            result = this._annotateFileFreshness(tc.name, tc.input, result, ok);
+            result = this._annotateFileFreshness(tc.name, tc.input, result, ok, tc.id);
             result = await this._settleClaims(tc, result, ok);
             this._trackToolResultForNotes(tc.name, result);
             result = this._trackVerification(tc.name, tc.input, result, ok);
@@ -5680,7 +6159,7 @@ export class AgentSession {
             toolResults[idx] = {
               type: "tool_result",
               tool_use_id: tc.id,
-              content: this._capToolResult(tc.id, JSON.stringify(modelResult)),
+              content: this._capToolResult(tc.id, JSON.stringify(modelResult), tc.name),
             };
 
             // Pair the before-snapshots with the files' current bytes. Reports the files whose
@@ -5741,7 +6220,7 @@ export class AgentSession {
       // line, compact in the background so the summariser round-trip overlaps the next turn
       // instead of blocking here; at or above it, block (bounded) and shed as a last resort.
       if (this.opts.compressionProvider && this._lastInputTokens > 0) {
-        const usedPct = this._lastInputTokens / this._effectiveContextLength() * 100;
+        const usedPct = this._compactionFillPct();
         const threshold = this.opts.compressionTriggerPct ?? 60;
         const compressible = this._compressibleMessageCount();
         if (usedPct >= threshold && compressible > 4) {
@@ -5749,11 +6228,11 @@ export class AgentSession {
             // Compaction is known-broken this session — skip the wait and shed directly.
             const freed = this._emergencyTruncateOldestToolResults(Math.floor(this._effectiveContextLength() * 0.8));
             yield freed > 0
-              ? { type: "execution_diagnostic", level: "warn", message: `Context at ${Math.round(usedPct)}% — ${this._compactionSuspensionReason}; shed ~${Math.round(freed / 1000)}k chars of old tool output instead.` }
-              : { type: "execution_diagnostic", level: "warn", message: `Context at ${Math.round(usedPct)}% and ${this._compactionSuspensionReason} — nothing left to shed either.` };
+              ? { type: "execution_diagnostic", level: "warn", message: `Context at ${this._contextFillLabel(usedPct)} — ${this._compactionSuspensionReason}; shed ~${Math.round(freed / 1000)}k chars of old tool output instead.` }
+              : { type: "execution_diagnostic", level: "warn", message: `Context at ${this._contextFillLabel(usedPct)} and ${this._compactionSuspensionReason} — nothing left to shed either.` };
             yield { type: "runtime_state", state: this.runtimeState };
           } else if (usedPct >= COMPACTION_CRITICAL_PCT || (this.opts.compressionMode === "paused" && !this._compactionCircuitOpen)) {
-            yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — compacting ${compressible} older messages before continuing…` };
+            yield { type: "execution_diagnostic", level: "info", message: `Context at ${this._contextFillLabel(usedPct)} — compacting ${compressible} older messages before continuing…` };
             const compaction = this._awaitCompactionBounded(this.opts.compressionProvider);
             yield { type: "runtime_state", state: this.runtimeState };
             const outcome = await compaction;
@@ -5782,14 +6261,14 @@ export class AgentSession {
             }
             yield { type: "runtime_state", state: this.runtimeState };
           } else if (!this._compactionInFlight && !this._compactionCircuitOpen) {
-            yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — compacting ${compressible} older messages in the background…` };
+            yield { type: "execution_diagnostic", level: "info", message: `Context at ${this._contextFillLabel(usedPct)} — compacting ${compressible} older messages in the background…` };
             void this._beginBackgroundCompaction(this.opts.compressionProvider, "auto");
             yield { type: "runtime_state", state: this.runtimeState };
           }
           // else: a background pass is already running, or the circuit is open and below the
           // critical line — nothing to do until either the pass lands or the line is crossed.
         } else if (usedPct >= threshold) {
-          yield { type: "execution_diagnostic", level: "info", message: `Context at ${Math.round(usedPct)}% — not enough history to compress yet (${this.messages.length} messages).` };
+          yield { type: "execution_diagnostic", level: "info", message: `Context at ${this._contextFillLabel(usedPct)} — not enough history to compress yet (${this.messages.length} messages).` };
         }
       }
 

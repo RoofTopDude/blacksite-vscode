@@ -3,6 +3,83 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.33.0-pre.8
+
+Prerelease. The stable update channel remains on 1.32.0.
+
+This release carries phases 0 to 4 of the context-economy plan (`docs/context-economy-implementation-plan.md`):
+
+- measuring what each request carries;
+- not paying full price for the parts that rarely change;
+- keeping history bounded without losing anything;
+- letting the agent see, and if you allow it manage, its own context.
+
+Every new setting is off by default. With them off, the only change to what is sent is the
+wording of the two paging tools' descriptions.
+
+### Added
+
+- **Context report** (`blacksite.context.report`, experimental). At the end of each turn the
+  execution log gets a breakdown of what the requests carried:
+  - tokens by kind (system prompt, tool definitions, attached context, messages, tool results);
+  - how much of the input was read from cache, and the peak context;
+  - the items that cost the most across the session (size × the number of requests that carried
+    them);
+  - tool results that a later read of the same file superseded, or that were never referred to
+    again.
+
+  `npm run analyze:execution` has a new Context section that reads it.
+- **Stable context caching** (`blacksite.context.stableCaching`, experimental). The parts of the
+  attached context that rarely change go out once, behind a prompt-cache boundary, instead of
+  being re-sent uncached on every model call. That covers repository instructions, project shape
+  and memory, the request profile, loaded skills and the skill roster. Only open editors,
+  diagnostics, git status, plans and the closing checklist stay at the end of each request.
+  - Anthropic, Bedrock Mantle and Bedrock Converse: a second system block, with the system cache
+    breakpoint moved onto it.
+  - OpenAI and OpenRouter: placed ahead of the compaction summary, so automatic prefix caching
+    covers it.
+  - ChatGPT sign-in: unchanged, since that route has no system cache.
+
+- **History budget** (`blacksite.context.historyBudgetTokens`, experimental). A ceiling in tokens
+  at which aging and compaction start, whatever the model's window. Without one, a 1M-token model
+  carries five times the history of a 200K one before anything happens.
+- **Aging** (`blacksite.context.aging`, experimental: `off`, `observe`, `on`). Older tool output is
+  set aside before compaction: first results a later read superseded, then old, large ones. Each
+  is replaced by a short record of the call, its outcome, its size and how to read it back, and
+  stays readable with `tool_output_page`.
+  - Never touched: the most recent messages, question card answers, and anything with no way
+    back.
+  - Timing: at the start of a turn when the context is near its threshold, or whenever it is
+    over. Below the threshold it runs only when the saving outweighs re-caching the history.
+  - `observe` logs what it would do and changes nothing.
+- **Shorter inline results that keep the end** (`blacksite.context.inlineResultChars`,
+  experimental). At any value other than the default 20,000, a long result keeps its start, its
+  end, and the lines between that mention an error. That is where a build log's verdict usually
+  is.
+- **Context awareness** (`blacksite.context.awareness`, experimental).
+  - `status`: each request carries a few lines of fact, saying how large the last request was
+    against the compaction threshold, how much of it is older tool output, and how many results
+    are set aside.
+  - `status+tool`: adds a `context` tool. The agent can use it to review what its context holds,
+    set results aside with a note in their place, and leave a note that the next compaction
+    keeps verbatim ahead of its summary.
+
+  The section states facts and gives no instruction.
+
+### Changed
+
+- **Stubs say how to get the text back.** When compaction cannot free enough and old results are
+  cut to fit the window, each one now says how to read the full text back with
+  `tool_output_page`. Before, it said to re-run the tool. The paging tools' descriptions now say
+  they work on any earlier result.
+- **Every tool result can be read back.** Before, `tool_output_page` and `tool_output_search`
+  worked only on results too large to send whole, and only the newest 30 of those were kept. Now
+  every result is archived as it is produced. The archive keeps the newest in memory and the rest
+  on disk in the workspace's extension storage, so it survives a window reload. It holds up to
+  5,000 results or 64 MB per conversation, keeps the 20 most recent conversations, and drops any
+  untouched for a week. Browser and web results are never written to disk. They are redacted
+  everywhere else that persists, so they stay in memory only.
+
 ## 1.33.0-pre.7
 
 Prerelease. The stable update channel remains on 1.32.0.

@@ -65,7 +65,8 @@ Extracted from it, and the right place to look first:
 | --- | --- |
 | `packages/llm/` | Everything that talks to a model provider: see below |
 | `src/agent/transcript-hygiene.ts` | The attached-context envelope, and the passes that shrink a transcript before it is persisted (image stubs, browser-payload redaction) |
-| `src/agent/tool-output-store.ts` | Retains oversized tool results for `tool_output_page` / `tool_output_search` |
+| `src/agent/tool-output-store.ts` | Caps tool results for the model and serves `tool_output_page` / `tool_output_search` from the context archive |
+| `src/context/` | The context ledger (what each request carries), the tool-result archive, the stable/live layout of attached context, and context reports. Pure apart from the archive's disk tier. See [`docs/context-economy-implementation-plan.md`](docs/context-economy-implementation-plan.md) |
 | `src/tools/definitions.ts` | Every tool's schema and description — the agent's entire advertised surface |
 
 **The model transport: `packages/llm`.** Every provider request is built and parsed in this

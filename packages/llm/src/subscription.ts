@@ -46,6 +46,10 @@ export interface SubscriptionTransportOptions {
 /** The ChatGPT route's name for its own web search. */
 export const CHATGPT_HOSTED_SEARCH_ROUTE: HostedSearchRoute = { provider: "chatgpt", label: "ChatGPT" };
 
+function subscriptionTail(req: ModelRequest): string {
+  return [req.contextStable, req.contextTail].filter(Boolean).join("\n\n");
+}
+
 /** Map one model turn onto the subscription app's request shape. */
 export function toSubscriptionRequest(req: ModelRequest, options: SubscriptionTransportOptions, signal?: AbortSignal): SubscriptionRequest {
   const hosted = req.hostedSearch;
@@ -57,7 +61,10 @@ export function toSubscriptionRequest(req: ModelRequest, options: SubscriptionTr
     // The workspace block travels apart from the conversation: the service decides whether it
     // is sent at all, because every copy it sends stays in a reused thread.
     messages: normalizeForProvider(req.messages),
-    ...(req.contextTail ? { contextTail: req.contextTail } : {}),
+    // No system cache to put stable context behind: a reused thread keeps its instructions, so a
+    // change there would mean a new thread. It rides with the tail instead, which the service
+    // re-sends only when it changes — the same bytes this route carried before the split.
+    ...(subscriptionTail(req) ? { contextTail: subscriptionTail(req) } : {}),
     conversationId: req.conversationId,
     tools: req.tools.wire,
     ...(hosted ? { hostedSearch: { scope: hosted.scope, allowedDomains: hosted.allowedDomains, deniedDomains: hosted.deniedDomains } } : {}),

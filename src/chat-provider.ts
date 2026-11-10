@@ -127,7 +127,9 @@ import { indexPdfDocument } from "./pdf-index.js";
 import { DatabaseManager } from "./data/database-manager.js";
 import { extractReadableTextFromBytes } from "@blacksite/file-content";
 import type { DiagnosticsProvider } from "./diagnostics-publisher.js";
-import { gatherWorkspaceSnapshot, buildStaticSystemPrompt, buildWorkspaceContextBlock } from "./workspace-context.js";
+import { gatherWorkspaceSnapshot, buildStaticSystemPrompt, buildWorkspaceContextParts } from "./workspace-context.js";
+import type { WorkspaceContextParts } from "./context/layout.js";
+import { readContextFlags, staticPromptOptions } from "./context/flags.js";
 import type { McpServerInfo } from "./workspace-context.js";
 import { McpRegistry, toolIsDestructive } from "./mcp-registry.js";
 import { buildMcpToolCatalog, type McpTypedTool } from "./mcp-tool-catalog.js";
@@ -1487,7 +1489,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    * git/diagnostics, plans, instructions, and architecture are current without invalidating
    * the cached static prompt.
    */
-  private async _buildWorkspaceContextBlock(): Promise<string> {
+  private async _buildWorkspaceContextBlock(): Promise<WorkspaceContextParts> {
     const [snapshot, architectureSummary] = await Promise.all([
       gatherWorkspaceSnapshot(this._workspaceRoot, this._runtime),
       this._graphAnnotations?.workspaceOverview?.() ?? Promise.resolve(""),
@@ -1502,11 +1504,16 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     snapshot.mcpServers = this._enabledMcpServers();
     snapshot.skillRoster = this._buildSkillRoster(focusFiles);
     snapshot.toolchainSummary = this._buildToolchainSummary(focusFiles);
-    const workspaceBlock = buildWorkspaceContextBlock(snapshot);
+    const parts = buildWorkspaceContextParts(snapshot);
     const runSummary = this._sequences?.buildWorkspaceContextSummary?.() ?? "";
-    return runSummary
-      ? `${workspaceBlock}\n\nExecution Runs (up to three context-relevant retained runs; inspect by run ID instead of rerunning):\n${runSummary}`
-      : workspaceBlock;
+    if (!runSummary) return parts;
+    // Runs change as they progress, so they belong to the live half.
+    const runs = `Execution Runs (up to three context-relevant retained runs; inspect by run ID instead of rerunning):\n${runSummary}`;
+    return {
+      combined: parts.combined ? `${parts.combined}\n\n${runs}` : runs,
+      stable: parts.stable,
+      live: parts.live ? `${parts.live}\n\n${runs}` : runs,
+    };
   }
 
   /** The toolchains section of the workspace block: the machine inventory as of its last probe
@@ -1576,13 +1583,14 @@ export class ChatProvider implements vscode.WebviewViewProvider {
     const settings  = this._readSettings();
     const pSettings = this._providerSettings(settings.provider, settings);
     const delegationEnabled = !settings.disabledTools.includes("subagent_spawn");
+    const promptOptions = staticPromptOptions(readContextFlags((key) => vscode.workspace.getConfiguration().get(key)));
     // Static, cacheable system prompt only. The live workspace state (diagnostics, git,
     // open files, memory, plans) is supplied per-turn via workspaceContextProvider and
     // injected at the message tail, so the model always sees current state without
     // invalidating this cached prefix.
     const systemPrompt = delegationEnabled
-      ? `${buildStaticSystemPrompt()}\n- When the work has an independent investigation or implementation lane, delegate it early with subagent_spawn so the parent context stays focused on orchestration and synthesis.`
-      : buildStaticSystemPrompt();
+      ? `${buildStaticSystemPrompt(promptOptions)}\n- When the work has an independent investigation or implementation lane, delegate it early with subagent_spawn so the parent context stays focused on orchestration and synthesis.`
+      : buildStaticSystemPrompt(promptOptions);
     const configuredServices = await this._resolveConfiguredServices();
     // Cached for the per-turn skill roster, which is rebuilt far too often to pay for the
     // SecretStorage reads this resolve costs. See _lastConfiguredServices.
@@ -1634,6 +1642,10 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       // here could ignore a live flip until something unrelated happens to rebuild the session.
       pauMetricsEnabled: () => vscode.workspace.getConfiguration("blacksite.pau").get<boolean>("enabled", false),
       toolLoading: () => readToolLoading(),
+      contextFlags: () => readContextFlags((key) => vscode.workspace.getConfiguration().get(key)),
+      // Workspace-scoped storage: the archive holds file contents, so it stays with the workspace
+      // the way checkpoints do.
+      contextArchiveRoot: path.join(this._context.storageUri?.fsPath ?? this._context.globalStorageUri.fsPath, "context-archive"),
       // Cache economics needs rates; the session must not own a rate table. Resolved live for
       // the same reason as the flag above — a model switch must not leave stale prices behind.
       pauPricing: () => this._cachedPricing(settings.provider, pSettings.model),
@@ -3032,7 +3044,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         subscriptionStream: this._subscriptionStream(subProvider, settings),
         apiKey: subApiKey,
         model: resolvedSubModel,
-        systemPrompt: buildDelegatedSystemPrompt(buildStaticSystemPrompt(), budget, profile?.systemPromptAddition),
+        systemPrompt: buildDelegatedSystemPrompt(buildStaticSystemPrompt(staticPromptOptions(readContextFlags((key) => vscode.workspace.getConfiguration().get(key)))), budget, profile?.systemPromptAddition),
         workspaceRoot: this._workspaceRoot,
         runtime: this._runtime,
         onToolOutput: (event) => this._queueToolOutput(event, { laneId, parentToolCallId: request.parentToolCallId }),
@@ -3057,6 +3069,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         openrouterFallbackModels: settings.openrouterConfig?.fallbackModels,
         pauMetricsEnabled: () => vscode.workspace.getConfiguration("blacksite.pau").get<boolean>("enabled", false),
         toolLoading: () => readToolLoading(),
+        // No archive root: a lane is short-lived, and its results are archived in memory.
+        contextFlags: () => readContextFlags((key) => vscode.workspace.getConfiguration().get(key)),
         // Priced against the lane's own provider/model, not the parent's — a lane delegated to a
         // cheaper model would otherwise have its cache economics computed at the wrong rates.
         pauPricing: () => this._cachedPricing(subProvider, subPSettings.model),

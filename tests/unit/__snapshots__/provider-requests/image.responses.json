@@ -5,7 +5,7 @@
       "authorization": "<volatile>",
       "content-type": "application/json"
     },
-    "bodySha256": "55c609a88fa0d9df",
+    "bodySha256": "91188e56453c991f",
     "body": {
       "model": "o4-mini",
       "input": [
@@ -94,7 +94,7 @@
           "ui_design_tokens",
           "ui_preview_render"
         ],
-        "sha256": "7df2394984522bbb"
+        "sha256": "8c417ba0f5d15235"
       },
       "tool_choice": "auto",
       "stream": true,

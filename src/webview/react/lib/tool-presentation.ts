@@ -616,6 +616,15 @@ export function toolResultPresentation(toolName: string, rawResult: any): ToolPr
         state: "ok", ...none,
       };
     }
+    case "context": {
+      if (Array.isArray(result?.setAside)) {
+        const freed = readNum(result?.freedTokensPerRequest) ?? 0;
+        return { label: result.setAside.length ? `Set aside ${countLabel(result.setAside.length, "result")}` : "Nothing set aside", preview: freed ? `~${freed.toLocaleString()} tokens freed per request` : "", state: "ok", ...none };
+      }
+      if (typeof result?.stored === "number") return { label: "Carry-forward note stored", preview: `${result.stored.toLocaleString()} characters`, state: "ok", ...none };
+      const tokens = readNum(result?.tokens);
+      return { label: tokens != null ? `~${tokens.toLocaleString()} tokens in context` : "Context reviewed", preview: Array.isArray(result?.toolResults) ? countLabel(result.toolResults.length, "tool result") : "", state: "ok", ...none };
+    }
     case "tool_output_search": {
       const total = readNum(result?.totalMatches) ?? 0;
       const shown = Array.isArray(result?.matches) ? result.matches.length : 0;
@@ -810,6 +819,8 @@ export function toolInputPreview(toolName: string, input: any): string {
       return joinParts([shortText(data.toolCallId, 24), data.offset != null ? `offset ${data.offset}` : ""]);
     case "tool_output_search":
       return joinParts([shortText(data.toolCallId, 24), shortText(data.pattern, 48)]);
+    case "context":
+      return joinParts([readStr(data.action), Array.isArray(data.ids) ? countLabel(data.ids.length, "result") : shortText(data.through, 24)]);
     default:
       return joinParts([shortPath(data.path || "", 48), hostLabel(data.url || ""), shortText(data.query || data.jql || data.pattern || data.selector || data.key || data.op || "", 70)]);
   }
@@ -918,6 +929,7 @@ export function toolIntentPhrase(toolName: string, input: any): { verb: string; 
     case "mcp_read_resource": return { verb: "Reading", target: shortText(data.uri, 40) };
     case "tool_output_page": return { verb: "Continuing", target: "output" };
     case "tool_output_search": return { verb: "Searching", target: shortText(data.pattern, 32) };
+    case "context": return { verb: data.action === "set_aside" ? "Setting aside" : data.action === "carry_forward" ? "Noting" : "Reviewing", target: "context" };
     case "tool_search": return { verb: "Loading tools", target: shortText(Array.isArray(data.names) ? data.names.join(", ") : data.query, 40) };
     case "question_card": return { verb: "Asking", target: "" };
     default: {

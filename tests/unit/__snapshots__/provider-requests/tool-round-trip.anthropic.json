@@ -6,7 +6,7 @@
       "content-type": "application/json",
       "x-api-key": "test-key"
     },
-    "bodySha256": "a5d6d88455ebfedf",
+    "bodySha256": "80dd4468a506ff20",
     "body": {
       "model": "claude-sonnet-4-6",
       "max_tokens": 32768,
@@ -98,7 +98,7 @@
           "ui_design_tokens",
           "ui_preview_render"
         ],
-        "sha256": "d8dd199863f0f10e"
+        "sha256": "9d947b81ff341112"
       },
       "stream": true,
       "thinking": {
@@ -116,7 +116,7 @@
       "content-type": "application/json",
       "x-api-key": "test-key"
     },
-    "bodySha256": "fb75a3e2d376aee7",
+    "bodySha256": "28e82bd90fa1279e",
     "body": {
       "model": "claude-sonnet-4-6",
       "max_tokens": 32768,
@@ -239,7 +239,7 @@
           "ui_design_tokens",
           "ui_preview_render"
         ],
-        "sha256": "d8dd199863f0f10e"
+        "sha256": "9d947b81ff341112"
       },
       "stream": true,
       "thinking": {

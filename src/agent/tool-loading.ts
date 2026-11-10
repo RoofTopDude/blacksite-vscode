@@ -23,7 +23,7 @@ import {
   CODE_INTEL_TOOLS, DATA_TOOLS, DIAGNOSTICS_TOOLS, DIAGRAM_TOOLS, GIT_TOOLS, GRAPH_TOOLS, LOOP_TOOLS, MEMORY_TOOLS, WORK_GRAPH_TOOLS,
   AGENT_MEMORY_TOOLS, PLANNING_TOOLS, REFERENCE_TOOLS, RESEARCH_TOOLS, RESULT_PAGING_TOOLS, SEQUENCE_TOOLS,
   SERVICE_TOOLS, SKILL_TOOLS, SUBAGENT_TOOLS, TEST_TOOLS, TICKET_TOOLS, TRANSCRIPT_DOCUMENT_TOOLS,
-  TRANSCRIPT_TOOLS, UI_TOOLS, WORKSPACE_TOOLS, WORKTREE_TOOLS, BROWSER_TOOLS,
+  TRANSCRIPT_TOOLS, UI_TOOLS, WORKSPACE_TOOLS, WORKTREE_TOOLS, BROWSER_TOOLS, CONTEXT_TOOLS,
 } from "../tools/definitions.js";
 
 export const TOOL_SEARCH_NAME = "tool_search";
@@ -58,6 +58,7 @@ const TOOL_FAMILIES: ReadonlyArray<{ label: string; tools: readonly ToolDefiniti
   { label: "Skills", tools: SKILL_TOOLS },
   { label: "Subagents", tools: SUBAGENT_TOOLS },
   { label: "Large-result paging", tools: RESULT_PAGING_TOOLS },
+  { label: "Working memory (what your context holds; set results aside)", tools: CONTEXT_TOOLS },
   { label: "Attached references and documents", tools: REFERENCE_TOOLS },
   { label: "Data workbench (SQLite and vector search)", tools: DATA_TOOLS },
   { label: "Execution Runs (recorded browser and local tool sequences)", tools: SEQUENCE_TOOLS },

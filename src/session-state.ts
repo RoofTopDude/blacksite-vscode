@@ -67,6 +67,8 @@ export interface PersistedSessionState {
   /** Kinds of untrusted outside content the conversation has read (web, browser, mcp, service). */
   untrustedSources?: string[];
   compressedSummary?: string;
+  /** The agent's note for the next compaction (context tool, carry_forward). */
+  carryForwardNote?: string;
   compressionCount?: number;
   lastInputTokens?: number;
   lastCompressedAt?: number;

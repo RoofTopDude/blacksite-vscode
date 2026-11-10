@@ -7,7 +7,7 @@
       "content-type": "application/json",
       "x-amz-date": "<volatile>"
     },
-    "bodySha256": "cc00f5341751d3f5",
+    "bodySha256": "c13504eba8b48925",
     "body": {
       "model": "anthropic.claude-sonnet-4-6",
       "max_tokens": 32768,
@@ -99,7 +99,7 @@
           "ui_design_tokens",
           "ui_preview_render"
         ],
-        "sha256": "d8dd199863f0f10e"
+        "sha256": "9d947b81ff341112"
       },
       "stream": true,
       "thinking": {
@@ -118,7 +118,7 @@
       "content-type": "application/json",
       "x-amz-date": "<volatile>"
     },
-    "bodySha256": "d8c9d543e058f75d",
+    "bodySha256": "b9de35c7d968c722",
     "body": {
       "model": "anthropic.claude-sonnet-4-6",
       "max_tokens": 32768,
@@ -241,7 +241,7 @@
           "ui_design_tokens",
           "ui_preview_render"
         ],
-        "sha256": "d8dd199863f0f10e"
+        "sha256": "9d947b81ff341112"
       },
       "stream": true,
       "thinking": {

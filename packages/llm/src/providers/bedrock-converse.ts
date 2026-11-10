@@ -52,6 +52,7 @@ export async function* streamBedrockConverseTurn(ctx: TransportContext, req: Mod
         req.contextTail,
       ),
       systemPrompt: req.system,
+      stableContext: req.contextStable || undefined,
       compressedSummary: req.systemSummary || undefined,
       maxTokens: plan.maxTokens,
       temperature: plan.temperature,

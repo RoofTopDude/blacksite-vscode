@@ -7,7 +7,7 @@
       "http-referer": "https://blacksite.dev",
       "x-title": "Blacksite"
     },
-    "bodySha256": "dc3ad5b95cb1e56b",
+    "bodySha256": "82f737badd737e09",
     "body": {
       "model": "anthropic/claude-sonnet-4.6",
       "messages": [
@@ -107,7 +107,7 @@
           "ui_design_tokens",
           "ui_preview_render"
         ],
-        "sha256": "991590248874b212"
+        "sha256": "6123bd67147a916d"
       },
       "tool_choice": "auto",
       "stream": true,

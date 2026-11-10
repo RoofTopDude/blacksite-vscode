@@ -163,6 +163,20 @@ function sanitizeEvent(event: AgentEvent): unknown {
         }),
       };
 
+    // Counts, ids, tool names and paths only — no file contents or model text — but nested deeper
+    // than the generic limit, which would cut every per-class figure off. Its keys are fixed by
+    // ContextReport and none holds a secret, while the default key filter would blank every
+    // `*Tokens` figure and the `session` totals. String values are still redacted, since a path
+    // can name a home directory.
+    case "context_report":
+      return sanitizeUnknown(event, {
+        maxDepth: 8,
+        maxStringChars: 300,
+        maxArrayItems: 20,
+        maxObjectKeys: 24,
+        sensitiveKeyPattern: /(?!)/,
+      });
+
     default:
       return sanitizeUnknown(event, {
         maxDepth: 4,

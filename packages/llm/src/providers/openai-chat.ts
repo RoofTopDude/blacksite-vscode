@@ -33,17 +33,20 @@ import { readResponseLines } from "../transport/sse.js";
  * compressed summary of older history when there is one. Also what PAU measures, so the two
  * cannot disagree about what the provider saw.
  */
-export function openAIEffectiveSystem(system: string, summary: string): string {
+export function openAIEffectiveSystem(system: string, summary: string, stableContext?: string): string {
+  // Prefix caching on these routes is automatic, so placement is all there is: the stable
+  // context goes before anything that changes more often, the summary included.
+  const base = stableContext ? `${system}\n\n${stableContext}` : system;
   return summary
-    ? `${system}\n\n---\n[COMPRESSED CONVERSATION HISTORY]\n${summary}\n---`
-    : system;
+    ? `${base}\n\n---\n[COMPRESSED CONVERSATION HISTORY]\n${summary}\n---`
+    : base;
 }
 
 export async function* streamOpenAIChat(ctx: TransportContext, req: ModelRequest): AsyncGenerator<ProviderTurnStreamEvent> {
   const apiKey = await resolveCredential(ctx.config.apiKey);
   const provider = ctx.config.provider;
   const url  = ctx.config.baseUrl ?? PROVIDER_BASE_URLS[provider as "openrouter" | "openai"];
-  const effectiveSystem = openAIEffectiveSystem(req.system, req.systemSummary);
+  const effectiveSystem = openAIEffectiveSystem(req.system, req.systemSummary, req.contextStable);
   // Cache breakpoints must be placed BEFORE the volatile workspace-context tail is
   // appended, exactly like the direct Anthropic path (withRollingCacheBreakpoint before
   // appendWorkspaceContextTail): a breakpoint on per-turn content re-writes the whole
