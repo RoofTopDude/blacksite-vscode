@@ -15,6 +15,7 @@ import {
   recommendsRefusalFallback,
   resolveEffort,
   resolveThinkingMode,
+  fastModeNeedsBeta,
   supportsFastMode,
   supportsTaskBudget,
   type ClaudeEffort,
@@ -270,7 +271,7 @@ export function resolveAnthropicBetaExtras(
 
   if (!isMantle && opts.fastMode && supportsFastMode(model)) {
     bodyExtras["speed"] = "fast";
-    betas.push("fast-mode-2026-02-01");
+    if (fastModeNeedsBeta(model)) betas.push("fast-mode-2026-02-01");
   }
 
   if (!isMantle && opts.taskBudgetTokens && supportsTaskBudget(model)) {

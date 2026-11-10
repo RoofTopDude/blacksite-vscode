@@ -100,6 +100,33 @@ export interface PersistedSessionState {
   spendPartial?: boolean;
   budgetWarningIssued?: boolean;
   budgetExceeded?: boolean;
+  /** Tokens billed so far, by category. Kept beside the spend so a reopened conversation shows
+   *  the tokens its cost was for, instead of a cost next to a count of zero. */
+  tokenTotals?: SessionTokenTotals;
+}
+
+/** A conversation's billed tokens: its own turns and the lanes it delegated to. */
+export interface SessionTokenTotals {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+/** Stored totals, or undefined for anything that is not four non-negative numbers. */
+export function readSessionTokenTotals(value: unknown): SessionTokenTotals | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const read = (key: keyof SessionTokenTotals): number | undefined => {
+    const n = record[key];
+    return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : undefined;
+  };
+  const input = read("input");
+  const output = read("output");
+  const cacheRead = read("cacheRead");
+  const cacheWrite = read("cacheWrite");
+  if (input === undefined || output === undefined || cacheRead === undefined || cacheWrite === undefined) return undefined;
+  return { input, output, cacheRead, cacheWrite };
 }
 
 export interface SessionRestoreState extends PersistedSessionState {
@@ -135,5 +162,6 @@ export interface SessionRuntimeState {
   verification: VerificationGateState;
   spentUsd?: number;
   spendPartial?: boolean;
+  tokenTotals?: SessionTokenTotals;
   costBudget?: { maxUsd?: number; warningPct: number; hardStop: boolean; warned?: boolean; exceeded?: boolean };
 }

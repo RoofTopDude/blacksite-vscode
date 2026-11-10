@@ -523,7 +523,7 @@ export type BaseAgentEvent =
    *  `provider` and `model` name the session that made the call. Cost is priced from them, not
    *  from settings, because a delegated lane can run on a different provider or model than the
    *  one configured, and the settings can change while a call is in flight. */
-  | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; serviceTier?: string; provider?: ProviderName; model?: string }
+  | { type: "usage_update"; inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; cacheWrite1hTokens?: number; webSearchRequests?: number; serviceTier?: string; provider?: ProviderName; model?: string }
   /** Beta, opt-in (`AgentSessionOptions.pauMetricsEnabled`). Read-only context-utilization
    *  measurement for the turn that just produced `usage_update` — see pau-metrics.ts. Absent
    *  entirely when the flag is off; never affects what was already sent to the provider. */
@@ -4304,6 +4304,9 @@ export class AgentSession {
             yield {
               type: "usage_update", inputTokens: ev.inputTokens, outputTokens: ev.outputTokens,
               cacheReadTokens: ev.cacheReadTokens, cacheWriteTokens: ev.cacheWriteTokens, serviceTier: ev.serviceTier,
+              // Billing detail only the response knows; without it the cost estimate has to guess.
+              ...(ev.cacheWrite1hTokens !== undefined ? { cacheWrite1hTokens: ev.cacheWrite1hTokens } : {}),
+              ...(ev.webSearchRequests ? { webSearchRequests: ev.webSearchRequests } : {}),
               provider: this.provider, model: this.opts.model,
             };
             yield { type: "runtime_state", state: this.runtimeState };

@@ -6,7 +6,7 @@
 
 import type { BedrockCredentials } from "./bedrock-types.js";
 import { signBedrockRequest } from "./bedrock-client.js";
-import { getContextLength, getMaxOutputTokens, modelFamilySupportsVision, type ModelInfo } from "./model-fetcher.js";
+import { getContextLength, getMaxOutputTokens, getModelPricing, modelFamilySupportsVision, type ModelInfo } from "./model-fetcher.js";
 import { supportsThinking } from "./thinking-modes.js";
 
 const BEDROCK_CONTROL_TIMEOUT_MS = 30_000;
@@ -325,9 +325,21 @@ export async function listAvailableBedrockModels(creds: BedrockCredentials): Pro
 export function bedrockModelsToModelInfo(models: BedrockAvailableModel[]): ModelInfo[] {
   return models.map((model) => {
     const contextModelId = model.foundationModelId || model.id;
+    // Priced under the id that is called, because the id names the routing and so the regional
+    // premium. An application inference profile is an opaque ARN, so it is priced as the
+    // foundation model it wraps: before, a session on one had no cost at all.
+    const pricing = getModelPricing("bedrock", model.id)
+      ?? (model.foundationModelId ? getModelPricing("bedrock", model.foundationModelId) : undefined);
     return {
       id: model.id,
       name: model.label,
+      ...(pricing ? {
+        inputPricePerM: pricing.inputPricePerM,
+        outputPricePerM: pricing.outputPricePerM,
+        cacheReadPricePerM: pricing.cacheReadPricePerM,
+        cacheWritePricePerM: pricing.cacheWritePricePerM,
+        longContextPricing: pricing.longContextPricing,
+      } : {}),
       contextLength: getContextLength("bedrock", contextModelId),
       maxOutputTokens: getMaxOutputTokens("bedrock", contextModelId),
       // Shared with the request builder, so the picker can't advertise thinking on a model the

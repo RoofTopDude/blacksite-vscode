@@ -243,9 +243,10 @@ export function needsSummarizedDisplay(modelId: string | null | undefined): bool
 }
 
 /**
- * Opus 4.8+ — the fast-capable generation (`"speed": "fast"`, beta fast-mode-2026-02-01).
- * First-party Anthropic API only; not available on Bedrock, Vertex, Foundry, or the Batches
- * API. Callers restrict the toggle to `provider === "anthropic"` on top of this check.
+ * The fast-capable models (`"speed": "fast"`): Opus 4.8 and later, and Fable / Mythos from 5.2.
+ * First-party Anthropic API only; not available on Bedrock or the Batches API. Callers restrict
+ * the toggle to `provider === "anthropic"` on top of this check. Fast mode bills every token
+ * category at twice the standard rate, which the cost estimate reads back from `usage.speed`.
  *
  * The floor is 4.8, not 4.7: Opus 4.7 had fast mode at launch and Anthropic has since **removed
  * it** — `speed: "fast"` on 4.7 now returns an error rather than degrading to standard speed. So
@@ -254,8 +255,20 @@ export function needsSummarizedDisplay(modelId: string | null | undefined): bool
  */
 export function supportsFastMode(modelId: string | null | undefined): boolean {
   const v = parseClaudeVersion(modelId);
-  if (!v || v.family !== "opus") return false;
-  return atLeast(v, 4, 8);
+  if (!v) return false;
+  // Fable 5 and 5.1 never had it; it arrived with 5.2.
+  if (v.family === "fable" || v.family === "mythos") return atLeast(v, 5, 2);
+  return v.family === "opus" && atLeast(v, 4, 8);
+}
+
+/**
+ * Whether fast mode on this model is still a research preview that needs the
+ * `fast-mode-2026-02-01` beta header: Opus 4.8 and Opus 5. It is generally available on Opus 5.5
+ * and on Fable / Mythos 5.2, which take `speed` on a plain request.
+ */
+export function fastModeNeedsBeta(modelId: string | null | undefined): boolean {
+  const v = parseClaudeVersion(modelId);
+  return !!v && v.family === "opus" && supportsFastMode(modelId) && !atLeast(v, 5, 5);
 }
 
 /**

@@ -76,12 +76,17 @@ export async function* streamBedrockConverseTurn(ctx: TransportContext, req: Mod
   if (ctx.signal?.aborted) throw makeAbortError();
   let iterator: AsyncIterator<BedrockConverseStreamEvent>;
   let firstResult: IteratorResult<BedrockConverseStreamEvent>;
+  // The TTL the request that finally went through carried on its cache points. It decides what a
+  // cache write costs (2x input for an hour, 1.25x for five minutes), and only this function
+  // knows it: the session's setting still says "1h" after either fallback below.
+  let sentTtl: "1h" | undefined = ctx.latches.bedrockCacheUnsupported ? undefined : cacheTtl;
   try {
     iterator = streamBedrockConverse(buildConverseOpts(!ctx.latches.bedrockCacheUnsupported), ctx.signal)[Symbol.asyncIterator]();
     firstResult = await iterator.next();
   } catch (err) {
     if (ctx.latches.bedrockCacheUnsupported || !isBedrockCacheValidationError(err)) throw err;
     let recovered = false;
+    sentTtl = undefined;
     if (cacheTtl) {
       // Try the 5-minute cache before no cache: the TTL is the newer, narrower feature, and a
       // model that takes cache points at all is far better off keeping them.
@@ -125,7 +130,7 @@ export async function* streamBedrockConverseTurn(ctx: TransportContext, req: Mod
   const thinkingAcc = new Map<number, { text: string; signature?: string; redacted?: string }>();
   const toolUseAcc = new Map<number, { id: string; name: string; input: string }>();
   let stopReason: ModelStopReason | undefined;
-  let usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number } | null = null;
+  let usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; cacheWrite1hTokens: number } | null = null;
 
   for await (const { eventType, data } of stream) {
     switch (eventType) {
@@ -206,15 +211,24 @@ export async function* streamBedrockConverseTurn(ctx: TransportContext, req: Mod
           outputTokens?: number;
           cacheReadInputTokens?: number;
           cacheWriteInputTokens?: number;
+          /** Cache writes by TTL. Empty when nothing was written. */
+          cacheDetails?: Array<{ ttl?: string; inputTokens?: number }>;
         };
         const u = (data["metadata"] as { usage?: BedrockStreamUsage } | undefined)?.usage
           ?? (data["usage"] as BedrockStreamUsage | undefined);
         if (u) {
+          const cacheWriteTokens = Number(u.cacheWriteInputTokens ?? 0);
+          // Bedrock's own breakdown when it sends one, else the TTL this request was sent with.
+          const details = Array.isArray(u.cacheDetails) ? u.cacheDetails.filter((d) => d && typeof d === "object") : [];
+          const written1h = details.length > 0
+            ? details.reduce((sum, d) => sum + (d.ttl === "1h" ? Number(d.inputTokens ?? 0) : 0), 0)
+            : sentTtl === "1h" ? cacheWriteTokens : 0;
           usage = {
             inputTokens: Number(u.inputTokens ?? 0),
             outputTokens: Number(u.outputTokens ?? 0),
             cacheReadTokens: Number(u.cacheReadInputTokens ?? 0),
-            cacheWriteTokens: Number(u.cacheWriteInputTokens ?? 0),
+            cacheWriteTokens,
+            cacheWrite1hTokens: Math.min(Math.max(0, written1h), cacheWriteTokens),
           };
         }
         break;

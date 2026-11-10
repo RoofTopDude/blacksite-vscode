@@ -147,7 +147,8 @@ import { EmbeddingService, sparseEmbed } from "./embedding-service.js";
 import { AgentMemoryIndex } from "./agent-memory-index.js";
 import { ExecutionLogger } from "./execution-logger.js";
 import type { LogStats } from "./execution-logger.js";
-import type { PersistedSessionState, SessionMessage, SessionRestoreState, SessionRuntimeState } from "./session-state.js";
+import { readSessionTokenTotals } from "./session-state.js";
+import type { PersistedSessionState, SessionMessage, SessionRestoreState, SessionRuntimeState, SessionTokenTotals } from "./session-state.js";
 import { pickRestoreState } from "./session-restore.js";
 import type { DataAssistant } from "./data-provider.js";
 import { AssistantQueryPlanner } from "./data/assistant-query-planner.js";
@@ -703,6 +704,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
   private _diagramService?: DiagramToolService;
   /** Host-priced spend state keyed by conversation, not by webview lifetime. */
   private readonly _sessionSpend = new Map<string, { usd: number; partial: boolean; warned: boolean; exceeded: boolean }>();
+  /** Billed tokens per conversation, kept beside the spend for the same reason. */
+  private readonly _sessionTokens = new Map<string, SessionTokenTotals>();
 
   constructor(
     private readonly _context: vscode.ExtensionContext,
@@ -1160,7 +1163,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
    * ran another one, and an unset subagent model (an empty string) priced nothing at all.
    */
   private _priceUsage(
-    usage: Pick<Extract<BaseAgentEvent, { type: "usage_update" }>, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "serviceTier" | "provider" | "model">,
+    usage: Pick<Extract<BaseAgentEvent, { type: "usage_update" }>, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens" | "cacheWrite1hTokens" | "webSearchRequests" | "serviceTier" | "provider" | "model">,
     fallback: "chat" | "subagent",
   ): ReturnType<typeof estimateUsageCostUsd> {
     const settings = this._readSettings();
@@ -1175,9 +1178,12 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       cacheRead: usage.cacheReadTokens,
       cacheWrite: usage.cacheWriteTokens,
       serviceTier: usage.serviceTier,
-      // Request-side setting, so it comes from settings rather than the response. Sessions are
-      // rebuilt whenever a provider setting changes, so this cannot drift from the TTL the call
-      // was actually sent with.
+      // What the response said about its own cache writes, when it said anything. Exact where the
+      // setting below is a guess: a request can mix TTLs, and Bedrock can fall back to 5 minutes.
+      cacheWrite1h: usage.cacheWrite1hTokens,
+      webSearchRequests: usage.webSearchRequests,
+      // The fallback for a route that reports no split: the session's own setting. Sessions are
+      // rebuilt whenever a provider setting changes, so it cannot drift from what was requested.
       cacheTtl: this._billedCacheTtl(provider, model, providerSettings.cacheTtl, settings),
     });
   }
@@ -2020,6 +2026,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         warned: state?.budgetWarningIssued === true,
         exceeded: state?.budgetExceeded === true,
       });
+      const tokens = readSessionTokenTotals(state?.tokenTotals);
+      if (tokens) this._sessionTokens.set(sessionId, tokens);
     }
   }
 
@@ -2062,6 +2070,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       verification: state?.verification ?? { status: "idle", files: [] },
       spentUsd: state?.spentUsd,
       spendPartial: state?.spendPartial,
+      tokenTotals: readSessionTokenTotals(state?.tokenTotals),
       costBudget: this._runtimeCostBudget(state),
     };
   }
@@ -2076,6 +2085,7 @@ export class ChatProvider implements vscode.WebviewViewProvider {
         ...next,
         spentUsd: spend?.usd ?? next.spentUsd,
         spendPartial: spend?.partial ?? next.spendPartial,
+        tokenTotals: this._sessionTokens.get(next.sessionId) ?? next.tokenTotals,
         costBudget: this._runtimeCostBudget(undefined, spend),
       },
     });
@@ -2093,6 +2103,8 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       state.budgetWarningIssued = spend.warned || undefined;
       state.budgetExceeded = spend.exceeded || undefined;
     }
+    const tokens = this._sessionTokens.get(session.sessionId);
+    if (tokens) state.tokenTotals = { ...tokens };
     this._sessionStore.saveActive({
       sessionId: session.sessionId,
       createdAt: stored?.sessionId === session.sessionId ? stored.createdAt : Date.now(),
@@ -2121,6 +2133,20 @@ export class ChatProvider implements vscode.WebviewViewProvider {
       warned: live?.warned ?? state?.budgetWarningIssued,
       exceeded: live?.exceeded ?? state?.budgetExceeded,
     };
+  }
+
+  /** Add one call's tokens to the conversation's running total: its own turns and its lanes'. */
+  private _recordSessionTokens(usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }): void {
+    const session = this._session;
+    if (!session) return;
+    const count = (value: number): number => (Number.isFinite(value) && value > 0 ? value : 0);
+    const totals = this._sessionTokens.get(session.sessionId) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    this._sessionTokens.set(session.sessionId, {
+      input: totals.input + count(usage.inputTokens),
+      output: totals.output + count(usage.outputTokens),
+      cacheRead: totals.cacheRead + count(usage.cacheReadTokens),
+      cacheWrite: totals.cacheWrite + count(usage.cacheWriteTokens),
+    });
   }
 
   private _recordSessionSpend(
@@ -5331,6 +5357,7 @@ ${this._pendingRewindNote}`;
         });
         // Post usage first: the webview accumulates this event, then the host runtime snapshot
         // confirms the same total. Reversing the order briefly double-counted the current call.
+        this._recordSessionTokens(event);
         this._recordSessionSpend(turnId, cost);
         break;
       }

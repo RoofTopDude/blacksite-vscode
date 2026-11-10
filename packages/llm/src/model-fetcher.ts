@@ -97,7 +97,7 @@ function modelIdFallbackMatches(candidateId: string, targetId: string): boolean 
 interface ClaudeRates {
   input: number;
   output: number;
-  /** Cache hits. 0.1x input on most models, but 0.025x on Fable 5.1 / Mythos 5.1 and 0.05x on
+  /** Cache hits. 0.1x input on most models, but 0.025x on Fable / Mythos 5.1 and 5.2 and 0.05x on
    *  Opus 5.5 / Sonnet 5.5, so it is listed per model rather than derived. */
   cacheRead: number;
   /** 5-minute cache writes (1.25x input). The 1-hour rate is 2x input; `estimateUsageCostUsd`
@@ -116,6 +116,7 @@ const OPUS_LEGACY: ClaudeRates = { input: 15, output: 75, cacheRead: 1.5, cacheW
 const SONNET_STANDARD: ClaudeRates = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
 const FABLE_5: ClaudeRates = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 };
 const FABLE_5_1: ClaudeRates = { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 };
+const FABLE_5_2: ClaudeRates = { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 };
 
 /**
  * First-party list prices, keyed by canonical model id (see {@link canonicalClaudeModelId}). Every
@@ -128,6 +129,8 @@ const FABLE_5_1: ClaudeRates = { input: 10, output: 50, cacheRead: 0.25, cacheWr
  * {@link bedrockEndpointMultiplier}.
  */
 const CLAUDE_PRICES: Readonly<Record<string, ClaudePriceEntry>> = {
+  "claude-fable-5-2": FABLE_5_2,
+  "claude-mythos-5-2": FABLE_5_2,
   "claude-fable-5-1": FABLE_5_1,
   "claude-mythos-5-1": FABLE_5_1,
   "claude-fable-5": FABLE_5,
@@ -181,14 +184,20 @@ const BEDROCK_GEO_PROFILE = /^(?:us|eu|apac|jp|au)\./i;
 /** Bedrock's premium for regional and geographic endpoints over global ones, Claude 4.5 and later. */
 export const BEDROCK_REGIONAL_PREMIUM = 1.1;
 
+/** A bare, ARN-versioned foundation-model id (`anthropic.claude-haiku-4-5-20251001-v1:0`): the
+ *  Converse spelling of an in-Region call. Mantle ids carry no `-vN:M` suffix. */
+const BEDROCK_IN_REGION_ID = /^anthropic\.[^/]*-v\d+:\d+$/i;
+
 /**
- * The multiplier Bedrock applies to a Claude model's rates for the endpoint the id names. A
- * geographic profile (`us.`, `eu.`, `apac.`, `jp.`, `au.`) on Claude 4.5 or later costs 10% more
- * than global routing. Everything else is 1: `global.` profiles, older models, and bare ids,
- * whose routing (a Mantle endpoint or an in-region model) the id alone does not reveal.
+ * The multiplier Bedrock applies to a Claude model's rates for the endpoint the id names. Regional
+ * routing on Claude 4.5 or later costs 10% more than global routing, and two spellings name it: a
+ * geographic profile (`us.`, `eu.`, `apac.`, `jp.`, `au.`) and a bare versioned foundation-model
+ * id, which Converse serves in the caller's own Region. Everything else is 1: `global.` profiles,
+ * older models, and Mantle ids, whose routing the id does not reveal.
  */
 export function bedrockEndpointMultiplier(modelId: string): number {
-  if (!BEDROCK_GEO_PROFILE.test(modelId.trim())) return 1;
+  const id = modelId.trim();
+  if (!BEDROCK_GEO_PROFILE.test(id) && !BEDROCK_IN_REGION_ID.test(id)) return 1;
   const v = parseClaudeVersion(modelId);
   if (!v) return 1;
   const premiumGeneration = v.family === "fable" || v.family === "mythos" || v.major >= 5 || (v.major === 4 && v.minor >= 5);
@@ -233,6 +242,7 @@ function claudeListPrice(modelId: string, provider?: ProviderName): ModelPricing
 // Mantle has no listing API; these are the documented model IDs.
 export { BEDROCK_MANTLE_DEFAULT_MODEL } from "./bedrock-config.js";
 const BEDROCK_MANTLE_MODEL_CATALOG: ModelInfo[] = [
+  { id: "anthropic.claude-fable-5-2", name: "Claude Fable 5.2 (Mantle)", contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
   { id: "anthropic.claude-opus-5-5",  name: "Claude Opus 5.5 (Mantle)",  contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
   { id: "anthropic.claude-fable-5-1", name: "Claude Fable 5.1 (Mantle)", contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
   { id: "anthropic.claude-sonnet-5-5", name: "Claude Sonnet 5.5 (Mantle)", contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
@@ -243,6 +253,10 @@ const BEDROCK_MANTLE_MODEL_CATALOG: ModelInfo[] = [
   { id: "anthropic.claude-opus-4-7",  name: "Claude Opus 4.7 (Mantle)",  contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
   { id: "anthropic.claude-sonnet-5",  name: "Claude Sonnet 5 (Mantle)",  contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
   { id: "anthropic.claude-haiku-4-5", name: "Claude Haiku 4.5 (Mantle)", contextLength: 200_000,   supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+  // Verified organizations only. Listed last so an account that has them resolves real limits and
+  // cost; everyone else simply never selects them.
+  { id: "anthropic.claude-mythos-5-2", name: "Claude Mythos 5.2 (Mantle)", contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
+  { id: "anthropic.claude-mythos-5-1", name: "Claude Mythos 5.1 (Mantle)", contextLength: 1_000_000, supportsThinking: true, supportsVision: true, supportsTools: true, source: "fallback" },
 ];
 export const BEDROCK_MANTLE_MODELS: ModelInfo[] = BEDROCK_MANTLE_MODEL_CATALOG.map((model) => ({
   ...model,
@@ -289,6 +303,7 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "claude-opus-5-5",              name: "Claude Opus 5.5",       contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-opus-5-5"),   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "claude-sonnet-5-5",            name: "Claude Sonnet 5.5",     contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-sonnet-5-5"), supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "claude-haiku-5-5",             name: "Claude Haiku 5.5",      contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-haiku-5-5"),  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
+    { id: "claude-fable-5-2",             name: "Claude Fable 5.2",      contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-fable-5-2"),  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "claude-fable-5-1",             name: "Claude Fable 5.1",      contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-fable-5-1"),  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "claude-opus-5",                name: "Claude Opus 5",         contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-opus-5"),     supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "claude-opus-4-8",              name: "Claude Opus 4.8",       contextLength: 1_000_000, ...claudeListPrice("claude-opus-4-8"),   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
@@ -299,6 +314,7 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "claude-fable-5",               name: "Claude Fable 5",        contextLength: 1_000_000, ...claudeListPrice("claude-fable-5"),    supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     // Project Glasswing only — same specs and pricing as the Fable release they mirror. Listed so
     // a session that does have access resolves real limits and cost instead of "unknown".
+    { id: "claude-mythos-5-2",            name: "Claude Mythos 5.2",     contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-mythos-5-2"), supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "claude-mythos-5-1",            name: "Claude Mythos 5.1",     contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-mythos-5-1"), supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "claude-mythos-5",              name: "Claude Mythos 5",       contextLength: 1_000_000, maxOutputTokens: 128_000, ...claudeListPrice("claude-mythos-5"),   supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
     { id: "claude-haiku-4-5",             name: "Claude Haiku 4.5",      contextLength: 200_000,   ...claudeListPrice("claude-haiku-4-5"),  supportsThinking: true,  supportsVision: true, supportsTools: true, source: "fallback" },
@@ -363,6 +379,60 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "us.anthropic.claude-3-5-haiku-20241022-v1:0",  name: "Claude 3.5 Haiku (Bedrock)",  contextLength: 200000, ...claudeListPrice("us.anthropic.claude-3-5-haiku-20241022-v1:0", "bedrock"),  supportsThinking: false, supportsVision: true, supportsTools: true, source: "fallback" },
   ],
 };
+
+// ── Amazon Nova on Bedrock ─────────────────────────────────────────────────────
+
+/** Per-MTok USD rates and context window for one Amazon Nova model, from AWS's Bedrock price list. */
+interface NovaEntry { input: number; output: number; contextLength: number; geoPremium?: boolean }
+
+/**
+ * Keyed by the model name inside the id (`us.amazon.nova-pro-v1:0` → `nova-pro`). The live Bedrock
+ * listing offers every text model the account can call, and before this table a Nova session had
+ * no price at all and a 200K context window borrowed from Claude: Nova Micro's real window is
+ * 128K, so compaction was scheduled for a point the model could never reach.
+ *
+ * A cache read costs a quarter of fresh input and a cache write the plain input rate. Nova 2 adds
+ * the same 10% premium for geographic profiles over global ones that Claude carries.
+ */
+const NOVA_MODELS: Readonly<Record<string, NovaEntry>> = {
+  "nova-micro":   { input: 0.035, output: 0.14,  contextLength: 128_000 },
+  "nova-lite":    { input: 0.06,  output: 0.24,  contextLength: 300_000 },
+  "nova-pro":     { input: 0.8,   output: 3.2,   contextLength: 300_000 },
+  "nova-premier": { input: 2.5,   output: 12.5,  contextLength: 1_000_000 },
+  "nova-2-lite":  { input: 0.3,   output: 2.5,   contextLength: 1_000_000, geoPremium: true },
+};
+const NOVA_CACHE_READ_RATIO = 0.25;
+
+function novaEntry(modelId: string): { entry: NovaEntry; scale: number } | undefined {
+  const id = modelId.trim().toLowerCase();
+  const name = /(?:^|[./])amazon\.(nova-[a-z0-9-]+?)-v\d+(?::\d+)?(?::[\w-]+)?$/.exec(id)?.[1];
+  const entry = name ? NOVA_MODELS[name] : undefined;
+  if (!entry) return undefined;
+  return { entry, scale: entry.geoPremium && BEDROCK_GEO_PROFILE.test(id) ? BEDROCK_REGIONAL_PREMIUM : 1 };
+}
+
+function novaPricing(modelId: string): ModelPricing | undefined {
+  const nova = novaEntry(modelId);
+  if (!nova) return undefined;
+  const { entry, scale } = nova;
+  return {
+    inputPricePerM: entry.input * scale,
+    outputPricePerM: entry.output * scale,
+    cacheReadPricePerM: entry.input * NOVA_CACHE_READ_RATIO * scale,
+    cacheWritePricePerM: entry.input * scale,
+  };
+}
+
+/** Context windows of the non-Claude families Bedrock lists, for an id the tables above miss. */
+function bedrockFamilyContextLength(modelId: string): number | undefined {
+  const nova = novaEntry(modelId);
+  if (nova) return nova.entry.contextLength;
+  const id = stripBedrockProfilePrefix(modelId.trim().toLowerCase());
+  // A named provider other than Anthropic. 128K is the smallest window in current use across
+  // these families (Llama, Mistral, DeepSeek, gpt-oss), so compaction can only start early.
+  if (/^(?:amazon|meta|mistral|deepseek|openai|qwen|cohere|ai21|writer|google|moonshot|minimax|zai|nvidia)\./.test(id)) return 128_000;
+  return undefined;
+}
 
 // ── HTTP helper ────────────────────────────────────────────────────────────────
 
@@ -692,8 +762,9 @@ export function getMaxOutputTokens(provider: ProviderName, modelId: string): num
     ?? undefined;
 }
 
-/** Known per-token pricing for a provider/model, or undefined if unpriced (e.g. Bedrock, which
-    publishes no pricing API, or an OpenRouter model id this build hasn't fetched live yet).
+/** Known per-token pricing for a provider/model, or undefined if unpriced (e.g. a Bedrock model
+    outside the Claude and Nova tables, since Bedrock publishes no pricing API, or an OpenRouter
+    model id this build hasn't fetched live yet).
     Callers should prefer live-fetched pricing (a session's cached model catalog) and only fall
     back to this when nothing better is available — this mirrors getContextLength's own
     fallback-table-first strategy. */
@@ -704,6 +775,11 @@ export function getModelPricing(provider: ProviderName, modelId: string): ModelP
 
   const fallback = FALLBACK_MODELS[provider]?.find((m) => m.id === modelId);
   if (fallback?.inputPricePerM != null || fallback?.outputPricePerM != null) return fallback;
+
+  if (provider === "bedrock") {
+    const nova = novaPricing(modelId);
+    if (nova) return nova;
+  }
 
   if (provider === "openai") {
     const meta = OPENAI_META[modelId] ?? OPENAI_META[normalizeModelIdForFallbackLookup(modelId)];
@@ -749,10 +825,22 @@ export interface UsageTokens {
    * Prompt-cache breakpoint TTL for this request (Anthropic family). A cache write costs 1.25x
    * input at the default 5-minute TTL and 2x at the 1-hour TTL — a per-request choice, not a
    * model property, so the catalog quotes the 5m rate and this scales it. Omitted or "5m"
-   * leaves the quoted rate alone.
+   * leaves the quoted rate alone. Only a fallback: {@link UsageTokens.cacheWrite1h} wins when set.
    */
   cacheTtl?: string;
+  /**
+   * How many of {@link UsageTokens.cacheWrite} were written with the 1-hour TTL, as the response
+   * itself reported. The rest are billed at the 5-minute rate. A request can mix the two (a server
+   * tool adds its own 5-minute write to a 1-hour session), and a route can fall back to 5 minutes
+   * without the settings knowing, so the response is the only exact source.
+   */
+  cacheWrite1h?: number;
+  /** Searches the provider ran itself during the request, billed per search on top of tokens. */
+  webSearchRequests?: number;
 }
+
+/** Anthropic's web search tool: $10 per 1,000 searches, on top of the tokens the results cost. */
+export const ANTHROPIC_WEB_SEARCH_USD_PER_SEARCH = 0.01;
 
 /**
  * Per-tier multiplier applied to every billed token category. OpenAI prices flex at the Batch
@@ -800,13 +888,24 @@ export function estimateUsageCostUsd(pricing: ModelPricing | undefined, tokens: 
   // Catalog cache-write rates are the 5-minute figure; a 1-hour breakpoint costs 2x input
   // instead of 1.25x, so scale by the ratio between the two rather than re-deriving from input
   // (which a live OpenRouter row may not agree with).
-  const cacheWritePricePerM = tokens.cacheTtl === "1h" && rates.cacheWritePricePerM != null
+  const cacheWrite1hPricePerM = rates.cacheWritePricePerM != null
     ? rates.cacheWritePricePerM * (CLAUDE_CACHE_WRITE_RATIO_1H / CLAUDE_CACHE_WRITE_RATIO_5M)
-    : rates.cacheWritePricePerM;
+    : undefined;
+  const cacheWrite = tokens.cacheWrite ?? 0;
+  // The response's own split when it gave one; otherwise every write is assumed to carry the
+  // session's TTL.
+  const written1h = tokens.cacheWrite1h != null
+    ? Math.min(Math.max(0, tokens.cacheWrite1h), cacheWrite)
+    : tokens.cacheTtl === "1h" ? cacheWrite : 0;
   bill(tokens.input, rates.inputPricePerM);
   bill(tokens.output, rates.outputPricePerM);
   bill(tokens.cacheRead, rates.cacheReadPricePerM);
-  bill(tokens.cacheWrite, cacheWritePricePerM);
+  bill(cacheWrite - written1h, rates.cacheWritePricePerM);
+  bill(written1h, cacheWrite1hPricePerM);
+  // A flat per-search fee: fast mode and the other token multipliers do not apply to it.
+  if (tokens.webSearchRequests && tokens.webSearchRequests > 0) {
+    costUsd += tokens.webSearchRequests * ANTHROPIC_WEB_SEARCH_USD_PER_SEARCH;
+  }
   return { costUsd, partial };
 }
 
@@ -832,6 +931,13 @@ export function getContextLength(provider: ProviderName, modelId: string): numbe
   const claudeWindow = resolveContextWindow(modelId);
   if (claudeWindow) return claudeWindow;
 
+  // Bedrock's other families, before the substring rules below: those are written for OpenAI and
+  // OpenRouter spellings and would read `openai.gpt-oss-…` or a Nova id as something it is not.
+  if (provider === "bedrock") {
+    const familyWindow = bedrockFamilyContextLength(modelId);
+    if (familyWindow) return familyWindow;
+  }
+
   // Heuristic defaults for the remaining model families
   const id = modelId.toLowerCase();
   if (id.includes("gemini-2.5")) return 1_048_576;
@@ -850,9 +956,9 @@ export function getContextLength(provider: ProviderName, modelId: string): numbe
 
   // Bedrock custom inference-profile ARNs (arn:aws:bedrock:...:application-inference-profile/xxxx)
   // don't carry a recognizable model name, so none of the substring heuristics above can match
-  // them. This extension only targets Anthropic models on Bedrock, so default to Claude's
-  // context window rather than leaving it undefined — which silently disables the auto-compression
-  // trigger (agent-session.ts gates it on `this.opts.contextLength` being truthy).
+  // them. Most Bedrock sessions run Claude, so default to its smallest window rather than leaving
+  // it undefined — which silently disables the auto-compression trigger (agent-session.ts gates it
+  // on `this.opts.contextLength` being truthy).
   if (provider === "bedrock") return 200_000;
 
   return undefined;

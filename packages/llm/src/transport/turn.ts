@@ -122,6 +122,8 @@ export class ProviderTurnRunner {
           outputTokens: number;
           cacheReadTokens: number;
           cacheWriteTokens: number;
+          cacheWrite1hTokens?: number;
+          webSearchRequests?: number;
           serviceTier?: string;
         }
         | undefined;
@@ -175,6 +177,8 @@ export class ProviderTurnRunner {
               outputTokens: event.outputTokens,
               cacheReadTokens: event.cacheReadTokens,
               cacheWriteTokens: event.cacheWriteTokens,
+              cacheWrite1hTokens: event.cacheWrite1hTokens,
+              webSearchRequests: event.webSearchRequests,
               serviceTier: event.serviceTier,
             };
           }

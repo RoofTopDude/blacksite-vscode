@@ -100,8 +100,10 @@ Tool *schemas* live in `src/tools/definitions.ts`. Tool *execution* is split del
   the workspace, reads may reach installed toolchains or, with approval, elsewhere — see
   `toolchain-roots.ts`), the command
   classifier that sorts operations into read/write/network/destructive tiers, and the argument
-  blocklist that refuses inline-eval vectors. Nothing here launches a shell; every process is
-  `spawn`/`execFile` with an argv array.
+  blocklist that refuses inline-eval vectors. Every process is `spawn`/`execFile` with an argv
+  array, never a command line the model wrote. The one exception is Windows, where a command that
+  is not an `.exe` (an `npm.cmd` shim, a batch file) can only start through `cmd.exe`: `planSpawn`
+  builds that line itself and quotes each argument.
 - `src/` services — anything needing VS Code APIs or extension state: LSP, diagnostics, the
   Codebase Map, browser automation, the data workbench.
 
@@ -177,7 +179,7 @@ Honest notes, so nobody assumes the current shape is the intended one:
 
 - **`src/` root is flat** — ~41k lines across ~110 files with no subfoldering, while the
   subsystems above are organized. New code should prefer a directory.
-- **`agent-session.ts` (~6k) and `chat-provider.ts` (~6.3k) are still large.** The provider
+- **`agent-session.ts` (~6k) and `chat-provider.ts` (~7k) are still large.** The provider
   streaming moved to `packages/llm`; the tool dispatch chain and the session factory in
   `ChatProvider` are what an agent-core package would need next.
 - **`mcp-panel.ts` is hand-rolled vanilla-JS webview markup**, inconsistent with every other
@@ -193,7 +195,7 @@ npm run build          # vite (webviews) then esbuild (host) → out/
 npm run compile        # tsc --noEmit, extension host
 npm run typecheck:webview
 npm run lint
-npm run test:unit      # ~3.5k tests, node environment
+npm run test:unit      # ~5k tests, node environment
 npm run test:coverage  # same suite with V8 coverage thresholds
 npm run test:browser   # Playwright browser-policy integration
 npm run security       # static scan + dependency advisories

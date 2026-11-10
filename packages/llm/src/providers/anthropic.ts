@@ -185,6 +185,33 @@ function sumUsageIterations(usage: Record<string, unknown>): { input: number; ou
   return { input, output };
 }
 
+/**
+ * The billed token categories of one `usage` object, each undefined when the object does not
+ * carry it. `message_start` and `message_delta` both send one, and the later one is cumulative:
+ * after a server-side search it holds the prompt tokens of every internal round, where
+ * `message_start` only saw the first.
+ */
+function readAnthropicUsage(usage: Record<string, unknown>): {
+  input?: number; cacheRead?: number; cacheWrite?: number; cacheWrite1h?: number; searches?: number; fast?: boolean;
+} {
+  const num = (value: unknown): number | undefined => {
+    const n = typeof value === "number" ? value : undefined;
+    return n !== undefined && Number.isFinite(n) && n >= 0 ? n : undefined;
+  };
+  // Cache writes split by TTL. Present whenever the request wrote to the cache; this is what
+  // says how many of them were 1-hour writes, which cost 2x input rather than 1.25x.
+  const creation = usage["cache_creation"] as Record<string, unknown> | null | undefined;
+  const serverTools = usage["server_tool_use"] as Record<string, unknown> | null | undefined;
+  return {
+    input: num(usage["input_tokens"]),
+    cacheRead: num(usage["cache_read_input_tokens"]),
+    cacheWrite: num(usage["cache_creation_input_tokens"]),
+    cacheWrite1h: creation && typeof creation === "object" ? num(creation["ephemeral_1h_input_tokens"]) ?? 0 : undefined,
+    searches: serverTools && typeof serverTools === "object" ? num(serverTools["web_search_requests"]) : undefined,
+    fast: typeof usage["speed"] === "string" ? usage["speed"] === "fast" : undefined,
+  };
+}
+
 export async function* parseAnthropicSSE(body: ReadableStream<Uint8Array>, label: string, history: readonly AgentMessage[]): AsyncGenerator<ProviderTurnStreamEvent, AnthropicParseResult> {
   const reader = readResponseLines(body, { idleMs: STREAM_IDLE_TIMEOUT_MS });
   const textAcc     = new Map<number, string>();
@@ -204,7 +231,21 @@ export async function* parseAnthropicSSE(body: ReadableStream<Uint8Array>, label
   let inputTokens = 0;
   let cacheReadTokens = 0;
   let cacheWriteTokens = 0;
+  let cacheWrite1hTokens: number | undefined;
+  let webSearchRequests = 0;
+  let fast = false;
   let outputTokens = 0;
+  // Counts only grow within one response, so a later usage object can raise a figure and never
+  // lower it: a `message_delta` that omits a field must not erase what `message_start` reported.
+  const takeUsage = (usage: Record<string, unknown>, iterationsInput: number | undefined): void => {
+    const read = readAnthropicUsage(usage);
+    inputTokens = Math.max(inputTokens, iterationsInput ?? read.input ?? 0);
+    cacheReadTokens = Math.max(cacheReadTokens, read.cacheRead ?? 0);
+    cacheWriteTokens = Math.max(cacheWriteTokens, read.cacheWrite ?? 0);
+    if (read.cacheWrite1h !== undefined) cacheWrite1hTokens = Math.max(cacheWrite1hTokens ?? 0, read.cacheWrite1h);
+    webSearchRequests = Math.max(webSearchRequests, read.searches ?? 0);
+    if (read.fast !== undefined) fast = read.fast;
+  };
 
   for await (const line of reader) {
     if (!line.startsWith("data:")) continue;
@@ -218,12 +259,7 @@ export async function* parseAnthropicSSE(body: ReadableStream<Uint8Array>, label
     if (evType === "message_start") {
       const msg = ev["message"] as Record<string, unknown> | undefined;
       const usage = msg?.["usage"] as Record<string, unknown> | undefined;
-      if (usage) {
-        const iterations = sumUsageIterations(usage);
-        inputTokens = iterations?.input ?? Number(usage["input_tokens"] ?? 0);
-        cacheReadTokens = Number(usage["cache_read_input_tokens"] ?? 0);
-        cacheWriteTokens = Number(usage["cache_creation_input_tokens"] ?? 0);
-      }
+      if (usage) takeUsage(usage, sumUsageIterations(usage)?.input);
     } else if (evType === "content_block_start") {
       const idx = Number(ev["index"]);
       const cb = ev["content_block"] as Record<string, unknown>;
@@ -366,11 +402,11 @@ export async function* parseAnthropicSSE(body: ReadableStream<Uint8Array>, label
       if (usage) {
         const iterations = sumUsageIterations(usage);
         outputTokens = iterations?.output ?? Number(usage["output_tokens"] ?? 0);
-        // The compaction pass's own input tokens are real spend that message_start's
-        // pre-compaction snapshot couldn't have known about yet — only override upward
-        // (never let a message_delta lacking iterations erase what message_start already
-        // established from its own, possibly-present iterations breakdown).
-        if (iterations) inputTokens = Math.max(inputTokens, iterations.input);
+        // The final usage is cumulative. It carries prompt tokens message_start could not have
+        // known about: the compaction pass's own input, and every round of a server-side search,
+        // whose results are read as input. Only the opening snapshot used to be counted, so a
+        // turn that searched under-reported its prompt, and its searches were not billed at all.
+        takeUsage(usage, iterations?.input);
       }
     } else if (evType === "error") {
       // Anthropic (and Bedrock Mantle, which shares this parser) can send a mid-stream
@@ -385,8 +421,15 @@ export async function* parseAnthropicSSE(body: ReadableStream<Uint8Array>, label
     }
   }
 
-  if (inputTokens > 0 || outputTokens > 0) {
-    yield { type: "usage_update", inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
+  if (inputTokens > 0 || outputTokens > 0 || cacheReadTokens > 0 || cacheWriteTokens > 0) {
+    yield {
+      type: "usage_update", inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
+      ...(cacheWrite1hTokens !== undefined ? { cacheWrite1hTokens: Math.min(cacheWrite1hTokens, cacheWriteTokens) } : {}),
+      ...(webSearchRequests > 0 ? { webSearchRequests } : {}),
+      // Fast mode bills every token category at twice the standard rate. Read from the response,
+      // not the setting: only a request that was actually served fast is charged for it.
+      ...(fast ? { serviceTier: "fast" } : {}),
+    };
   }
   return { rawStopReason: rawStop, wireBlocks };
 }

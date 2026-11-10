@@ -332,7 +332,7 @@ export function GenerationPanel() {
       {fastModeEligible && (
         <Field
           label="Fast Mode"
-          hint="Beta. Runs this model at up to 2.5x higher output tokens/sec, at premium pricing. First-party Anthropic API only."
+          hint="Runs this model at up to 2.5x higher output tokens/sec, billed at twice the standard rate. First-party Anthropic API only."
         >
           <Row label="Enable fast mode">
             <Switch checked={!!ps.fastMode} onCheckedChange={(c) => actions.setFastMode(provider, c)} />

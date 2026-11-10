@@ -220,6 +220,10 @@ export interface ProviderTurnUsage {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** See {@link ProviderTurnUsageEvent.cacheWrite1hTokens}. */
+  cacheWrite1hTokens?: number;
+  /** See {@link ProviderTurnUsageEvent.webSearchRequests}. */
+  webSearchRequests?: number;
 }
 
 export type ProviderTurnStreamEvent =
@@ -267,11 +271,20 @@ export interface ProviderTurnUsageEvent {
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /**
+   * How many of `cacheWriteTokens` were written with the 1-hour TTL, which costs 2x input where a
+   * 5-minute write costs 1.25x. Set when the route knows: the response's own breakdown (Anthropic
+   * `usage.cache_creation`, Bedrock `usage.cacheDetails`), or the TTL the request was sent with.
+   * Undefined means unknown, and the cost estimate falls back to the session's configured TTL.
+   */
+  cacheWrite1hTokens?: number;
+  /** Searches the provider ran itself during this request. Billed per search, not per token. */
+  webSearchRequests?: number;
   /** The processing tier that actually served the request, as echoed back by the provider —
    *  not the tier that was requested, which OpenAI may decline to honour and downgrade. Cost
    *  estimation scales the model's rates by it (flex bills at half, fast at double), so this
-   *  must come from the response rather than from settings. Undefined on providers with no
-   *  such concept. */
+   *  must come from the response rather than from settings. Anthropic's fast mode reports here
+   *  as "fast", from the response's `usage.speed`. Undefined on providers with no such concept. */
   serviceTier?: string;
 }
 

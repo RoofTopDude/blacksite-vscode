@@ -16,6 +16,9 @@ export interface AgentMessage {
 }
 
 // @public
+export const ANTHROPIC_WEB_SEARCH_USD_PER_SEARCH = 0.01;
+
+// @public
 export interface AnthropicBetaExtras {
     // (undocumented)
     betas: string[];
@@ -600,6 +603,9 @@ export function extractContextOverflowLimit(message: string): number | null;
 
 // @public
 export function extractOutputTokenLimit(message: string): number | null;
+
+// @public
+export function fastModeNeedsBeta(modelId: string | null | undefined): boolean;
 
 // @public (undocumented)
 export function fetchModels(provider: ProviderName, apiKey: string): Promise<ModelInfo[]>;
@@ -1270,18 +1276,21 @@ export type ProviderTurnStreamEvent = ProviderActivityEvent | {
 export interface ProviderTurnUsage {
     // (undocumented)
     cacheReadTokens: number;
+    cacheWrite1hTokens?: number;
     // (undocumented)
     cacheWriteTokens: number;
     // (undocumented)
     inputTokens: number;
     // (undocumented)
     outputTokens: number;
+    webSearchRequests?: number;
 }
 
 // @public (undocumented)
 export interface ProviderTurnUsageEvent {
     // (undocumented)
     cacheReadTokens: number;
+    cacheWrite1hTokens?: number;
     // (undocumented)
     cacheWriteTokens: number;
     // (undocumented)
@@ -1291,6 +1300,7 @@ export interface ProviderTurnUsageEvent {
     serviceTier?: string;
     // (undocumented)
     type: "usage_update";
+    webSearchRequests?: number;
 }
 
 // @public (undocumented)
@@ -1816,11 +1826,13 @@ export interface UsageTokens {
     cacheTtl?: string;
     // (undocumented)
     cacheWrite?: number;
+    cacheWrite1h?: number;
     // (undocumented)
     input?: number;
     // (undocumented)
     output?: number;
     serviceTier?: string;
+    webSearchRequests?: number;
 }
 
 // @public

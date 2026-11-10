@@ -308,6 +308,8 @@ export interface SessionRuntime {
   };
   spentUsd?: number;
   spendPartial?: boolean;
+  /** Tokens billed to this conversation so far, as the host counted them. */
+  tokenTotals?: { input: number; output: number; cacheRead: number; cacheWrite: number };
   costBudget?: { maxUsd?: number; warningPct: number; hardStop: boolean; warned?: boolean; exceeded?: boolean };
 }
 

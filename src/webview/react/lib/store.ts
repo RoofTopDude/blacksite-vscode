@@ -353,7 +353,9 @@ function handleIncoming(msg: IncomingMessage): void {
       const totalInput = it + cr + cw;
       const cl = readNum(msg.contextLength) ?? 0;
       if (cl > 0) chat.sessionContextLength = cl;
-      if (totalInput > 0) chat.lastInputTokens = totalInput;
+      // A delegated lane's prompt is its own, not this conversation's: letting it through moved the
+      // context meter to the size of a subagent's prompt until the next turn of the chat itself.
+      if (totalInput > 0 && !readStr(msg.laneId)) chat.lastInputTokens = totalInput;
       // Accumulate authoritative per-call usage into the live session total.
       const u = store.sessionUsage;
       store.sessionUsage = { input: u.input + it, output: u.output + out, cacheRead: u.cacheRead + cr, cacheWrite: u.cacheWrite + cw };
@@ -383,6 +385,13 @@ function handleIncoming(msg: IncomingMessage): void {
       const spentUsd = readNum(runtime?.spentUsd);
       if (spentUsd != null && spentUsd >= 0) {
         store.sessionCost = { usd: spentUsd, partial: runtime?.spendPartial === true };
+      }
+      // The host's count is the one that survives a reload, so a reopened conversation shows the
+      // tokens behind its cost. Live, it only confirms what the usage events already added up to.
+      const totals = runtime?.tokenTotals;
+      if (totals) {
+        const count = (value: unknown): number => Math.max(0, readNum(value) ?? 0);
+        store.sessionUsage = { input: count(totals.input), output: count(totals.output), cacheRead: count(totals.cacheRead), cacheWrite: count(totals.cacheWrite) };
       }
       break;
     }
