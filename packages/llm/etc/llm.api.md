@@ -351,7 +351,7 @@ export interface BedrockUsage {
 }
 
 // @public
-export function buildAnthropicSystemBlocks(systemPrompt: string, compressedSummary: string, cacheTtl?: CacheTtl): Array<{
+export function buildAnthropicSystemBlocks(systemPrompt: string, compressedSummary: string, cacheTtl?: CacheTtl, stableContext?: string): Array<{
     type: "text";
     text: string;
     cache_control?: AnthropicCacheControl;
@@ -546,6 +546,7 @@ export interface ConverseOptions {
     messages: BedrockMessage[];
     // (undocumented)
     modelId: string;
+    stableContext?: string;
     // (undocumented)
     systemPrompt?: string;
     temperature?: number;
@@ -907,6 +908,7 @@ export type ModelPricing = Pick<ModelInfo, "inputPricePerM" | "outputPricePerM" 
 // @public
 export interface ModelRequest {
     anthropicBeta?: AnthropicBetaOptions;
+    contextStable?: string;
     contextTail: string;
     conversationId: string;
     hostedSearch?: HostedSearchPolicy & HostedSearchRoute;
@@ -1027,7 +1029,7 @@ export interface OAIToolCall {
 export function openAICompletionUsage(usage: Record<string, unknown> | undefined): CompletionUsage | undefined;
 
 // @public
-export function openAIEffectiveSystem(system: string, summary: string): string;
+export function openAIEffectiveSystem(system: string, summary: string, stableContext?: string): string;
 
 // @public
 export type OpenAIReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
