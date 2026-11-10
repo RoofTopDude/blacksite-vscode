@@ -3,7 +3,7 @@
   "publisher": "blacksite",
   "displayName": "Blacksite",
   "description": "AI coding assistant with deep workspace integration",
-  "version": "1.33.0-pre.6",
+  "version": "1.33.0-pre.7",
   "icon": "media/extension-icon.png",
   "repository": {
     "type": "git",
@@ -1236,10 +1236,30 @@
           "default": {},
           "additionalProperties": false,
           "properties": {
-            "repeatedFailure": { "type": "integer", "minimum": 2, "maximum": 20, "description": "Test runs in a row failing the same way, with edits between, before it is reported. Default 3." },
-            "stagnation": { "type": "integer", "minimum": 3, "maximum": 30, "description": "Failing test runs in a row whose failure count never drops, with edits between. Default 5." },
-            "repeatedEdit": { "type": "integer", "minimum": 2, "maximum": 20, "description": "Times one change (or it and its undo) is applied to a file. Default 3." },
-            "repeatedRead": { "type": "integer", "minimum": 2, "maximum": 30, "description": "Identical reads of an unchanged file. Default 4." }
+            "repeatedFailure": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 20,
+              "description": "Test runs in a row failing the same way, with edits between, before it is reported. Default 3."
+            },
+            "stagnation": {
+              "type": "integer",
+              "minimum": 3,
+              "maximum": 30,
+              "description": "Failing test runs in a row whose failure count never drops, with edits between. Default 5."
+            },
+            "repeatedEdit": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 20,
+              "description": "Times one change (or it and its undo) is applied to a file. Default 3."
+            },
+            "repeatedRead": {
+              "type": "integer",
+              "minimum": 2,
+              "maximum": 30,
+              "description": "Identical reads of an unchanged file. Default 4."
+            }
           },
           "markdownDescription": "**Experimental.** When `blacksite.orchestration.progressSignals` reports false progress. Missing or out-of-range values use the defaults, which are deliberately conservative: a real fix often takes two or three tries."
         },
@@ -1513,6 +1533,11 @@
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "tldts": "^7.4.13"
+  },
+  "overrides": {
+    "jimp": {
+      "zod": "^4.6.6"
+    }
   },
   "devDependencies": {
     "@blacksite-agent/llm": "0.1.0",

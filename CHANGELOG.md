@@ -3,6 +3,89 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.33.0-pre.7
+
+Prerelease. The stable update channel remains on 1.32.0.
+
+This release makes the token and cost figures match what you are billed, most of all on Amazon
+Bedrock. It also carries the work built as 1.33.0-pre.6, which was never published.
+
+Costs are still estimates from published list prices. Your AWS or Anthropic invoice is the record.
+
+### Fixed
+
+- **Cache writes are billed at the rate they were written at.** A cache write costs 1.25x the input
+  price when kept for five minutes and 2x when kept for an hour. Blacksite used to assume every
+  write matched the cache duration in your settings. It now reads the split from the response.
+  - **Bedrock.** When Bedrock turns down the one-hour cache and the session falls back to five
+    minutes, the setting still says one hour. Those writes were over-billed by 60%.
+  - **Mixed requests.** A request can write some entries for an hour and some for five minutes.
+    Each is now billed at its own rate.
+- **Models picked from the live Bedrock list have a price.** Rows from your account's model list
+  carried no price, so cost depended on Blacksite recognising the id.
+  - **Application inference profiles.** A profile's id is an opaque ARN, so sessions on one showed
+    no cost at all. A listed profile is now priced as the model it wraps.
+  - **In-Region model ids.** Calling a Claude 4.5 or later model by its plain versioned id, without
+    a `global.` profile, is regional routing and costs 10% more. That premium was only applied to
+    `us.`, `eu.` and the other geographic profiles.
+- **Amazon Nova has prices and its own context size.** Nova Micro, Lite, Pro, Premier and Nova 2
+  Lite were unpriced. They were also given Claude's 200K context window, which is larger than Nova
+  Micro's 128K, so history was compacted too late. Other non-Claude Bedrock models now use a
+  128K window instead of 200K.
+- **Fast mode is billed at its real price.** Fast mode costs twice the standard rate on every token.
+  Turns served in fast mode were priced at the standard rate, so they showed half their cost.
+- **Web searches Claude runs are counted.** A turn where Claude searched the web under-reported
+  its input tokens, because the results it read were left out. The $10 per 1,000 searches fee was
+  not billed either.
+- **A reopened conversation shows its tokens.** After a reload the cost came back but the token
+  counts restarted at zero. Both now come back.
+- **The context meter ignores delegated work.** A subagent's prompt size could briefly replace the
+  conversation's own in the context meter.
+
+### Added
+
+- **Claude Fable 5.2 and Mythos 5.2.** Priced at $8 input and $40 output per million tokens, with
+  cache reads at $0.20. Both are in the Anthropic model list and the Bedrock Mantle list. An
+  unpriced model shows its cost as unknown, never as an older model's price.
+- **Fast mode on Claude Fable 5.2 and Mythos 5.2.** The Fast Mode switch now appears for them. On
+  Claude Opus 5.5, fast mode no longer sends the preview header it has stopped needing.
+
+### Security
+
+- **Dependency updates for published advisories.** DOMPurify 3.4.17 (sanitizer bypasses),
+  markdown-it 14.3.3 (slow rendering of crafted input), Mermaid 12.3.0, Vite 6.4.6 and the Azure
+  sign-in library used by the packaging tool. The image library's copy of zod is moved to a
+  patched release.
+
+### From 1.33.0-pre.6
+
+All of the orchestration settings below are experimental and **off by default**.
+
+- **False-progress detection** (`blacksite.orchestration.progressSignals`). Reports when the agent
+  is going in circles: tests failing the same way despite edits, the same change applied and
+  undone, the same file re-read with nothing new. `observe` reports it; `nudge` also asks the
+  agent to change approach.
+- **Repeat detection that ignores timings** (`blacksite.orchestration.normalizeToolRounds`). A
+  repeated test run was not recognised as a repeat, because each result carried a new duration.
+- **Verification before review** (`blacksite.orchestration.verificationLane`). Checks a loop
+  ticket's work against its acceptance criteria before it reaches review. An optional independent
+  model review is `blacksite.orchestration.verificationReviewer`.
+- **Conductor proposals** (`blacksite.orchestration.strategicConductor`). When a plan step stalls
+  or fails twice, the conductor can propose a plan change, a delegation or a check. You approve
+  or reject each one.
+- **Integration gate** (`blacksite.orchestration.integrationGate`). Holds a ticket that depends on
+  another ticket's output until that output is verified.
+- **Explicit loop queues skip finished tickets** (`blacksite.orchestration.explicitQueueStatusGuard`).
+  A loop given ticket ids no longer dispatches ones already in review, done or cancelled.
+- **Lane handoff records** (`blacksite.orchestration.artifactExchange`). Each delegated lane gets a
+  short list of prior work on its ticket or plan.
+- **One price table for Claude on every route.** Anthropic, Bedrock and OpenRouter read the same
+  prices, including Opus 5.5, Sonnet 5.5 and Haiku 5.5 and Haiku 5.5's higher rate above 100K
+  prompt tokens.
+- **Helper calls are billed.** The conductor, the auto-mode reviewer, image description and history
+  compaction now count toward session spend, plan budgets and run ceilings.
+- **Delegated lanes are priced under the model they ran on**, not the model in settings.
+
 ## 1.33.0-pre.5
 
 Prerelease. The stable update channel remains on 1.32.0.
