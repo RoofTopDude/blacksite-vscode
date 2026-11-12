@@ -10,34 +10,14 @@
 
 import * as fs from "fs";
 import { Worker } from "worker_threads";
-import { runIndexJob, type IndexJobInput, type IndexJobResult, type IndexPhase } from "./index-job.js";
-import { runRelationshipJob, type RelationshipJobInput, type RelationshipJobResult } from "./relationship-job.js";
+import { runIndexJob, type IndexJobInput, type IndexPhase } from "./index-job.js";
+import { runRelationshipJob, type RelationshipJobInput } from "./relationship-job.js";
 import { createFsJobIO } from "./worker/job-io.js";
-import type { WorkspaceRoot } from "./workspace-roots.js";
+import { JobCancelledError, type JobKinds, type JobRunner, type RunJobOptions, type RunningJob } from "./jobs.js";
 
-export class JobCancelledError extends Error {
-  constructor() {
-    super("cancelled");
-  }
-}
+export { JobCancelledError, type RunJobOptions, type RunningJob } from "./jobs.js";
 
-interface JobKinds {
-  index: { input: IndexJobInput; result: IndexJobResult };
-  relationships: { input: RelationshipJobInput; result: RelationshipJobResult };
-}
-
-export interface RunJobOptions {
-  roots: readonly WorkspaceRoot[];
-  cachePath: string | null;
-  onProgress?: (phase: IndexPhase, fraction: number) => void;
-}
-
-export interface RunningJob<T> {
-  promise: Promise<T>;
-  cancel(): void;
-}
-
-export class GraphWorkerClient {
+export class GraphWorkerClient implements JobRunner {
   private _seq = 0;
   /** Set when a worker failed to start; later jobs go inline for the session. */
   private _workerBroken = false;

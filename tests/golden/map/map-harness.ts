@@ -13,8 +13,8 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import * as vscode from "vscode";
 import { GraphIndexer } from "../../../src/graph/graph-indexer.js";
+import { nodeIndexerPorts } from "../../../src/graph/node-ports.js";
 import { RelationshipSnapshot } from "../../../src/graph/relationship-snapshot.js";
 import { StructuralSnapshot } from "../../../src/graph/structural-snapshot.js";
 import { HierarchySnapshot } from "../../../src/graph/hierarchy-snapshot.js";
@@ -123,7 +123,14 @@ export function buildPipeline(folders: ReadonlyArray<{ name: string; path: strin
   const getRoots = () => roots;
   const config = defaultGraphConfig();
   const annotations = new GraphAnnotationStore(getRoots);
-  const indexer = new GraphIndexer(getRoots, () => config, { workerScript: null });
+  /* The extension's ports minus VS Code's enumerator, watcher and folder events: the fixtures
+     are git repositories, so discovery goes through git either way, and touch() below stands in
+     for the watcher. */
+  const indexer = new GraphIndexer(getRoots, () => config, nodeIndexerPorts({
+    roots: getRoots,
+    cacheDirName: ".blacksite",
+    workerScript: null,
+  }));
   annotations.setNodeLookup(() => {
     const files = indexer.indexedFiles();
     return files.length > 0 ? new Set(files) : null;
@@ -159,7 +166,7 @@ export function buildPipeline(folders: ReadonlyArray<{ name: string; path: strin
 export function touch(pipeline: MapPipeline, id: string): void {
   const absolute = fromNodeId(pipeline.roots, id);
   if (!absolute) throw new Error(`Not under a fixture root: ${id}`);
-  (pipeline.indexer as unknown as { _markDirty(uri: vscode.Uri): void })._markDirty(vscode.Uri.file(absolute));
+  (pipeline.indexer as unknown as { _markDirty(absolutePath: string): void })._markDirty(absolute);
 }
 
 /* ── Reduction ──────────────────────────────────────────────────────────────────────────── */

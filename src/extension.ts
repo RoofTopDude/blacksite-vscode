@@ -32,6 +32,8 @@ import { PlanningProvider } from "./planning-provider.js";
 import { createDataWorkbench, DataProvider } from "./data-provider.js";
 import { ExtensionUpdater } from "./update-service.js";
 import { GraphIndexer } from "./graph/graph-indexer.js";
+import { nodeIndexerPorts } from "./graph/node-ports.js";
+import { onDidChangeWorkspaceRoots, vscodeFileEnumerator, vscodeFileWatcher } from "./graph/vscode-ports.js";
 import { GraphProvider, readGraphConfig } from "./graph-provider.js";
 import { NotesTimelineProvider } from "./notes-timeline-provider.js";
 import { AgentActivityBus } from "./agent-activity-bus.js";
@@ -195,7 +197,14 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
      in out/graph-worker.js so a rebuild over a dense workspace never competes
      with chat and the agent on this thread. */
   const graphIndexer = new GraphIndexer(getGraphRoots, () => readGraphConfig(), {
-    workerScript: vscode.Uri.joinPath(context.extensionUri, "out", "graph-worker.js").fsPath,
+    ...nodeIndexerPorts({
+      roots: getGraphRoots,
+      cacheDirName: ".blacksite",
+      workerScript: vscode.Uri.joinPath(context.extensionUri, "out", "graph-worker.js").fsPath,
+    }),
+    enumerate: vscodeFileEnumerator,
+    watcher: vscodeFileWatcher,
+    onDidChangeRoots: onDidChangeWorkspaceRoots,
   });
   /* Validate note endpoints against the full *indexed* set, not just the
      rendered stars — on a large workspace a real .cs file can be indexed but

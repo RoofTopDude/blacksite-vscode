@@ -1,20 +1,16 @@
 /* Host-side indexer for the Codebase Map: discovers workspace files, runs the
    full rebuild as a background job (graph/index-job.ts, in the worker when one
-   is available), caches the result at .blacksite/graph-cache.json, and watches
-   the workspace for incremental updates. Derived data only — annotations live
-   in graph-annotation-store.
+   is available), caches the result (graph-cache.json, through the storage
+   port), and watches the workspace for incremental updates. Derived data only
+   — annotations live in graph-annotation-store.
 
-   What stays on this (extension host) thread is what needs the VS Code API or
-   is cheap: discovery, git, the watcher, small incremental passes over cached
-   per-file facts, and the render projection. Reading, extracting, resolving,
-   and laying out tens of thousands of files happens in the worker. */
+   Everything outside the indexer comes in through ports (indexer-ports.ts):
+   file reads, git, enumeration, the watcher, storage and the job runner. What
+   runs here is orchestration and the cheap work — discovery, git, small
+   incremental passes over cached per-file facts, and the render projection.
+   Reading, extracting, resolving, and laying out tens of thousands of files
+   happens in the job runner (the worker, in the extension). */
 
-import * as fs from "fs";
-import * as path from "path";
-// The plain reader, not readJsonDocument: this cache is derived from the workspace, so an
-// unreadable one correctly means "re-index" rather than "recover the previous copy".
-import { readJsonFile } from "../shared/durable-file.js";
-import * as vscode from "vscode";
 import {
   clusterDir,
   depthFromDegree,
@@ -30,7 +26,7 @@ import {
 } from "./graph-model.js";
 import type { ResolveContext } from "./resolve-imports.js";
 import { placeNearCluster } from "./layout.js";
-import { collectGitHistory, normalizeAbsPath, type GitFileStat } from "./git-log.js";
+import type { GitFileStat } from "./git-log.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./workspace-roots.js";
 import { PROFILE_CAPS, type GraphConfig, type GraphPerformanceProfile } from "./config.js";
 import { CORPUS_SCHEMA_VERSION } from "./corpus.js";
@@ -43,18 +39,17 @@ import {
   type ExclusionPolicy,
 } from "./exclusions.js";
 import type { ProjectTopology } from "./project-topology.js";
-import { gitToplevel, groupRootsByRepo, ignoredPaths, listRepoFiles } from "./git-discovery.js";
-import { GraphWorkerClient, JobCancelledError, type RunningJob } from "./graph-worker-client.js";
+import { groupRootsByRepo } from "./git-discovery.js";
+import { JobCancelledError, type RunningJob } from "./jobs.js";
 import { isTopologyManifest, MAX_IMPORT_FILE_BYTES, type IndexJobResult, type IndexPhase } from "./index-job.js";
 import type { RelationshipJobResult } from "./relationship-job.js";
 import { declaredTypeNames, extractFileFacts, finalizeRefs, type FileFacts } from "./file-facts.js";
-import { createFsJobIO } from "./worker/job-io.js";
+import type { GraphIndexerPorts } from "./indexer-ports.js";
 import { buildResolveContextFromFacts, isResolverManifest, resolveTargetsFromFacts } from "./scan-pipeline.js";
 import { cochangeEdges, cochangePairs } from "./cochange.js";
 import { Emitter, type Disposable, type Event } from "./events.js";
 import type { MapIndexReader } from "./index-reader.js";
 
-const BLACKSITE_DIR = ".blacksite";
 const CACHE_FILE = "graph-cache.json";
 const FACTS_FILE = "graph-facts.json";
 const RELATIONSHIP_CACHE_FILE = "graph-relationships.json";
@@ -241,11 +236,6 @@ export function normalizeCache(value: unknown, expectedPolicyKey?: string): Cach
   };
 }
 
-export interface GraphIndexerOptions {
-  /** Absolute path of out/graph-worker.js. Null/absent runs jobs inline. */
-  workerScript?: string | null;
-}
-
 export interface IndexingProgress {
   phase: "discover" | IndexPhase;
   fraction: number;
@@ -308,17 +298,14 @@ export class GraphIndexer implements Disposable, MapIndexReader {
       Reported on the snapshot so the map can say what it is not showing. */
   private _hiddenByPolicyCount = 0;
   private _runningJob: RunningJob<IndexJobResult> | null = null;
-  private readonly _worker: GraphWorkerClient;
 
   private _foldersWatcher: Disposable | null = null;
 
   constructor(
     private readonly _roots: () => WorkspaceRoot[],
     private readonly _config: () => GraphConfig,
-    options: GraphIndexerOptions = {},
-  ) {
-    this._worker = new GraphWorkerClient(options.workerScript ?? null);
-  }
+    private readonly _ports: GraphIndexerPorts,
+  ) {}
 
   dispose(): void {
     this._disposed = true;
@@ -337,15 +324,12 @@ export class GraphIndexer implements Disposable, MapIndexReader {
 
   /** Whether heavy passes run in the background worker (vs. inline). */
   usesWorker(): boolean {
-    return this._worker.usesWorker;
+    return this._ports.jobs.usesWorker;
   }
 
   snapshot(): GraphSnapshot | null {
     if (this._snapshot) return this._snapshot;
-    const cachePath = this._cachePath();
-    const cached = cachePath
-      ? normalizeCache(readJsonFile(cachePath), exclusionPolicyKey(this._exclusions()))
-      : null;
+    const cached = normalizeCache(this._readCache(), exclusionPolicyKey(this._exclusions()));
     if (cached) {
       this._seed = cached.seed;
       this._hiddenByPolicyCount = cached.hiddenByPolicyCount ?? 0;
@@ -422,23 +406,15 @@ export class GraphIndexer implements Disposable, MapIndexReader {
   /** Run the service-relationship pass through the same worker/inline runner
       the rebuild uses, cached at .blacksite/graph-relationships.json. */
   runRelationshipJob(files: readonly string[], topology: ProjectTopology | null): RunningJob<RelationshipJobResult> {
-    const root = this._roots()[0];
-    return this._worker.run("relationships", { files, topology }, {
+    return this._ports.jobs.run("relationships", { files, topology }, {
       roots: this._roots(),
-      cachePath: root ? path.join(root.path, BLACKSITE_DIR, RELATIONSHIP_CACHE_FILE) : null,
+      cachePath: this._ports.storage?.path(RELATIONSHIP_CACHE_FILE) ?? null,
     });
   }
 
   start(): void {
-    /* A bare string pattern (not anchored via RelativePattern) watches every
-       open workspace folder, current and future. */
-    const watcher = vscode.workspace.createFileSystemWatcher("**/*", false, false, false);
-    const onTouch = (uri: vscode.Uri) => this._markDirty(uri);
-    watcher.onDidCreate(onTouch);
-    watcher.onDidChange(onTouch);
-    watcher.onDidDelete(onTouch);
-    this._watcher = watcher;
-    this._foldersWatcher = vscode.workspace.onDidChangeWorkspaceFolders(() => void this.rebuild());
+    this._watcher = this._ports.watcher?.watch((absolutePath) => this._markDirty(absolutePath)) ?? null;
+    this._foldersWatcher = this._ports.onDidChangeRoots?.(() => void this.rebuild()) ?? null;
     /* A cached snapshot paints the view instantly, but it may be stale in
        ways the watcher never saw (files changed while the editor was closed,
        an older extension version wrote it). Always reconcile in the
@@ -488,11 +464,16 @@ export class GraphIndexer implements Disposable, MapIndexReader {
     }
   }
 
-  /** Cache lives under the first workspace folder; derived data, so it's fine
-      if that choice shifts across sessions when folders are reordered. */
-  private _cachePath(file = CACHE_FILE): string | null {
-    const root = this._roots()[0];
-    return root ? path.join(root.path, BLACKSITE_DIR, file) : null;
+  /** The persisted render cache, parsed, or null. An unreadable cache is derived data, so it
+      correctly means "re-index" rather than "recover the previous copy". */
+  private _readCache(): unknown {
+    const text = this._ports.storage?.read(CACHE_FILE) ?? null;
+    if (text === null) return null;
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      return null;
+    }
   }
 
   /** The exclusion policy in force. Resolved per call rather than cached: a
@@ -508,8 +489,8 @@ export class GraphIndexer implements Disposable, MapIndexReader {
     return hasExcludedSegment(id, this._exclusions());
   }
 
-  private _markDirty(uri: vscode.Uri): void {
-    const rel = toNodeId(this._roots(), uri.fsPath);
+  private _markDirty(absolutePath: string): void {
+    const rel = toNodeId(this._roots(), absolutePath);
     /* The watcher matters as much as the enumerate path: without this, a file
        created under an excluded directory mid-session would re-add itself to a
        corpus the full scan deliberately left out. */
@@ -522,8 +503,8 @@ export class GraphIndexer implements Disposable, MapIndexReader {
   }
 
   /** Discovery: `git ls-files` per repository when .gitignore is honoured,
-      findFiles otherwise (and for roots that are not in a repo). Returns
-      node ids that pass the corpus and exclusion policy. */
+      the host's enumerator otherwise (and for roots that are not in a repo).
+      Returns node ids that pass the corpus and exclusion policy. */
   private async _discover(): Promise<Set<string>> {
     const roots = this._roots();
     const policy = this._exclusions();
@@ -532,7 +513,7 @@ export class GraphIndexer implements Disposable, MapIndexReader {
     const admit = (absolute: string): void => {
       const rel = toNodeId(roots, absolute);
       if (!rel || !isGraphIndexablePath(rel)) return;
-      /* The dot rule can't live in the findFiles exclude glob — VS Code's
+      /* The dot rule can't live in the enumerator's exclude glob — VS Code's
          pattern has no way to express "any segment starting with a dot" — so
          it is enforced here, after enumeration, for both discovery paths. */
       if (hasExcludedSegment(rel, policy)) {
@@ -542,38 +523,40 @@ export class GraphIndexer implements Disposable, MapIndexReader {
       seen.add(normalizeGraphPath(rel));
     };
 
-    const viaFindFiles: string[] = [];
+    const viaEnumerator: string[] = [];
     this._toplevels = new Map();
     this._gitignoreApplied = false;
-    if (policy.respectGitignore) {
+    const git = this._ports.git;
+    if (policy.respectGitignore && git) {
       await Promise.all(roots.map(async (root) => {
-        this._toplevels.set(root.path, await gitToplevel(root.path));
+        this._toplevels.set(root.path, await git.toplevel(root.path));
       }));
       const { groups, ungrouped } = groupRootsByRepo(roots.map((root) => root.path), this._toplevels);
-      viaFindFiles.push(...ungrouped);
+      viaEnumerator.push(...ungrouped);
       for (const group of groups) {
         if (this._disposed) break;
-        const files = await listRepoFiles(group);
+        const files = await git.listFiles(group);
         if (!files) {
-          viaFindFiles.push(...group.roots);
+          viaEnumerator.push(...group.roots);
           continue;
         }
         this._gitignoreApplied = true;
         for (const abs of files) admit(abs);
       }
     } else {
-      viaFindFiles.push(...roots.map((root) => root.path));
+      viaEnumerator.push(...roots.map((root) => root.path));
     }
 
     const config = this._config();
-    for (const rootPath of viaFindFiles) {
+    const enumerate = this._ports.enumerate;
+    for (const rootPath of enumerate ? viaEnumerator : []) {
       if (this._disposed) break;
-      const uris = await vscode.workspace.findFiles(
-        new vscode.RelativePattern(rootPath, "**/*"),
+      const files = await enumerate!(
+        rootPath,
         buildExcludeGlob(policy),
         Math.max(RAW_SCAN_CAP, Math.max(100, config.maxIndexedFiles)),
       );
-      for (const uri of uris) admit(uri.fsPath);
+      for (const absolute of files) admit(absolute);
     }
     /* Reported to the map so removing a large slice of a workspace is never
        silent — see GraphSnapshot.hiddenByPolicyCount. */
@@ -618,12 +601,14 @@ export class GraphIndexer implements Disposable, MapIndexReader {
       (roots sharing a repo share it). Best-effort: a root that isn't a repo
       contributes nothing. */
   private async _collectGit(indexedFiles: readonly string[]): Promise<{ byId: Record<string, [number, number]>; cochange: GraphEdge[] }> {
+    const git = this._ports.git;
+    if (!git) return { byId: {}, cochange: [] };
     const roots = this._roots();
     const toplevels = new Map<string, string>();
     for (const root of roots) {
       if (this._disposed) break;
       const known = this._toplevels.get(root.path);
-      const top = known === undefined ? await gitToplevel(root.path) : known;
+      const top = known === undefined ? await git.toplevel(root.path) : known;
       if (top) toplevels.set(top.toLowerCase(), root.path);
     }
     const stats = new Map<string, GitFileStat>();
@@ -631,7 +616,7 @@ export class GraphIndexer implements Disposable, MapIndexReader {
     for (const rootPath of toplevels.values()) {
       if (this._disposed) break;
       try {
-        const history = await collectGitHistory(rootPath, GIT_MAX_COMMITS);
+        const history = await git.history(rootPath, GIT_MAX_COMMITS);
         if (!history) continue;
         for (const [abs, stat] of history.stats) stats.set(abs, stat);
         commits.push(...history.commits);
@@ -642,7 +627,7 @@ export class GraphIndexer implements Disposable, MapIndexReader {
     for (const rel of indexedFiles) {
       const absolute = fromNodeId(roots, rel);
       if (!absolute) continue;
-      const key = normalizeAbsPath(absolute);
+      const key = git.normalize(absolute);
       idByAbs.set(key, rel);
       const stat = stats.get(key);
       if (stat) byId[rel] = [stat.churn, stat.lastAt];
@@ -664,7 +649,7 @@ export class GraphIndexer implements Disposable, MapIndexReader {
     const prevPositions: Array<[string, number, number]> = [];
     for (const node of this._indexNodes.values()) prevPositions.push([node.id, node.x, node.y]);
 
-    const job = this._worker.run("index", {
+    const job = this._ports.jobs.run("index", {
       corpusFiles: this._corpusFiles,
       indexedFiles,
       renderedFiles: files,
@@ -675,7 +660,7 @@ export class GraphIndexer implements Disposable, MapIndexReader {
       git: git.byId,
     }, {
       roots,
-      cachePath: this._cachePath(FACTS_FILE),
+      cachePath: this._ports.storage?.path(FACTS_FILE) ?? null,
       onProgress: (phase, fraction) => this._progressEmitter.fire({ phase, fraction }),
     });
     this._runningJob = job;
@@ -729,8 +714,8 @@ export class GraphIndexer implements Disposable, MapIndexReader {
       true counts, separate from the (derived) render cache. Best-effort — the
       map still works from the render cache if this can't be written. */
   private _writeCorpus(renderedCount: number): void {
-    const root = this._roots()[0];
-    if (!root) return;
+    const storage = this._ports.storage;
+    if (!storage || !this._roots()[0]) return;
     const document = {
       schemaVersion: CORPUS_SCHEMA_VERSION,
       indexedAt: new Date().toISOString(),
@@ -739,9 +724,7 @@ export class GraphIndexer implements Disposable, MapIndexReader {
       files: this._corpusFiles,
     };
     try {
-      const dir = path.join(root.path, BLACKSITE_DIR);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, CORPUS_FILE), JSON.stringify(document), "utf8");
+      storage.write(CORPUS_FILE, JSON.stringify(document));
     } catch { /* corpus manifest is best-effort */ }
   }
 
@@ -749,7 +732,8 @@ export class GraphIndexer implements Disposable, MapIndexReader {
       check (a tracked or already-admitted file is by definition not ignored),
       and one `git check-ignore` runs per repository per batch. */
   private async _dropIgnored(dirty: string[]): Promise<string[]> {
-    if (!this._exclusions().respectGitignore || !this._gitignoreApplied) return dirty;
+    const git = this._ports.git;
+    if (!git || !this._exclusions().respectGitignore || !this._gitignoreApplied) return dirty;
     const corpus = new Set(this._corpusFiles);
     const roots = this._roots();
     const candidates = new Map<string, string[]>();
@@ -767,7 +751,7 @@ export class GraphIndexer implements Disposable, MapIndexReader {
     if (candidates.size === 0) return dirty;
     const ignored = new Set<string>();
     for (const [top, abs] of candidates) {
-      for (const hit of await ignoredPaths(top, abs)) ignored.add(hit);
+      for (const hit of await git.ignored(top, abs)) ignored.add(hit);
     }
     if (ignored.size === 0) return dirty;
     return dirty.filter((rel) => {
@@ -803,8 +787,19 @@ export class GraphIndexer implements Disposable, MapIndexReader {
     if (dirty.length === 0) return;
 
     const roots = this._roots();
-    /* The same file IO the full rebuild's job uses, so both passes see a file identically. */
-    const io = createFsJobIO({ roots, cachePath: null, cooperative: true });
+    /* Through the host's file reader, as the full rebuild's job reads, so both passes see a
+       file identically. */
+    const files = this._ports.files;
+    const io = {
+      stat: (rel: string) => {
+        const absolute = fromNodeId(roots, rel);
+        return absolute ? files.stat(absolute) : Promise.resolve(null);
+      },
+      read: (rel: string) => {
+        const absolute = fromNodeId(roots, rel);
+        return absolute ? files.read(absolute) : Promise.resolve(null);
+      },
+    };
     const maxRendered = Math.max(100, this._effectiveMaxRenderedStars);
     const indexedSet = new Set(this._indexedFiles);
     const corpus = new Set(this._corpusFiles);
@@ -868,7 +863,7 @@ export class GraphIndexer implements Disposable, MapIndexReader {
            the delta below reports the change. */
         this._indexNodes.set(rel, { ...node, sizeBytes: stat.size });
       }
-      await io.yieldNow();
+      await this._ports.yieldNow();
     }
 
     finalizeRefs(this._facts, declaredTypeNames(this._facts));
@@ -968,12 +963,10 @@ export class GraphIndexer implements Disposable, MapIndexReader {
       importEdges: snapshot.edges.filter((edge) => edge.kind === "import"),
       ...(offMapPositions.length > 0 ? { offMapPositions } : {}),
     };
-    const cachePath = this._cachePath();
-    if (!cachePath) return;
+    const storage = this._ports.storage;
+    if (!storage) return;
     try {
-      const dir = path.dirname(cachePath);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(cachePath, JSON.stringify(document), "utf8");
+      storage.write(CACHE_FILE, JSON.stringify(document));
     } catch { /* cache is best-effort; unwritable workspaces still get a live map */ }
   }
 }
