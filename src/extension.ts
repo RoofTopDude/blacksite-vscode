@@ -207,7 +207,11 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   /* One shared relationship snapshot feeds both the map webview (Services lens)
      and the agent's map_relationships tool, so the expensive scan runs once per
      index generation regardless of who asks. */
-  const relationshipSnapshot = new RelationshipSnapshot(getGraphRoots, graphIndexer, () => readGraphConfig());
+  const relationshipSnapshot = new RelationshipSnapshot(
+    graphIndexer,
+    (input) => graphIndexer.runRelationshipJob(input.files, input.topology).promise,
+    () => readGraphConfig(),
+  );
   /* Cross-project cycles + per-neighborhood cul-de-sacs (orphans/pockets) — cheap
      graph algorithms over data the indexer already has, recomputed per generation
      like the relationship snapshot above, never persisted to the render cache. */

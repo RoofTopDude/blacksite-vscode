@@ -5,8 +5,7 @@
    aggregation over data the indexer and relationship snapshot already hold. */
 
 import { buildHierarchy, type WorkspaceHierarchy } from "./hierarchy.js";
-import type { GraphIndexer } from "./graph-indexer.js";
-import type { RelationshipSnapshot } from "./relationship-snapshot.js";
+import type { MapIndexReader, ServiceRelationshipReader } from "./index-reader.js";
 import type { WorkspaceRoot } from "./workspace-roots.js";
 
 const EMPTY: WorkspaceHierarchy = { groups: [], edges: [], roots: [], declaredUnused: [], usedUndeclared: [], fileCount: 0 };
@@ -16,8 +15,8 @@ export class HierarchySnapshot {
   private _result: WorkspaceHierarchy = EMPTY;
 
   constructor(
-    private readonly _indexer: GraphIndexer,
-    private readonly _relationships: RelationshipSnapshot,
+    private readonly _indexer: MapIndexReader,
+    private readonly _relationships: ServiceRelationshipReader,
     private readonly _roots: () => WorkspaceRoot[],
   ) {}
 

@@ -128,7 +128,11 @@ export function buildPipeline(folders: ReadonlyArray<{ name: string; path: strin
     const files = indexer.indexedFiles();
     return files.length > 0 ? new Set(files) : null;
   });
-  const relationships = new RelationshipSnapshot(getRoots, indexer, () => config);
+  const relationships = new RelationshipSnapshot(
+    indexer,
+    (input) => indexer.runRelationshipJob(input.files, input.topology).promise,
+    () => config,
+  );
   const structure = new StructuralSnapshot(indexer);
   const hierarchy = new HierarchySnapshot(indexer, relationships, getRoots);
   const gateway = new GraphAgentGateway(annotations, indexer, relationships, getRoots, () => [], structure, hierarchy);

@@ -7,7 +7,7 @@
    generation changes, the same precedent ProjectTopology itself already sets. */
 
 import { classifyStructuralRoles, cyclicNeighborhoodPairs, findCycles } from "./structural-analysis.js";
-import type { GraphIndexer } from "./graph-indexer.js";
+import type { MapIndexReader } from "./index-reader.js";
 
 export interface StructuralSnapshotResult {
   cyclicNeighborhoodPairs: Array<[string, string]>;
@@ -27,7 +27,7 @@ export class StructuralSnapshot {
   private _key = "";
   private _result: StructuralSnapshotResult = EMPTY_RESULT;
 
-  constructor(private readonly _indexer: GraphIndexer) {}
+  constructor(private readonly _indexer: MapIndexReader) {}
 
   /** Cached by index generation + topology size, mirroring RelationshipSnapshot's
       key shape — cheap to recompute (linear-time graph algorithms over the

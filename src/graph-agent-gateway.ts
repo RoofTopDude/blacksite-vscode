@@ -15,8 +15,7 @@
    edge layers into one dependency-direction convention first. */
 
 import type { GraphAnnotationContext, GraphAnnotationProvider, GraphAnnotation, GraphAnnotationStore } from "./graph-annotation-store.js";
-import type { GraphIndexer } from "./graph/graph-indexer.js";
-import type { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
+import type { MapIndexReader, ServiceRelationshipReader } from "./graph/index-reader.js";
 import type { StructuralSnapshot } from "./graph/structural-snapshot.js";
 import type { HierarchySnapshot } from "./graph/hierarchy-snapshot.js";
 import type { WorkspaceHierarchy } from "./graph/hierarchy.js";
@@ -57,8 +56,8 @@ const LOCAL_CONTEXT_PEERS = 5;
 export class GraphAgentGateway implements GraphAnnotationProvider {
   constructor(
     private readonly _annotations: GraphAnnotationStore,
-    private readonly _indexer: GraphIndexer,
-    private readonly _relationships: RelationshipSnapshot,
+    private readonly _indexer: MapIndexReader,
+    private readonly _relationships: ServiceRelationshipReader,
     private readonly _roots: () => WorkspaceRoot[],
     /** Background symbol-layer edges (call/reference/supertype); empty when the
         opt-in sweep is off. See graph/symbol-indexer.ts. */
@@ -73,18 +72,16 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
   ) {}
 
   /** Every indexed file as a node — a superset of the rendered projection
-      whenever the render cap truncates. Older indexers (and test doubles)
-      without a node index fall back to the rendered snapshot. */
+      whenever the render cap truncates. An empty node index falls back to the
+      rendered snapshot. */
   private _nodes(): GraphNode[] {
-    if (typeof this._indexer.nodeIndex === "function") {
-      const index = this._indexer.nodeIndex();
-      if (index.length > 0) return index;
-    }
+    const index = this._indexer.nodeIndex();
+    if (index.length > 0) return index;
     return this._indexer.snapshot()?.nodes ?? [];
   }
 
   private _cochange(): GraphEdge[] {
-    return typeof this._indexer.cochangeEdges === "function" ? this._indexer.cochangeEdges() : [];
+    return this._indexer.cochangeEdges();
   }
 
   async dispatch(op: string, payload: Record<string, unknown>, ctx: GraphAnnotationContext): Promise<Record<string, unknown>> {
@@ -135,7 +132,7 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
   isMapIndexable(value: string): boolean {
     const id = resolveToNodeId(this._roots(), value);
     if (!id) return false;
-    return typeof this._indexer.isExcludedPath === "function" ? !this._indexer.isExcludedPath(id) : true;
+    return !this._indexer.isExcludedPath(id);
   }
 
   /** Compact prose form injected into the live workspace context on every model turn. */
@@ -236,7 +233,7 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     const limit = clampOverviewLimit(payload.limit);
     const topology = this._indexer.topology();
     const importEdges = this._indexer.importEdges();
-    const serviceEdges = options.waitForRelationships && typeof this._relationships.fullAsync === "function"
+    const serviceEdges = options.waitForRelationships
       ? await this._relationships.fullAsync()
       : this._relationships.full();
     const symbolEdges = this._symbolEdges();
@@ -302,14 +299,10 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
     const nodesById = new Map(this._nodes().map((node) => [node.id, node]));
     const renderedIds = new Set(snapshot.nodes.map((node) => node.id));
     const cochange = this._cochange();
-    const importEdges = typeof this._indexer.importEdges === "function"
-      ? this._indexer.importEdges()
-      : snapshot.edges.filter((edge) => edge.kind === "import");
+    const importEdges = this._indexer.importEdges();
     /* The agent view is uncapped — relationship edges here are the full corpus
        set, not the render projection. */
-    const serviceEdges = typeof this._relationships.fullAsync === "function"
-      ? await this._relationships.fullAsync()
-      : this._relationships.full();
+    const serviceEdges = await this._relationships.fullAsync();
     const symbolEdges = this._symbolEdges();
     /* The symbol layer is an opt-in background LSP sweep. When it's off it
        produces no edges at all, so an empty `symbolRelations` on a file would
@@ -388,11 +381,7 @@ export class GraphAgentGateway implements GraphAnnotationProvider {
   private async _adjacency(layers: readonly MapLayer[]) {
     const importEdges = this._indexer.importEdges();
     const needsService = layers.includes("service");
-    const serviceEdges = needsService
-      ? (typeof this._relationships.fullAsync === "function"
-        ? await this._relationships.fullAsync()
-        : this._relationships.full())
-      : [];
+    const serviceEdges = needsService ? await this._relationships.fullAsync() : [];
     const symbolEdges = layers.includes("symbol") ? this._symbolEdges() : [];
     const noteEdges = layers.includes("note")
       ? this._annotations.list().map((note) => ({ from: note.from, to: note.to, title: note.title }))

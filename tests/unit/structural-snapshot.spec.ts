@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { GraphIndexer } from "../../src/graph/graph-indexer.js";
+import type { MapIndexReader } from "../../src/graph/index-reader.js";
 
 /* Mirrors relationship-snapshot.spec.ts's containment tests: a throwing analysis pass
    must not escape get() and must not be retried on every call within one generation —
@@ -16,11 +16,11 @@ vi.mock("../../src/graph/structural-analysis.js", () => ({
 
 const { StructuralSnapshot } = await import("../../src/graph/structural-snapshot.js");
 
-function fakeIndexer(indexedAt: string): GraphIndexer {
+function fakeIndexer(indexedAt: string): MapIndexReader {
   return {
     snapshot: () => ({ indexedAt, nodes: [], edges: [] }),
     topology: () => null,
-  } as unknown as GraphIndexer;
+  } as unknown as MapIndexReader;
 }
 
 describe("StructuralSnapshot failure containment", () => {
@@ -43,7 +43,7 @@ describe("StructuralSnapshot failure containment", () => {
   it("retries once the graph generation actually changes", () => {
     analysis.classifyStructuralRoles.mockImplementation(() => { throw new Error("boom"); });
     let indexedAt = "T1";
-    const indexer = { snapshot: () => ({ indexedAt, nodes: [], edges: [] }), topology: () => null } as unknown as GraphIndexer;
+    const indexer = { snapshot: () => ({ indexedAt, nodes: [], edges: [] }), topology: () => null } as unknown as MapIndexReader;
     const snap = new StructuralSnapshot(indexer);
     snap.get();
     indexedAt = "T2";

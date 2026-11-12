@@ -51,6 +51,7 @@ import { declaredTypeNames, extractFileFacts, finalizeRefs, type FileFacts } fro
 import { buildResolveContextFromFacts, isResolverManifest, resolveTargetsFromFacts } from "./scan-pipeline.js";
 import { cochangeEdges, cochangePairs } from "./cochange.js";
 import { Emitter, type Disposable, type Event } from "./events.js";
+import type { MapIndexReader } from "./index-reader.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const CACHE_FILE = "graph-cache.json";
@@ -249,7 +250,7 @@ export interface IndexingProgress {
   fraction: number;
 }
 
-export class GraphIndexer implements Disposable {
+export class GraphIndexer implements Disposable, MapIndexReader {
   private readonly _emitter = new Emitter<GraphSnapshot>();
   readonly onDidChange: Event<GraphSnapshot> = this._emitter.event;
 

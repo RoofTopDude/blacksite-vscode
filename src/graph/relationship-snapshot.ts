@@ -4,68 +4,18 @@
    runs once per index generation instead of once per caller.
 
    The full relationship set is built over every file admitted by the selected
-   indexing profile, not the smaller render projection. Discovery is
-   asynchronous: stale work reads files in bounded batches and notifies
-   subscribers when ready, while get() remains a cheap snapshot read. This keeps
-   large-workspace analysis off the graph_state posting path. */
+   indexing profile, not the smaller render projection. The pass itself is the
+   relationship job (relationship-job.ts), run by whatever the host passes in —
+   the background worker in the extension — so this class never reads a file.
+   Stale work runs in the background and notifies subscribers when ready, while
+   get() remains a cheap snapshot read. This keeps large-workspace analysis off
+   the graph_state posting path. */
 
-import * as fs from "fs";
 import type { GraphEdge } from "./graph-model.js";
-import { buildServiceRelationships, type IndexedFileContent } from "./relationship-indexer.js";
 import { rankRelationshipEdges } from "./corpus.js";
 import type { GraphConfig } from "./config.js";
-import type { GraphIndexer } from "./graph-indexer.js";
-import { fromNodeId, type WorkspaceRoot } from "./workspace-roots.js";
-
-const MAX_FILE_BYTES = 512_000;
-const READ_BATCH = 48;
-
-function yieldToLoop(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve));
-}
-
-/** Synchronous helper retained for focused callers/tests. Production snapshot
-    rebuilds use readIndexedContentsAsync below. */
-export function readIndexedContents(roots: readonly WorkspaceRoot[], files: readonly string[]): IndexedFileContent[] {
-  const out: IndexedFileContent[] = [];
-  for (const rel of files) {
-    const absolute = fromNodeId(roots, rel);
-    if (!absolute) continue;
-    try {
-      const stat = fs.statSync(absolute);
-      if (!stat.isFile() || stat.size > MAX_FILE_BYTES) continue;
-      out.push({ path: rel, content: fs.readFileSync(absolute, "utf8") });
-    } catch {
-      /* best-effort relationship index */
-    }
-  }
-  return out;
-}
-
-/** Read in bounded asynchronous batches. This avoids both a 100k-file Promise
-    fan-out and long uninterrupted runs of synchronous filesystem calls. */
-export async function readIndexedContentsAsync(
-  roots: readonly WorkspaceRoot[],
-  files: readonly string[],
-): Promise<IndexedFileContent[]> {
-  const out: IndexedFileContent[] = [];
-  for (let i = 0; i < files.length; i += READ_BATCH) {
-    const rows = await Promise.all(files.slice(i, i + READ_BATCH).map(async (rel): Promise<IndexedFileContent | null> => {
-      const absolute = fromNodeId(roots, rel);
-      if (!absolute) return null;
-      try {
-        const stat = await fs.promises.stat(absolute);
-        if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return null;
-        return { path: rel, content: await fs.promises.readFile(absolute, "utf8") };
-      } catch {
-        return null;
-      }
-    }));
-    for (const row of rows) if (row) out.push(row);
-    await yieldToLoop();
-  }
-  return out;
-}
+import type { MapIndexReader, ServiceRelationshipReader } from "./index-reader.js";
+import type { RelationshipJobInput, RelationshipJobResult } from "./relationship-job.js";
 
 export interface RelationshipSnapshotResult {
   edges: GraphEdge[];
@@ -74,7 +24,10 @@ export interface RelationshipSnapshotResult {
   totalEdgeCount: number;
 }
 
-export class RelationshipSnapshot {
+/** Runs one relationship pass (relationship-job.ts) and resolves with its result. */
+export type RelationshipJobRunner = (input: RelationshipJobInput) => Promise<RelationshipJobResult>;
+
+export class RelationshipSnapshot implements ServiceRelationshipReader {
   private _key = "";
   private _allEdges: GraphEdge[] = [];
   private _buildingKey = "";
@@ -93,8 +46,8 @@ export class RelationshipSnapshot {
   private readonly _listeners = new Set<() => void>();
 
   constructor(
-    private readonly _roots: () => WorkspaceRoot[],
-    private readonly _indexer: GraphIndexer,
+    private readonly _index: MapIndexReader,
+    private readonly _runJob: RelationshipJobRunner,
     private readonly _config: () => GraphConfig,
   ) {}
 
@@ -112,13 +65,13 @@ export class RelationshipSnapshot {
   }
 
   private _currentKey(): string {
-    const files = this._indexer.indexedFiles();
-    const topology = this._indexer.topology();
+    const files = this._index.indexedFiles();
+    const topology = this._index.topology();
     return [
       files.length,
       files[0] ?? "",
       files[files.length - 1] ?? "",
-      this._indexer.snapshot()?.indexedAt ?? "",
+      this._index.snapshot()?.indexedAt ?? "",
       topology?.projects.length ?? 0,
       topology?.references.length ?? 0,
     ].join(":");
@@ -135,21 +88,14 @@ export class RelationshipSnapshot {
     if (this._building && this._buildingKey === key) return this._building;
     if (this._building) return this._building.then(() => this._ensureFresh());
 
-    const files = this._indexer.indexedFiles();
-    const topology = this._indexer.topology();
+    const files = this._index.indexedFiles();
+    const topology = this._index.topology();
     this._buildingKey = key;
     this._building = (async () => {
-      let edges: GraphEdge[];
-      if (typeof this._indexer.runRelationshipJob === "function") {
-        /* The indexer's job runner puts this pass in the background worker
-           (and caches it against a corpus fingerprint), so reading every
-           source file no longer happens on the extension host thread. */
-        edges = (await this._indexer.runRelationshipJob(files, topology).promise).edges;
-      } else {
-        const contents = await readIndexedContentsAsync(this._roots(), files);
-        await yieldToLoop();
-        edges = buildServiceRelationships(contents, Infinity, topology).edges;
-      }
+      /* The job runner puts this pass in the background worker (and caches it
+         against a corpus fingerprint), so reading every source file never
+         happens on the extension host thread. */
+      const edges = (await this._runJob({ files, topology })).edges;
       if (this._currentKey() !== key) return;
       this._key = key;
       this._failedKey = "";

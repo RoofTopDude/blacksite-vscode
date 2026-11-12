@@ -2,8 +2,7 @@ import { describe, expect, it } from "vitest";
 import { GraphAgentGateway } from "../../src/graph-agent-gateway.js";
 import { buildWorkspaceRoots } from "../../src/graph/workspace-roots.js";
 import type { GraphAnnotationStore, GraphAnnotation } from "../../src/graph-annotation-store.js";
-import type { GraphIndexer } from "../../src/graph/graph-indexer.js";
-import type { RelationshipSnapshot } from "../../src/graph/relationship-snapshot.js";
+import type { MapIndexReader, ServiceRelationshipReader } from "../../src/graph/index-reader.js";
 import type { StructuralSnapshot } from "../../src/graph/structural-snapshot.js";
 import type { GraphEdge, GraphNode, GraphSnapshot } from "../../src/graph/graph-model.js";
 
@@ -66,7 +65,12 @@ function makeGateway(
     snapshot: () => snapshot,
     isIndexing: () => false,
     indexedFiles: () => snapshot.nodes.map((entry) => entry.id),
+    corpusFiles: () => snapshot.nodes.map((entry) => entry.id),
+    nodeIndex: () => snapshot.nodes,
     importEdges: () => snapshot.edges,
+    cochangeEdges: () => [],
+    isExcludedPath: () => false,
+    flushPending: async () => 0,
     topology: () => ({
       projects: [
         { id: ".", root: ".", name: "workspace", kind: "npm", manifestFiles: ["package.json"] },
@@ -74,11 +78,12 @@ function makeGateway(
       ],
       references: [{ from: ".", to: "packages/lib", kind: "package", evidence: "workspace dependency" }],
     }),
-  } as unknown as GraphIndexer;
+  } as unknown as MapIndexReader;
   const relationships = {
     get: () => ({ edges: [serviceEdge], truncated: false }),
     full: () => [serviceEdge],
-  } as unknown as RelationshipSnapshot;
+    fullAsync: async () => [serviceEdge],
+  } as unknown as ServiceRelationshipReader;
   const annotations = {
     list: () => [note],
     dispatch: async (op: string) => { dispatched.push({ op }); return { ok: true, op }; },
