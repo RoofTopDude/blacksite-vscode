@@ -48,6 +48,7 @@ import { GraphWorkerClient, JobCancelledError, type RunningJob } from "./graph-w
 import { isTopologyManifest, MAX_IMPORT_FILE_BYTES, type IndexJobResult, type IndexPhase } from "./index-job.js";
 import type { RelationshipJobResult } from "./relationship-job.js";
 import { declaredTypeNames, extractFileFacts, finalizeRefs, type FileFacts } from "./file-facts.js";
+import { createFsJobIO } from "./worker/job-io.js";
 import { buildResolveContextFromFacts, isResolverManifest, resolveTargetsFromFacts } from "./scan-pipeline.js";
 import { cochangeEdges, cochangePairs } from "./cochange.js";
 import { Emitter, type Disposable, type Event } from "./events.js";
@@ -802,6 +803,8 @@ export class GraphIndexer implements Disposable, MapIndexReader {
     if (dirty.length === 0) return;
 
     const roots = this._roots();
+    /* The same file IO the full rebuild's job uses, so both passes see a file identically. */
+    const io = createFsJobIO({ roots, cachePath: null, cooperative: true });
     const maxRendered = Math.max(100, this._effectiveMaxRenderedStars);
     const indexedSet = new Set(this._indexedFiles);
     const corpus = new Set(this._corpusFiles);
@@ -810,12 +813,9 @@ export class GraphIndexer implements Disposable, MapIndexReader {
     const touched: string[] = [];
 
     for (const rel of dirty) {
-      const absolute = fromNodeId(roots, rel);
-      let stat: fs.Stats | null = null;
-      try {
-        stat = absolute ? fs.statSync(absolute) : null;
-      } catch { /* deleted during the debounce window */ }
-      if (!stat || !stat.isFile()) {
+      /* Null when the path is gone (deleted during the debounce window) or is not a file. */
+      const stat = await io.stat(rel);
+      if (!stat) {
         corpus.delete(rel);
         if (indexedSet.delete(rel)) contextChanged = true;
         this._facts.delete(rel);
@@ -831,12 +831,10 @@ export class GraphIndexer implements Disposable, MapIndexReader {
         indexedSet.add(rel);
         contextChanged = true;
       }
-      let content = "";
-      if (stat.size <= MAX_IMPORT_FILE_BYTES) {
-        try { content = fs.readFileSync(absolute!, "utf8"); } catch { /* unreadable */ }
-      }
+      /* Unreadable reads as empty, as in the full rebuild. */
+      const content = stat.size <= MAX_IMPORT_FILE_BYTES ? (await io.read(rel)) ?? "" : "";
       const previous = this._facts.get(rel);
-      const facts = extractFileFacts(rel, content, Math.trunc(stat.mtimeMs), stat.size);
+      const facts = extractFileFacts(rel, content, stat.mtimeMs, stat.size);
       if (declarationsChanged(previous, facts)) contextChanged = true;
       this._facts.set(rel, facts);
       touched.push(rel);
@@ -870,7 +868,7 @@ export class GraphIndexer implements Disposable, MapIndexReader {
            the delta below reports the change. */
         this._indexNodes.set(rel, { ...node, sizeBytes: stat.size });
       }
-      await yieldToLoop();
+      await io.yieldNow();
     }
 
     finalizeRefs(this._facts, declaredTypeNames(this._facts));
@@ -978,10 +976,6 @@ export class GraphIndexer implements Disposable, MapIndexReader {
       fs.writeFileSync(cachePath, JSON.stringify(document), "utf8");
     } catch { /* cache is best-effort; unwritable workspaces still get a live map */ }
   }
-}
-
-function yieldToLoop(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve));
 }
 
 /** Whether a fact change can alter how *other* files resolve (declarations,

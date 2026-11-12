@@ -2,9 +2,11 @@
    background worker instead of reading the whole corpus on the extension host
    thread. The result is cached against a corpus fingerprint — every candidate
    file's (id, mtime, size) plus the topology shape — so reopening an unchanged
-   workspace skips the pass entirely. */
+   workspace skips the pass entirely. The fingerprint is fingerprint.ts rather than sha256, so
+   this module needs no Node built-in; a cache written under sha256 simply never matches and is
+   rebuilt once. */
 
-import { createHash } from "node:crypto";
+import { Fingerprint } from "./fingerprint.js";
 import { isDocLang, langOf, type GraphEdge } from "./graph-model.js";
 import { buildServiceRelationships, isTestPath, type IndexedFileContent } from "./relationship-indexer.js";
 import type { ProjectTopology } from "./project-topology.js";
@@ -47,12 +49,12 @@ export function relationshipFingerprint(
   stats: ReadonlyArray<readonly [string, number, number]>,
   topology: ProjectTopology | null,
 ): string {
-  const hash = createHash("sha256");
+  const hash = new Fingerprint();
   hash.update(`v${RELATIONSHIP_CACHE_VERSION}\n`);
   for (const [id, m, s] of stats) hash.update(`${id}\0${m}\0${s}\n`);
   hash.update(`topology:${topology?.projects.length ?? 0}:${topology?.references.length ?? 0}`);
   for (const project of topology?.projects ?? []) hash.update(`\n${project.root}|${project.kind}|${project.containerRoot ?? ""}`);
-  return hash.digest("hex");
+  return hash.digest();
 }
 
 export async function runRelationshipJob(input: RelationshipJobInput, io: RelationshipJobIO): Promise<RelationshipJobResult> {
