@@ -1,0 +1,1674 @@
+{
+  "index": {
+    "counts": {
+      "corpus": 1820,
+      "indexed": 1820,
+      "rendered": 1820,
+      "importEdges": 4122,
+      "serviceEdges": 0,
+      "cochangeEdges": 2
+    },
+    "flags": {
+      "truncated": false,
+      "indexedTruncated": false,
+      "renderedTruncated": false,
+      "indexedFileCount": 1820,
+      "renderedNodeCount": 1820,
+      "indexedImportEdgeCount": 4122,
+      "renderedImportEdgeCount": 4122,
+      "hiddenByPolicyCount": 0,
+      "gitignoreApplied": true
+    },
+    "corpus": {
+      "count": 1820,
+      "digest": "3c020bbc4791a665"
+    },
+    "nodes": {
+      "count": 1820,
+      "digest": "90659a907b134fc1"
+    },
+    "positions": {
+      "count": 1820,
+      "digest": "e91b8a2257ea3581"
+    },
+    "rendered": {
+      "nodes": {
+        "count": 1820,
+        "digest": "3c020bbc4791a665"
+      },
+      "edges": {
+        "count": 4122,
+        "digest": "b1e4ef504c9e82eb"
+      }
+    },
+    "importEdges": {
+      "count": 4122,
+      "digest": "b1e4ef504c9e82eb"
+    },
+    "serviceEdges": {
+      "count": 0,
+      "digest": "4f53cda18c2baa0c"
+    },
+    "serviceProjection": {
+      "truncated": false,
+      "totalEdgeCount": 0,
+      "edges": {
+        "count": 0,
+        "digest": "4f53cda18c2baa0c"
+      }
+    },
+    "cochange": {
+      "count": 2,
+      "digest": "f6ab6e849620fa0e"
+    },
+    "topology": {
+      "digest": "496ebaf8078838b6"
+    },
+    "structure": {
+      "digest": "9630228de53cc96d"
+    },
+    "hierarchy": {
+      "digest": "f932a245c1a3ea32"
+    }
+  },
+  "queries": {
+    "overview": {
+      "ok": true,
+      "indexedAt": "<time>",
+      "indexing": false,
+      "coverage": {
+        "indexedFiles": 1820,
+        "renderedFiles": 1820,
+        "importEdges": 4122,
+        "serviceEdges": 0,
+        "symbolEdges": 0,
+        "truncated": false
+      },
+      "projects": [
+        {
+          "name": "front",
+          "kind": "npm",
+          "root": "front",
+          "manifests": [
+            "front/package.json"
+          ]
+        },
+        {
+          "name": "@acme/admin",
+          "kind": "npm",
+          "root": "front/apps/admin",
+          "manifests": [
+            "front/apps/admin/package.json"
+          ],
+          "containerRoot": "front"
+        },
+        {
+          "name": "@acme/web",
+          "kind": "npm",
+          "root": "front/apps/web",
+          "manifests": [
+            "front/apps/web/package.json"
+          ],
+          "containerRoot": "front"
+        },
+        {
+          "name": "@acme/shared",
+          "kind": "npm",
+          "root": "front/packages/shared",
+          "manifests": [
+            "front/packages/shared/package.json"
+          ],
+          "containerRoot": "front"
+        },
+        {
+          "name": "@acme/ui",
+          "kind": "npm",
+          "root": "front/packages/ui",
+          "manifests": [
+            "front/packages/ui/package.json"
+          ],
+          "containerRoot": "front"
+        },
+        {
+          "name": "@acme/unused",
+          "kind": "npm",
+          "root": "front/packages/unused",
+          "manifests": [
+            "front/packages/unused/package.json"
+          ],
+          "containerRoot": "front"
+        },
+        {
+          "name": "billing",
+          "kind": "python",
+          "root": "services/billing",
+          "manifests": [
+            "services/billing/pyproject.toml"
+          ]
+        },
+        {
+          "name": "acme-cli",
+          "kind": "rust",
+          "root": "services/crates/cli",
+          "manifests": [
+            "services/crates/cli/Cargo.toml"
+          ],
+          "containerRoot": "services"
+        },
+        {
+          "name": "acme-core",
+          "kind": "rust",
+          "root": "services/crates/core",
+          "manifests": [
+            "services/crates/core/Cargo.toml"
+          ],
+          "containerRoot": "services"
+        },
+        {
+          "name": "gateway",
+          "kind": "go",
+          "root": "services/gateway",
+          "manifests": [
+            "services/gateway/go.mod"
+          ]
+        }
+      ],
+      "projectReferences": [
+        {
+          "from": "front/apps/admin",
+          "to": "front/packages/shared",
+          "kind": "package",
+          "evidence": "@acme/shared"
+        },
+        {
+          "from": "front/apps/admin",
+          "to": "front/packages/ui",
+          "kind": "package",
+          "evidence": "@acme/ui"
+        },
+        {
+          "from": "front/apps/admin",
+          "to": "front/packages/unused",
+          "kind": "package",
+          "evidence": "@acme/unused"
+        },
+        {
+          "from": "front/apps/web",
+          "to": "front/packages/shared",
+          "kind": "package",
+          "evidence": "@acme/shared"
+        },
+        {
+          "from": "front/apps/web",
+          "to": "front/packages/ui",
+          "kind": "package",
+          "evidence": "@acme/ui"
+        },
+        {
+          "from": "front/packages/ui",
+          "to": "front/packages/shared",
+          "kind": "package",
+          "evidence": "@acme/shared"
+        },
+        {
+          "from": "services/crates/cli",
+          "to": "services/crates/core",
+          "kind": "package",
+          "evidence": "../core"
+        }
+      ],
+      "codebases": [
+        {
+          "name": "front",
+          "root": "front",
+          "files": 1452
+        },
+        {
+          "name": "billing",
+          "root": "services/billing",
+          "files": 242,
+          "kind": "python",
+          "hiddenCouplingWith": [
+            "services"
+          ]
+        },
+        {
+          "name": "gateway",
+          "root": "services/gateway",
+          "files": 41,
+          "kind": "go"
+        }
+      ],
+      "dependencyFindings": {
+        "declaredButUnused": [
+          {
+            "from": "@acme/admin",
+            "to": "@acme/unused",
+            "kind": "package"
+          }
+        ],
+        "usedButUndeclared": []
+      },
+      "areas": [
+        {
+          "area": "front",
+          "files": 1452
+        },
+        {
+          "area": "services/billing",
+          "files": 242
+        },
+        {
+          "area": "services",
+          "files": 85
+        },
+        {
+          "area": "services/gateway",
+          "files": 41
+        }
+      ],
+      "hubs": [
+        {
+          "path": "front/packages/ui/src/index.ts",
+          "inbound": 1120,
+          "outbound": 160,
+          "area": "front"
+        },
+        {
+          "path": "front/packages/shared/src/format/date.ts",
+          "inbound": 1120,
+          "outbound": 0,
+          "area": "front"
+        },
+        {
+          "path": "front/packages/shared/src/index.ts",
+          "inbound": 159,
+          "outbound": 160,
+          "area": "front"
+        },
+        {
+          "path": "services/crates/core/src/lib.rs",
+          "inbound": 0,
+          "outbound": 80,
+          "area": "services"
+        },
+        {
+          "path": "services/billing/src/billing/mod0/__init__.py",
+          "inbound": 5,
+          "outbound": 0,
+          "area": "services/billing"
+        },
+        {
+          "path": "services/billing/src/billing/mod1/__init__.py",
+          "inbound": 5,
+          "outbound": 0,
+          "area": "services/billing"
+        },
+        {
+          "path": "services/billing/src/billing/mod10/__init__.py",
+          "inbound": 5,
+          "outbound": 0,
+          "area": "services/billing"
+        },
+        {
+          "path": "services/billing/src/billing/mod11/__init__.py",
+          "inbound": 5,
+          "outbound": 0,
+          "area": "services/billing"
+        },
+        {
+          "path": "services/billing/src/billing/mod12/__init__.py",
+          "inbound": 5,
+          "outbound": 0,
+          "area": "services/billing"
+        },
+        {
+          "path": "services/billing/src/billing/mod13/__init__.py",
+          "inbound": 5,
+          "outbound": 0,
+          "area": "services/billing"
+        }
+      ],
+      "serviceFlows": [],
+      "structure": {
+        "orphanCount": 288,
+        "orphans": [
+          "front/apps/admin/package.json",
+          "front/apps/web/package.json",
+          "front/apps/web/src/api/orders.ts",
+          "front/package.json",
+          "front/packages/shared/package.json",
+          "front/packages/ui/package.json",
+          "front/packages/unused/package.json",
+          "front/packages/unused/src/index.ts",
+          "front/pnpm-workspace.yaml",
+          "services/Cargo.toml"
+        ]
+      },
+      "recentNotes": []
+    },
+    "findDependents": {
+      "ok": true,
+      "sortBy": "dependents",
+      "matched": 1820,
+      "returned": 10,
+      "renderedNodeCount": 1820,
+      "indexedFileCount": 1820,
+      "files": [
+        {
+          "path": "front/packages/shared/src/format/date.ts",
+          "area": "front",
+          "codebase": "front",
+          "lang": "ts",
+          "dependents": 1120,
+          "dependencies": 0,
+          "sizeBytes": 56,
+          "churn": 1,
+          "lastCommitAt": 1767225600
+        },
+        {
+          "path": "front/packages/ui/src/index.ts",
+          "area": "front",
+          "codebase": "front",
+          "lang": "ts",
+          "dependents": 1120,
+          "dependencies": 160,
+          "sizeBytes": 6070,
+          "churn": 1,
+          "lastCommitAt": 1767225600
+        },
+        {
+          "path": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "codebase": "front",
+          "lang": "ts",
+          "dependents": 159,
+          "dependencies": 160,
+          "sizeBytes": 5100,
+          "churn": 1,
+          "lastCommitAt": 1767225600
+        },
+        {
+          "path": "services/billing/src/billing/mod0/__init__.py",
+          "area": "services/billing",
+          "codebase": "services/billing",
+          "lang": "py",
+          "dependents": 5,
+          "dependencies": 0,
+          "sizeBytes": 27,
+          "churn": 1,
+          "lastCommitAt": 1767229200
+        },
+        {
+          "path": "services/billing/src/billing/mod1/__init__.py",
+          "area": "services/billing",
+          "codebase": "services/billing",
+          "lang": "py",
+          "dependents": 5,
+          "dependencies": 0,
+          "sizeBytes": 27,
+          "churn": 1,
+          "lastCommitAt": 1767229200
+        },
+        {
+          "path": "services/billing/src/billing/mod10/__init__.py",
+          "area": "services/billing",
+          "codebase": "services/billing",
+          "lang": "py",
+          "dependents": 5,
+          "dependencies": 0,
+          "sizeBytes": 27,
+          "churn": 1,
+          "lastCommitAt": 1767229200
+        },
+        {
+          "path": "services/billing/src/billing/mod11/__init__.py",
+          "area": "services/billing",
+          "codebase": "services/billing",
+          "lang": "py",
+          "dependents": 5,
+          "dependencies": 0,
+          "sizeBytes": 27,
+          "churn": 1,
+          "lastCommitAt": 1767229200
+        },
+        {
+          "path": "services/billing/src/billing/mod12/__init__.py",
+          "area": "services/billing",
+          "codebase": "services/billing",
+          "lang": "py",
+          "dependents": 5,
+          "dependencies": 0,
+          "sizeBytes": 27,
+          "churn": 1,
+          "lastCommitAt": 1767229200
+        },
+        {
+          "path": "services/billing/src/billing/mod13/__init__.py",
+          "area": "services/billing",
+          "codebase": "services/billing",
+          "lang": "py",
+          "dependents": 5,
+          "dependencies": 0,
+          "sizeBytes": 27,
+          "churn": 1,
+          "lastCommitAt": 1767229200
+        },
+        {
+          "path": "services/billing/src/billing/mod14/__init__.py",
+          "area": "services/billing",
+          "codebase": "services/billing",
+          "lang": "py",
+          "dependents": 5,
+          "dependencies": 0,
+          "sizeBytes": 27,
+          "churn": 1,
+          "lastCommitAt": 1767229200
+        }
+      ],
+      "more": 1810,
+      "hint": "Raise `limit` or narrow the filter to see the rest."
+    },
+    "findRust": {
+      "ok": true,
+      "sortBy": "path",
+      "matched": 82,
+      "returned": 5,
+      "renderedNodeCount": 1820,
+      "indexedFileCount": 1820,
+      "files": [
+        {
+          "path": "services/crates/cli/src/main.rs",
+          "area": "services",
+          "codebase": "services",
+          "lang": "rs",
+          "dependents": 0,
+          "dependencies": 1,
+          "sizeBytes": 43,
+          "churn": 1,
+          "lastCommitAt": 1767229200
+        },
+        {
+          "path": "services/crates/core/src/lib.rs",
+          "area": "services",
+          "codebase": "services",
+          "lang": "rs",
+          "dependents": 0,
+          "dependencies": 80,
+          "sizeBytes": 1030,
+          "churn": 1,
+          "lastCommitAt": 1767229200
+        },
+        {
+          "path": "services/crates/core/src/m0.rs",
+          "area": "services",
+          "codebase": "services",
+          "lang": "rs",
+          "dependents": 2,
+          "dependencies": 0,
+          "sizeBytes": 25,
+          "churn": 1,
+          "lastCommitAt": 1767229200
+        },
+        {
+          "path": "services/crates/core/src/m1.rs",
+          "area": "services",
+          "codebase": "services",
+          "lang": "rs",
+          "dependents": 1,
+          "dependencies": 0,
+          "sizeBytes": 20,
+          "churn": 7,
+          "lastCommitAt": 1767272400
+        },
+        {
+          "path": "services/crates/core/src/m10.rs",
+          "area": "services",
+          "codebase": "services",
+          "lang": "rs",
+          "dependents": 1,
+          "dependencies": 0,
+          "sizeBytes": 27,
+          "churn": 1,
+          "lastCommitAt": 1767229200
+        }
+      ],
+      "more": 77,
+      "hint": "Raise `limit` or narrow the filter to see the rest."
+    },
+    "relationships": {
+      "ok": true,
+      "files": [
+        {
+          "path": "front/packages/shared/src/format/date.ts",
+          "onMap": true,
+          "area": "front",
+          "lang": "ts",
+          "codebase": "front",
+          "recentCommits": 1,
+          "importCount": 0,
+          "importedByCount": 1120,
+          "serviceRelationCount": 0,
+          "symbolRelationCount": 0,
+          "imports": [],
+          "importedBy": [
+            "front/apps/admin/src/feature0/page0.tsx",
+            "front/apps/admin/src/feature0/page120.tsx",
+            "front/apps/admin/src/feature0/page180.tsx",
+            "front/apps/admin/src/feature0/page240.tsx",
+            "front/apps/admin/src/feature0/page300.tsx",
+            "front/apps/admin/src/feature0/page360.tsx",
+            "front/apps/admin/src/feature0/page420.tsx",
+            "front/apps/admin/src/feature0/page480.tsx",
+            "front/apps/admin/src/feature0/page540.tsx",
+            "front/apps/admin/src/feature0/page60.tsx"
+          ],
+          "serviceRelations": [],
+          "symbolRelations": [],
+          "symbolRelationsUnavailable": true,
+          "notes": []
+        },
+        {
+          "path": "services/billing/src/billing/api.py",
+          "onMap": true,
+          "area": "services/billing",
+          "lang": "py",
+          "codebase": "services/billing",
+          "recentCommits": 7,
+          "importCount": 0,
+          "importedByCount": 0,
+          "serviceRelationCount": 0,
+          "symbolRelationCount": 0,
+          "imports": [],
+          "importedBy": [],
+          "serviceRelations": [],
+          "symbolRelations": [],
+          "symbolRelationsUnavailable": true,
+          "notes": [],
+          "changedWith": [
+            {
+              "peerFile": "services/crates/core/src/m1.rs",
+              "commits": 6,
+              "confidence": 1
+            }
+          ]
+        },
+        {
+          "path": "front/apps/web/src/api/orders.ts",
+          "onMap": true,
+          "area": "front",
+          "lang": "ts",
+          "codebase": "front",
+          "recentCommits": 7,
+          "importCount": 0,
+          "importedByCount": 0,
+          "serviceRelationCount": 0,
+          "symbolRelationCount": 0,
+          "imports": [],
+          "importedBy": [],
+          "serviceRelations": [],
+          "symbolRelations": [],
+          "symbolRelationsUnavailable": true,
+          "notes": [],
+          "changedWith": [
+            {
+              "peerFile": "front/packages/ui/src/widgets0/Widget0.tsx",
+              "commits": 6,
+              "confidence": 1
+            }
+          ]
+        }
+      ],
+      "symbolLayer": "inactive"
+    },
+    "impact": {
+      "ok": true,
+      "seeds": [
+        "front/packages/shared/src/index.ts"
+      ],
+      "direction": "dependents",
+      "depth": 2,
+      "layers": [
+        "import",
+        "service",
+        "symbol"
+      ],
+      "symbolLayer": "inactive",
+      "reachedCount": 100,
+      "truncated": true,
+      "byDepth": [
+        {
+          "depth": 1,
+          "files": 100
+        }
+      ],
+      "areas": [
+        {
+          "area": "front",
+          "files": 100
+        }
+      ],
+      "files": [
+        {
+          "path": "front/packages/ui/src/widgets0/Widget120.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets0/Widget120.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets0/Widget150.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets0/Widget150.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets0/Widget30.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets0/Widget30.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets0/Widget60.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets0/Widget60.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets0/Widget90.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets0/Widget90.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets1/Widget1.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets1/Widget1.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets1/Widget121.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets1/Widget121.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets1/Widget151.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets1/Widget151.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets1/Widget31.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets1/Widget31.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets1/Widget61.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets1/Widget61.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets1/Widget91.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets1/Widget91.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets10/Widget10.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets10/Widget10.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets10/Widget100.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets10/Widget100.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets10/Widget130.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets10/Widget130.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets10/Widget40.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets10/Widget40.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets10/Widget70.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets10/Widget70.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets11/Widget101.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets11/Widget101.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets11/Widget11.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets11/Widget11.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets11/Widget131.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets11/Widget131.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets11/Widget41.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets11/Widget41.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets11/Widget71.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets11/Widget71.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets12/Widget102.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets12/Widget102.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets12/Widget12.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets12/Widget12.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets12/Widget132.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets12/Widget132.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets12/Widget42.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets12/Widget42.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets12/Widget72.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets12/Widget72.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets13/Widget103.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets13/Widget103.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets13/Widget13.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets13/Widget13.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets13/Widget133.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets13/Widget133.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets13/Widget43.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets13/Widget43.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets13/Widget73.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets13/Widget73.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets14/Widget104.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets14/Widget104.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets14/Widget134.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets14/Widget134.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets14/Widget14.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets14/Widget14.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets14/Widget44.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets14/Widget44.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets14/Widget74.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets14/Widget74.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets15/Widget105.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets15/Widget105.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets15/Widget135.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets15/Widget135.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets15/Widget15.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets15/Widget15.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets15/Widget45.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets15/Widget45.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets15/Widget75.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets15/Widget75.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets16/Widget106.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets16/Widget106.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets16/Widget136.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets16/Widget136.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets16/Widget16.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets16/Widget16.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets16/Widget46.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets16/Widget46.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets16/Widget76.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets16/Widget76.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets17/Widget107.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets17/Widget107.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets17/Widget137.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets17/Widget137.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets17/Widget17.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets17/Widget17.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets17/Widget47.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets17/Widget47.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets17/Widget77.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets17/Widget77.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets18/Widget108.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets18/Widget108.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets18/Widget138.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets18/Widget138.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets18/Widget18.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets18/Widget18.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets18/Widget48.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets18/Widget48.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets18/Widget78.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets18/Widget78.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets19/Widget109.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets19/Widget109.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets19/Widget139.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets19/Widget139.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets19/Widget19.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets19/Widget19.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets19/Widget49.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets19/Widget49.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets19/Widget79.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets19/Widget79.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets2/Widget122.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets2/Widget122.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets2/Widget152.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets2/Widget152.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets2/Widget2.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets2/Widget2.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets2/Widget32.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets2/Widget32.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets2/Widget62.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets2/Widget62.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets2/Widget92.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets2/Widget92.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets20/Widget110.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets20/Widget110.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets20/Widget140.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets20/Widget140.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets20/Widget20.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets20/Widget20.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets20/Widget50.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets20/Widget50.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets20/Widget80.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets20/Widget80.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets21/Widget111.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets21/Widget111.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets21/Widget141.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets21/Widget141.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets21/Widget21.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets21/Widget21.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets21/Widget51.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets21/Widget51.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets21/Widget81.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets21/Widget81.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets22/Widget112.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets22/Widget112.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets22/Widget142.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets22/Widget142.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets22/Widget22.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets22/Widget22.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets22/Widget52.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets22/Widget52.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets22/Widget82.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets22/Widget82.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets23/Widget113.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets23/Widget113.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets23/Widget143.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets23/Widget143.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets23/Widget23.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets23/Widget23.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets23/Widget53.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets23/Widget53.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets23/Widget83.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets23/Widget83.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets24/Widget114.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets24/Widget114.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets24/Widget144.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets24/Widget144.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets24/Widget24.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets24/Widget24.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets24/Widget54.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets24/Widget54.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets24/Widget84.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets24/Widget84.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets25/Widget115.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets25/Widget115.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets25/Widget145.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets25/Widget145.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets25/Widget25.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets25/Widget25.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets25/Widget55.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets25/Widget55.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets25/Widget85.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets25/Widget85.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets26/Widget116.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets26/Widget116.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets26/Widget146.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets26/Widget146.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        },
+        {
+          "path": "front/packages/ui/src/widgets26/Widget26.tsx",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "front/packages/shared/src/index.ts",
+          "area": "front",
+          "via": [
+            "front/packages/ui/src/widgets26/Widget26.tsx -import-> front/packages/shared/src/index.ts"
+          ]
+        }
+      ],
+      "truncationHint": "Raise `limit`, lower `depth`, or narrow `layers` to see the rest."
+    },
+    "routes": {
+      "ok": true,
+      "from": "front/apps/web/src/api/orders.ts",
+      "to": "services/billing/src/billing/api.py",
+      "layers": [
+        "import",
+        "service",
+        "symbol"
+      ],
+      "maxHops": 5,
+      "directedOnly": false,
+      "routeCount": 0,
+      "searchTruncated": false,
+      "routes": [],
+      "hint": "No connection within 5 hops over layers [import, service, symbol]. Raise maxHops or add layers; these files may genuinely be unrelated on the map."
+    }
+  },
+  "workspaceOverview": "Index: 1820 files, 4122 import edges, 0 service edges, 0 symbol edges.\nCodebases:\n  - front (1452 files in front)\n  - billing (242 files in services/billing)\n  - gateway (41 files in services/gateway)\nProjects:\n  - front [npm] at front\n  - @acme/admin [npm] at front/apps/admin\n  - @acme/web [npm] at front/apps/web\n  - @acme/shared [npm] at front/packages/shared\n  - @acme/ui [npm] at front/packages/ui\n  - @acme/unused [npm] at front/packages/unused\n  - billing [python] at services/billing\n  - acme-cli [rust] at services/crates/cli\nProject links:\n  - front/apps/admin -> front/packages/shared (package)\n  - front/apps/admin -> front/packages/ui (package)\n  - front/apps/admin -> front/packages/unused (package)\n  - front/apps/web -> front/packages/shared (package)\n  - front/apps/web -> front/packages/ui (package)\n  - front/packages/ui -> front/packages/shared (package)\n  - services/crates/cli -> services/crates/core (package)\nDeclared dependencies with no imports:\n  - @acme/admin -> @acme/unused (package)\nMajor areas:\n  - front: 1452 files\n  - services/billing: 242 files\n  - services: 85 files\n  - services/gateway: 41 files\nDependency hubs:\n  - front/packages/ui/src/index.ts (1120 in / 160 out)\n  - front/packages/shared/src/format/date.ts (1120 in / 0 out)\n  - front/packages/shared/src/index.ts (159 in / 160 out)\n  - services/crates/core/src/lib.rs (0 in / 80 out)\n  - services/billing/src/billing/mod0/__init__.py (5 in / 0 out)\n  - services/billing/src/billing/mod1/__init__.py (5 in / 0 out)\n  - services/billing/src/billing/mod10/__init__.py (5 in / 0 out)\n  - services/billing/src/billing/mod11/__init__.py (5 in / 0 out)",
+  "localOverview": "  front/apps/web/src/api/orders.ts [front] · 0 dependents / 0 dependencies · 7 recent commits\n  services/crates/cli/src/main.rs [services] · 0 dependents / 1 dependencies · 1 recent commits\n    depends on: services/crates/core/src/m0.rs"
+}

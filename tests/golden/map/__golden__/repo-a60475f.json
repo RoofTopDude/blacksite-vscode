@@ -1,0 +1,2039 @@
+{
+  "index": {
+    "counts": {
+      "corpus": 1237,
+      "indexed": 1237,
+      "rendered": 1237,
+      "importEdges": 3441,
+      "serviceEdges": 0,
+      "cochangeEdges": 319
+    },
+    "flags": {
+      "truncated": false,
+      "indexedTruncated": false,
+      "renderedTruncated": false,
+      "indexedFileCount": 1237,
+      "renderedNodeCount": 1237,
+      "indexedImportEdgeCount": 3441,
+      "renderedImportEdgeCount": 3441,
+      "hiddenByPolicyCount": 4,
+      "gitignoreApplied": true
+    },
+    "corpus": {
+      "count": 1237,
+      "digest": "d00d8eaff0d6b89f"
+    },
+    "nodes": {
+      "count": 1237,
+      "digest": "7d41bb80ddaa4990"
+    },
+    "positions": {
+      "count": 1237,
+      "digest": "ea613dae9973a938"
+    },
+    "rendered": {
+      "nodes": {
+        "count": 1237,
+        "digest": "d00d8eaff0d6b89f"
+      },
+      "edges": {
+        "count": 3441,
+        "digest": "fd99e73d3c835d67"
+      }
+    },
+    "importEdges": {
+      "count": 3441,
+      "digest": "fd99e73d3c835d67"
+    },
+    "serviceEdges": {
+      "count": 0,
+      "digest": "4f53cda18c2baa0c"
+    },
+    "serviceProjection": {
+      "truncated": false,
+      "totalEdgeCount": 0,
+      "edges": {
+        "count": 0,
+        "digest": "4f53cda18c2baa0c"
+      }
+    },
+    "cochange": {
+      "count": 319,
+      "digest": "5d6f57225b160c63"
+    },
+    "topology": {
+      "digest": "a81b88b0bfd78701"
+    },
+    "structure": {
+      "digest": "ee51682e4366a411"
+    },
+    "hierarchy": {
+      "digest": "067a67d75d282a94"
+    }
+  },
+  "queries": {
+    "overview": {
+      "ok": true,
+      "indexedAt": "<time>",
+      "indexing": false,
+      "coverage": {
+        "indexedFiles": 1237,
+        "renderedFiles": 1237,
+        "importEdges": 3441,
+        "serviceEdges": 0,
+        "symbolEdges": 0,
+        "truncated": false
+      },
+      "projects": [
+        {
+          "name": "blacksite-vscode",
+          "kind": "npm",
+          "root": ".",
+          "manifests": [
+            "package.json"
+          ]
+        },
+        {
+          "name": "@blacksite/browser-bridge-protocol",
+          "kind": "npm",
+          "root": "packages/browser-bridge-protocol",
+          "manifests": [
+            "packages/browser-bridge-protocol/package.json"
+          ]
+        },
+        {
+          "name": "@blacksite/file-content",
+          "kind": "npm",
+          "root": "packages/file-content",
+          "manifests": [
+            "packages/file-content/package.json"
+          ]
+        },
+        {
+          "name": "@blacksite-agent/llm",
+          "kind": "npm",
+          "root": "packages/llm",
+          "manifests": [
+            "packages/llm/package.json"
+          ],
+          "containerRoot": "."
+        },
+        {
+          "name": "@blacksite-agent/llm-cli",
+          "kind": "npm",
+          "root": "packages/llm-cli",
+          "manifests": [
+            "packages/llm-cli/package.json"
+          ],
+          "containerRoot": "."
+        },
+        {
+          "name": "@blacksite/local-runtime",
+          "kind": "npm",
+          "root": "packages/local-runtime",
+          "manifests": [
+            "packages/local-runtime/package.json"
+          ]
+        },
+        {
+          "name": "blacksite-lsp-integration-fixture",
+          "kind": "npm",
+          "root": "tests/integration/lsp/fixture",
+          "manifests": [
+            "tests/integration/lsp/fixture/package.json"
+          ]
+        }
+      ],
+      "projectReferences": [
+        {
+          "from": ".",
+          "to": "packages/llm",
+          "kind": "package",
+          "evidence": "@blacksite-agent/llm"
+        },
+        {
+          "from": "packages/llm-cli",
+          "to": "packages/llm",
+          "kind": "package",
+          "evidence": "@blacksite-agent/llm"
+        }
+      ],
+      "codebases": [
+        {
+          "name": "src",
+          "root": "src",
+          "files": 524,
+          "dependsOn": [
+            "llm",
+            "local-runtime",
+            "file-content",
+            "browser-bridge-protocol",
+            "llm-cli"
+          ],
+          "hiddenCouplingWith": [
+            "workspace"
+          ]
+        },
+        {
+          "name": "unit",
+          "root": "tests/unit",
+          "files": 381,
+          "dependsOn": [
+            "src",
+            "llm",
+            "local-runtime",
+            "file-content",
+            "llm-cli"
+          ],
+          "hiddenCouplingWith": [
+            "scripts"
+          ]
+        },
+        {
+          "name": "eval",
+          "root": "tests/eval",
+          "files": 102,
+          "dependsOn": [
+            "src",
+            "docs",
+            "unit",
+            "llm",
+            "scripts"
+          ]
+        },
+        {
+          "name": "llm",
+          "root": "packages/llm",
+          "files": 97,
+          "dependsOn": [
+            "src",
+            "docs",
+            "unit",
+            "local-runtime",
+            "file-content",
+            "browser-bridge-protocol"
+          ],
+          "hiddenCouplingWith": [
+            "workspace"
+          ]
+        },
+        {
+          "name": "docs",
+          "root": "docs",
+          "files": 32,
+          "dependsOn": [
+            "src",
+            "unit",
+            "llm",
+            "eval",
+            "browser-bridge-protocol",
+            "workspace"
+          ],
+          "hiddenCouplingWith": [
+            "site",
+            "scripts"
+          ]
+        },
+        {
+          "name": "local-runtime",
+          "root": "packages/local-runtime",
+          "files": 20,
+          "kind": "npm"
+        },
+        {
+          "name": "scripts",
+          "root": "scripts",
+          "files": 12,
+          "dependsOn": [
+            "src"
+          ],
+          "hiddenCouplingWith": [
+            "docs",
+            "site",
+            "llm-cli",
+            "unit"
+          ]
+        },
+        {
+          "name": "browser",
+          "root": "tests/browser",
+          "files": 12,
+          "dependsOn": [
+            "src",
+            "llm",
+            "llm-cli"
+          ]
+        },
+        {
+          "name": "llm-cli",
+          "root": "packages/llm-cli",
+          "files": 11,
+          "dependsOn": [
+            "llm"
+          ],
+          "hiddenCouplingWith": [
+            "browser-bridge-protocol",
+            "scripts"
+          ]
+        },
+        {
+          "name": "site",
+          "root": "site",
+          "files": 10,
+          "hiddenCouplingWith": [
+            "docs",
+            "scripts"
+          ]
+        }
+      ],
+      "dependencyFindings": {
+        "declaredButUnused": [],
+        "usedButUndeclared": [
+          {
+            "from": "blacksite-vscode",
+            "to": "@blacksite/local-runtime",
+            "imports": 57
+          },
+          {
+            "from": "blacksite-vscode",
+            "to": "@blacksite/file-content",
+            "imports": 9
+          },
+          {
+            "from": "blacksite-vscode",
+            "to": "@blacksite/browser-bridge-protocol",
+            "imports": 2
+          },
+          {
+            "from": "@blacksite-agent/llm",
+            "to": "@blacksite-agent/llm-cli",
+            "imports": 1
+          },
+          {
+            "from": "@blacksite-agent/llm",
+            "to": "blacksite-vscode",
+            "imports": 1
+          },
+          {
+            "from": "@blacksite-agent/llm-cli",
+            "to": "blacksite-vscode",
+            "imports": 1
+          }
+        ]
+      },
+      "areas": [
+        {
+          "area": "src",
+          "files": 524
+        },
+        {
+          "area": "tests/unit",
+          "files": 381
+        },
+        {
+          "area": "tests/eval",
+          "files": 102
+        },
+        {
+          "area": "packages/llm",
+          "files": 97
+        },
+        {
+          "area": "docs",
+          "files": 32
+        },
+        {
+          "area": "packages/local-runtime",
+          "files": 20
+        },
+        {
+          "area": "scripts",
+          "files": 12
+        },
+        {
+          "area": "tests/browser",
+          "files": 12
+        },
+        {
+          "area": "packages/llm-cli",
+          "files": 11
+        },
+        {
+          "area": "site",
+          "files": 10
+        }
+      ],
+      "hubs": [
+        {
+          "path": "packages/llm/src/index.ts",
+          "inbound": 115,
+          "outbound": 34,
+          "area": "packages/llm"
+        },
+        {
+          "path": "src/agent-session.ts",
+          "inbound": 88,
+          "outbound": 55,
+          "area": "src"
+        },
+        {
+          "path": "src/chat-provider.ts",
+          "inbound": 19,
+          "outbound": 106,
+          "area": "src"
+        },
+        {
+          "path": "src/extension.ts",
+          "inbound": 5,
+          "outbound": 83,
+          "area": "src"
+        },
+        {
+          "path": "src/ticket-store.ts",
+          "inbound": 57,
+          "outbound": 2,
+          "area": "src"
+        },
+        {
+          "path": "src/webview/react/lib/utils.ts",
+          "inbound": 59,
+          "outbound": 0,
+          "area": "src"
+        },
+        {
+          "path": "src/graph/graph-model.ts",
+          "inbound": 49,
+          "outbound": 0,
+          "area": "src"
+        },
+        {
+          "path": "src/planning-store.ts",
+          "inbound": 44,
+          "outbound": 4,
+          "area": "src"
+        },
+        {
+          "path": "src/webview/react/lib/store.ts",
+          "inbound": 40,
+          "outbound": 8,
+          "area": "src"
+        },
+        {
+          "path": "docs/orchestration-p0-implementation-plan.md",
+          "inbound": 2,
+          "outbound": 43,
+          "area": "docs"
+        }
+      ],
+      "serviceFlows": [],
+      "structure": {
+        "orphanCount": 521,
+        "orphans": [
+          "packages/llm/CHANGELOG.md",
+          "packages/llm/api-extractor.json",
+          "packages/llm/api-extractor.node.json",
+          "packages/llm/api-extractor.testing.json",
+          "packages/llm/etc/llm-node.api.md",
+          "packages/llm/etc/llm-testing.api.md",
+          "packages/llm/etc/llm.api.md",
+          "packages/llm/tsconfig.build.json",
+          "packages/llm/tsconfig.json",
+          "packages/llm/tsconfig.node.json"
+        ],
+        "pocketCount": 12,
+        "pockets": [
+          "CONTRIBUTING.md",
+          "CHANGELOG.md",
+          "SECURITY.md",
+          "CONTRIBUTOR-LICENSE-AGREEMENT.md",
+          "LICENSE.md",
+          "ARCHITECTURE.md",
+          "README.md",
+          "COMMERCIAL-LICENSING.md",
+          "EVALUATION-LICENSE.md",
+          "COMMERCIAL-LICENSE-AGREEMENT.md"
+        ],
+        "bridgeEdgeCount": 1
+      },
+      "recentNotes": []
+    },
+    "findGraph": {
+      "ok": true,
+      "sortBy": "dependents",
+      "matched": 49,
+      "returned": 15,
+      "renderedNodeCount": 1237,
+      "indexedFileCount": 1237,
+      "files": [
+        {
+          "path": "src/graph/graph-model.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 49,
+          "dependencies": 0,
+          "sizeBytes": 19756,
+          "churn": 13,
+          "lastCommitAt": 1790731149
+        },
+        {
+          "path": "src/graph/workspace-roots.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 25,
+          "dependencies": 0,
+          "sizeBytes": 4567,
+          "churn": 2,
+          "lastCommitAt": 1783301935
+        },
+        {
+          "path": "src/graph/project-topology.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 17,
+          "dependencies": 2,
+          "sizeBytes": 35604,
+          "churn": 2,
+          "lastCommitAt": 1783319955
+        },
+        {
+          "path": "src/graph/graph-indexer.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 15,
+          "dependencies": 18,
+          "sizeBytes": 46111,
+          "churn": 28,
+          "lastCommitAt": 1790985242
+        },
+        {
+          "path": "src/graph/resolve-imports.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 13,
+          "dependencies": 6,
+          "sizeBytes": 41472,
+          "churn": 12,
+          "lastCommitAt": 1790731149
+        },
+        {
+          "path": "src/graph/config.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 9,
+          "dependencies": 0,
+          "sizeBytes": 6608,
+          "churn": 5,
+          "lastCommitAt": 1790731149
+        },
+        {
+          "path": "src/graph/layout.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 9,
+          "dependencies": 3,
+          "sizeBytes": 30701,
+          "churn": 14,
+          "lastCommitAt": 1791263395
+        },
+        {
+          "path": "src/graph/index-job.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 8,
+          "dependencies": 8,
+          "sizeBytes": 11517,
+          "churn": 1,
+          "lastCommitAt": 1790731149
+        },
+        {
+          "path": "src/graph/go-modules.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 7,
+          "dependencies": 1,
+          "sizeBytes": 3992,
+          "churn": 1,
+          "lastCommitAt": 1783215707
+        },
+        {
+          "path": "src/graph/relationship-snapshot.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 7,
+          "dependencies": 6,
+          "sizeBytes": 7487,
+          "churn": 5,
+          "lastCommitAt": 1790731149
+        },
+        {
+          "path": "src/graph/tsconfig-paths.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 7,
+          "dependencies": 1,
+          "sizeBytes": 8381,
+          "churn": 1,
+          "lastCommitAt": 1783215707
+        },
+        {
+          "path": "src/graph/file-facts.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 6,
+          "dependencies": 10,
+          "sizeBytes": 7912,
+          "churn": 1,
+          "lastCommitAt": 1790731149
+        },
+        {
+          "path": "src/graph/map-queries.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 6,
+          "dependencies": 1,
+          "sizeBytes": 24356,
+          "churn": 3,
+          "lastCommitAt": 1790731149
+        },
+        {
+          "path": "src/graph/relationship-indexer.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 6,
+          "dependencies": 3,
+          "sizeBytes": 117408,
+          "churn": 13,
+          "lastCommitAt": 1785295036
+        },
+        {
+          "path": "src/graph/relationship-job.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 6,
+          "dependencies": 5,
+          "sizeBytes": 4432,
+          "churn": 1,
+          "lastCommitAt": 1790731149
+        }
+      ],
+      "more": 34,
+      "hint": "Raise `limit` or narrow the filter to see the rest."
+    },
+    "findChurn": {
+      "ok": true,
+      "sortBy": "churn",
+      "matched": 1237,
+      "returned": 10,
+      "renderedNodeCount": 1237,
+      "indexedFileCount": 1237,
+      "files": [
+        {
+          "path": "package.json",
+          "area": "packages/llm",
+          "codebase": "packages/llm",
+          "lang": "json",
+          "dependents": 10,
+          "dependencies": 0,
+          "sizeBytes": 71671,
+          "churn": 154,
+          "lastCommitAt": 1794337317
+        },
+        {
+          "path": "CHANGELOG.md",
+          "area": "packages/llm",
+          "codebase": "packages/llm",
+          "lang": "md",
+          "dependents": 5,
+          "dependencies": 16,
+          "sizeBytes": 248641,
+          "churn": 118,
+          "lastCommitAt": 1794337317
+        },
+        {
+          "path": "package-lock.json",
+          "area": ".",
+          "codebase": ".",
+          "lang": "json",
+          "dependents": 0,
+          "dependencies": 0,
+          "sizeBytes": 475239,
+          "churn": 118,
+          "lastCommitAt": 1794337317
+        },
+        {
+          "path": "src/agent-session.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 88,
+          "dependencies": 55,
+          "sizeBytes": 366730,
+          "churn": 117,
+          "lastCommitAt": 1794337317
+        },
+        {
+          "path": "src/chat-provider.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 19,
+          "dependencies": 106,
+          "sizeBytes": 355549,
+          "churn": 105,
+          "lastCommitAt": 1794337317
+        },
+        {
+          "path": "src/tools/definitions.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 27,
+          "dependencies": 0,
+          "sizeBytes": 192262,
+          "churn": 84,
+          "lastCommitAt": 1794337317
+        },
+        {
+          "path": "src/extension.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 5,
+          "dependencies": 83,
+          "sizeBytes": 74746,
+          "churn": 62,
+          "lastCommitAt": 1792206143
+        },
+        {
+          "path": "src/workspace-context.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 17,
+          "dependencies": 8,
+          "sizeBytes": 91926,
+          "churn": 62,
+          "lastCommitAt": 1794337317
+        },
+        {
+          "path": "src/webview/react/lib/protocol.ts",
+          "area": "src",
+          "codebase": "src",
+          "lang": "ts",
+          "dependents": 28,
+          "dependencies": 7,
+          "sizeBytes": 29889,
+          "churn": 49,
+          "lastCommitAt": 1794326581
+        },
+        {
+          "path": "src/webview/react/apps/graph/GraphApp.tsx",
+          "area": "src",
+          "codebase": "src",
+          "lang": "tsx",
+          "dependents": 6,
+          "dependencies": 16,
+          "sizeBytes": 18528,
+          "churn": 47,
+          "lastCommitAt": 1791263395
+        }
+      ],
+      "more": 1227,
+      "hint": "Raise `limit` or narrow the filter to see the rest."
+    },
+    "relationships": {
+      "ok": true,
+      "files": [
+        {
+          "path": "src/graph/graph-indexer.ts",
+          "onMap": true,
+          "area": "src",
+          "lang": "ts",
+          "codebase": "src",
+          "recentCommits": 28,
+          "importCount": 18,
+          "importedByCount": 15,
+          "serviceRelationCount": 0,
+          "symbolRelationCount": 0,
+          "imports": [
+            "src/shared/durable-file.ts",
+            "src/graph/graph-model.ts",
+            "src/graph/resolve-imports.ts",
+            "src/graph/layout.ts",
+            "src/graph/git-log.ts",
+            "src/graph/workspace-roots.ts",
+            "src/graph/config.ts",
+            "src/graph/corpus.ts",
+            "src/graph/file-discovery.ts",
+            "src/graph/exclusions.ts",
+            "src/graph/project-topology.ts",
+            "src/graph/git-discovery.ts",
+            "src/graph/graph-worker-client.ts",
+            "src/graph/index-job.ts",
+            "src/graph/relationship-job.ts",
+            "src/graph/file-facts.ts",
+            "src/graph/scan-pipeline.ts",
+            "src/graph/cochange.ts"
+          ],
+          "importedBy": [
+            "docs/codebase-map.md",
+            "docs/map-depth-implementation-plan.md",
+            "docs/map-scale-implementation-plan.md",
+            "docs/responsiveness-and-file-size-review.md",
+            "src/extension.ts",
+            "src/graph-agent-gateway.ts",
+            "src/graph-provider.ts",
+            "src/graph/hierarchy-snapshot.ts",
+            "src/graph/relationship-snapshot.ts",
+            "src/graph/structural-snapshot.ts",
+            "tests/unit/graph-agent-gateway.spec.ts",
+            "tests/unit/graph-index-job.spec.ts",
+            "tests/unit/graph-indexer-capacity.spec.ts",
+            "tests/unit/relationship-snapshot.spec.ts",
+            "tests/unit/structural-snapshot.spec.ts"
+          ],
+          "serviceRelations": [],
+          "symbolRelations": [],
+          "symbolRelationsUnavailable": true,
+          "notes": [],
+          "changedWith": [
+            {
+              "peerFile": "src/webview/react/lib/graph/view-model.ts",
+              "commits": 13,
+              "confidence": 0.57
+            },
+            {
+              "peerFile": "src/webview/react/apps/graph/GraphApp.tsx",
+              "commits": 12,
+              "confidence": 0.52
+            },
+            {
+              "peerFile": "src/webview/react/apps/graph/scene/renderer.ts",
+              "commits": 11,
+              "confidence": 0.48
+            },
+            {
+              "peerFile": "src/graph/graph-model.ts",
+              "commits": 10,
+              "confidence": 1
+            },
+            {
+              "peerFile": "src/graph/relationship-indexer.ts",
+              "commits": 10,
+              "confidence": 0.91
+            },
+            {
+              "peerFile": "tests/unit/graph-view-model.spec.ts",
+              "commits": 10,
+              "confidence": 0.53
+            },
+            {
+              "peerFile": "tests/unit/graph-relationships.spec.ts",
+              "commits": 9,
+              "confidence": 1
+            },
+            {
+              "peerFile": "src/graph-provider.ts",
+              "commits": 9,
+              "confidence": 0.39
+            }
+          ]
+        },
+        {
+          "path": "src/graph-agent-gateway.ts",
+          "onMap": true,
+          "area": "src",
+          "lang": "ts",
+          "codebase": "src",
+          "recentCommits": 13,
+          "importCount": 10,
+          "importedByCount": 6,
+          "serviceRelationCount": 0,
+          "symbolRelationCount": 0,
+          "imports": [
+            "src/graph-annotation-store.ts",
+            "src/graph/graph-indexer.ts",
+            "src/graph/relationship-snapshot.ts",
+            "src/graph/structural-snapshot.ts",
+            "src/graph/hierarchy-snapshot.ts",
+            "src/graph/hierarchy.ts",
+            "src/graph/graph-model.ts",
+            "src/graph/workspace-roots.ts",
+            "src/graph/project-topology.ts",
+            "src/graph/map-queries.ts"
+          ],
+          "importedBy": [
+            "ARCHITECTURE.md",
+            "docs/map-scale-implementation-plan.md",
+            "docs/orchestration-p0-implementation-plan.md",
+            "docs/responsiveness-and-file-size-review.md",
+            "src/extension.ts",
+            "tests/unit/graph-agent-gateway.spec.ts"
+          ],
+          "serviceRelations": [],
+          "symbolRelations": [],
+          "symbolRelationsUnavailable": true,
+          "notes": [],
+          "changedWith": [
+            {
+              "peerFile": "tests/unit/graph-agent-gateway.spec.ts",
+              "commits": 5,
+              "confidence": 1
+            },
+            {
+              "peerFile": "src/extension.ts",
+              "commits": 5,
+              "confidence": 0.56
+            },
+            {
+              "peerFile": "src/graph/relationship-snapshot.ts",
+              "commits": 4,
+              "confidence": 1
+            },
+            {
+              "peerFile": "tests/unit/graph-relationships.spec.ts",
+              "commits": 4,
+              "confidence": 0.44
+            },
+            {
+              "peerFile": "src/graph/import-scan.ts",
+              "commits": 3,
+              "confidence": 0.38
+            },
+            {
+              "peerFile": "tests/unit/graph-import-scan.spec.ts",
+              "commits": 3,
+              "confidence": 0.38
+            },
+            {
+              "peerFile": "tests/unit/graph-resolve.spec.ts",
+              "commits": 3,
+              "confidence": 0.38
+            },
+            {
+              "peerFile": "src/graph/layout.ts",
+              "commits": 3,
+              "confidence": 0.33
+            }
+          ]
+        }
+      ],
+      "symbolLayer": "inactive"
+    },
+    "impact": {
+      "ok": true,
+      "seeds": [
+        "src/graph/graph-model.ts"
+      ],
+      "direction": "dependents",
+      "depth": 2,
+      "layers": [
+        "import",
+        "service",
+        "symbol"
+      ],
+      "symbolLayer": "inactive",
+      "reachedCount": 85,
+      "truncated": false,
+      "byDepth": [
+        {
+          "depth": 1,
+          "files": 49
+        },
+        {
+          "depth": 2,
+          "files": 36
+        }
+      ],
+      "areas": [
+        {
+          "area": "src",
+          "files": 44
+        },
+        {
+          "area": "tests/unit",
+          "files": 30
+        },
+        {
+          "area": "docs",
+          "files": 9
+        },
+        {
+          "area": "packages/llm",
+          "files": 2
+        }
+      ],
+      "files": [
+        {
+          "path": "docs/codebase-map.md",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "docs",
+          "via": [
+            "docs/codebase-map.md -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/graph-indexer.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/graph-indexer.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph-provider.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph-provider.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "docs/map-depth-implementation-plan.md",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "docs",
+          "via": [
+            "docs/map-depth-implementation-plan.md -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/project-topology.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/project-topology.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/resolve-imports.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/resolve-imports.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph-agent-gateway.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph-agent-gateway.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/file-facts.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/file-facts.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/index-job.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/index-job.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/scan-pipeline.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/scan-pipeline.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/relationship-snapshot.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/relationship-snapshot.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/layout.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/layout.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/relationship-job.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/relationship-job.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/relationship-indexer.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/relationship-indexer.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-index-job.spec.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-index-job.spec.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/go-modules.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/go-modules.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/hierarchy.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/hierarchy.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/language-support.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/language-support.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/tsconfig-paths.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/tsconfig-paths.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/workspace-packages.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/workspace-packages.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/doc-links.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/doc-links.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/map-queries.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/map-queries.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/symbol-indexer.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/symbol-indexer.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-agent-gateway.spec.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-agent-gateway.spec.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/corpus.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/corpus.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/exclusions.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/exclusions.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/php-index.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/php-index.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/trace-extract.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/trace-extract.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-cochange.spec.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-cochange.spec.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/client-config.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/client-config.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/cochange.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/cochange.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/csharp-index.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/csharp-index.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/file-discovery.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/file-discovery.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/neighborhoods.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/neighborhoods.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/python-index.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/python-index.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/python-reexports.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/python-reexports.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/reference-links.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/reference-links.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/structural-analysis.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/structural-analysis.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-hierarchy.spec.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-hierarchy.spec.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-neighborhoods.spec.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-neighborhoods.spec.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/connectivity-stats.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/connectivity-stats.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-directory-pack.spec.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-directory-pack.spec.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-layout.spec.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-layout.spec.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-reference-links.spec.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-reference-links.spec.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-structural-analysis.spec.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-structural-analysis.spec.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-connectivity-stats.spec.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-connectivity-stats.spec.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-corpus.spec.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-corpus.spec.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-map-queries.spec.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-map-queries.spec.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-model.spec.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-model.spec.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/extension.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/extension.ts -import-> src/graph-agent-gateway.ts",
+            "src/graph-agent-gateway.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "docs/orchestration-p0-implementation-plan.md",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "docs",
+          "via": [
+            "docs/orchestration-p0-implementation-plan.md -import-> docs/codebase-map.md",
+            "docs/codebase-map.md -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "docs/responsiveness-and-file-size-review.md",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "docs",
+          "via": [
+            "docs/responsiveness-and-file-size-review.md -import-> src/graph-agent-gateway.ts",
+            "src/graph-agent-gateway.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "docs/map-scale-implementation-plan.md",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "docs",
+          "via": [
+            "docs/map-scale-implementation-plan.md -import-> docs/codebase-map.md",
+            "docs/codebase-map.md -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "docs/tickets-implementation-plan.md",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "docs",
+          "via": [
+            "docs/tickets-implementation-plan.md -import-> docs/codebase-map.md",
+            "docs/codebase-map.md -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "ARCHITECTURE.md",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "packages/llm",
+          "via": [
+            "ARCHITECTURE.md -import-> src/graph-agent-gateway.ts",
+            "src/graph-agent-gateway.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/lsp-service.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/lsp-service.ts -import-> src/graph/language-support.ts",
+            "src/graph/language-support.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "docs/lsp-reliability-implementation-plan.md",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "docs",
+          "via": [
+            "docs/lsp-reliability-implementation-plan.md -import-> src/graph-provider.ts",
+            "src/graph-provider.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "CHANGELOG.md",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "packages/llm",
+          "via": [
+            "CHANGELOG.md -import-> src/graph/connectivity-stats.ts",
+            "src/graph/connectivity-stats.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "docs/ticket-entity-design.md",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "docs",
+          "via": [
+            "docs/ticket-entity-design.md -import-> src/graph/map-queries.ts",
+            "src/graph/map-queries.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "docs/lsp-code-intelligence.md",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "docs",
+          "via": [
+            "docs/lsp-code-intelligence.md -import-> src/graph/language-support.ts",
+            "src/graph/language-support.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/graph-worker-client.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/graph-worker-client.ts -import-> src/graph/index-job.ts",
+            "src/graph/index-job.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/hierarchy-snapshot.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/hierarchy-snapshot.ts -import-> src/graph/graph-indexer.ts",
+            "src/graph/graph-indexer.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/structural-snapshot.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/structural-snapshot.ts -import-> src/graph/graph-indexer.ts",
+            "src/graph/graph-indexer.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-resolve.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-resolve.spec.ts -import-> src/graph/csharp-index.ts",
+            "src/graph/csharp-index.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/file-freshness.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/file-freshness.ts -import-> src/graph/trace-extract.ts",
+            "src/graph/trace-extract.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/worker/graph-worker.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/worker/graph-worker.ts -import-> src/graph/index-job.ts",
+            "src/graph/index-job.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/edit-diff-stats.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/edit-diff-stats.ts -import-> src/graph/trace-extract.ts",
+            "src/graph/trace-extract.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/worker/job-io.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/worker/job-io.ts -import-> src/graph/index-job.ts",
+            "src/graph/index-job.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-workspace-packages.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-workspace-packages.spec.ts -import-> src/graph/file-facts.ts",
+            "src/graph/file-facts.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "src/graph/live-activity.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "src",
+          "via": [
+            "src/graph/live-activity.ts -import-> src/graph/trace-extract.ts",
+            "src/graph/trace-extract.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-indexer-capacity.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-indexer-capacity.spec.ts -import-> src/graph/graph-indexer.ts",
+            "src/graph/graph-indexer.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-php-index.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-php-index.spec.ts -import-> src/graph/php-index.ts",
+            "src/graph/php-index.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/relationship-snapshot.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/relationship-snapshot.spec.ts -import-> src/graph/graph-indexer.ts",
+            "src/graph/graph-indexer.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/structural-snapshot.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/structural-snapshot.spec.ts -import-> src/graph/graph-indexer.ts",
+            "src/graph/graph-indexer.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-doc-links.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-doc-links.spec.ts -import-> src/graph/doc-links.ts",
+            "src/graph/doc-links.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-exclusions.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-exclusions.spec.ts -import-> src/graph/exclusions.ts",
+            "src/graph/exclusions.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-file-discovery.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-file-discovery.spec.ts -import-> src/graph/file-discovery.ts",
+            "src/graph/file-discovery.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-relationships.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-relationships.spec.ts -import-> src/graph/project-topology.ts",
+            "src/graph/project-topology.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-client-config.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-client-config.spec.ts -import-> src/graph/client-config.ts",
+            "src/graph/client-config.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-go-modules.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-go-modules.spec.ts -import-> src/graph/go-modules.ts",
+            "src/graph/go-modules.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-language-support.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-language-support.spec.ts -import-> src/graph/language-support.ts",
+            "src/graph/language-support.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-project-topology.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-project-topology.spec.ts -import-> src/graph/project-topology.ts",
+            "src/graph/project-topology.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-python-index.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-python-index.spec.ts -import-> src/graph/python-index.ts",
+            "src/graph/python-index.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-trace-extract.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-trace-extract.spec.ts -import-> src/graph/trace-extract.ts",
+            "src/graph/trace-extract.ts -import-> src/graph/graph-model.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-tsconfig-paths.spec.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "src/graph/graph-model.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-tsconfig-paths.spec.ts -import-> src/graph/tsconfig-paths.ts",
+            "src/graph/tsconfig-paths.ts -import-> src/graph/graph-model.ts"
+          ]
+        }
+      ]
+    },
+    "impactHistory": {
+      "ok": true,
+      "seeds": [
+        "src/graph/layout.ts"
+      ],
+      "direction": "both",
+      "depth": 1,
+      "layers": [
+        "history"
+      ],
+      "symbolLayer": "inactive",
+      "reachedCount": 6,
+      "truncated": false,
+      "byDepth": [
+        {
+          "depth": 1,
+          "files": 6
+        }
+      ],
+      "areas": [
+        {
+          "area": "src",
+          "files": 4
+        },
+        {
+          "area": "tests/unit",
+          "files": 2
+        }
+      ],
+      "files": [
+        {
+          "path": "src/graph/resolve-imports.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/layout.ts",
+          "area": "src",
+          "via": [
+            "src/graph/resolve-imports.ts -cochange-> src/graph/layout.ts"
+          ]
+        },
+        {
+          "path": "src/graph-agent-gateway.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/layout.ts",
+          "area": "src",
+          "via": [
+            "src/graph-agent-gateway.ts -cochange-> src/graph/layout.ts"
+          ]
+        },
+        {
+          "path": "src/graph/relationship-snapshot.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/layout.ts",
+          "area": "src",
+          "via": [
+            "src/graph/relationship-snapshot.ts -cochange-> src/graph/layout.ts"
+          ]
+        },
+        {
+          "path": "src/graph/relationship-indexer.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/layout.ts",
+          "area": "src",
+          "via": [
+            "src/graph/relationship-indexer.ts -cochange-> src/graph/layout.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-resolve.spec.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/layout.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-resolve.spec.ts -cochange-> src/graph/layout.ts"
+          ]
+        },
+        {
+          "path": "tests/unit/graph-layout.spec.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "src/graph/layout.ts",
+          "area": "tests/unit",
+          "via": [
+            "tests/unit/graph-layout.spec.ts -cochange-> src/graph/layout.ts"
+          ]
+        }
+      ]
+    },
+    "routes": {
+      "ok": true,
+      "from": "src/extension.ts",
+      "to": "src/graph/directory-pack.ts",
+      "layers": [
+        "import",
+        "service",
+        "symbol"
+      ],
+      "maxHops": 5,
+      "directedOnly": false,
+      "routeCount": 2,
+      "searchTruncated": true,
+      "routes": [
+        {
+          "hops": 3,
+          "path": [
+            "src/extension.ts",
+            "src/graph/graph-indexer.ts",
+            "src/graph/layout.ts",
+            "src/graph/directory-pack.ts"
+          ],
+          "steps": [
+            {
+              "from": "src/extension.ts",
+              "to": "src/graph/graph-indexer.ts",
+              "kind": "import",
+              "layer": "import"
+            },
+            {
+              "from": "src/graph/graph-indexer.ts",
+              "to": "src/graph/layout.ts",
+              "kind": "import",
+              "layer": "import"
+            },
+            {
+              "from": "src/graph/layout.ts",
+              "to": "src/graph/directory-pack.ts",
+              "kind": "import",
+              "layer": "import"
+            }
+          ]
+        },
+        {
+          "hops": 3,
+          "path": [
+            "src/extension.ts",
+            "docs/responsiveness-and-file-size-review.md",
+            "src/graph/layout.ts",
+            "src/graph/directory-pack.ts"
+          ],
+          "steps": [
+            {
+              "from": "docs/responsiveness-and-file-size-review.md",
+              "to": "src/extension.ts",
+              "kind": "import",
+              "layer": "import"
+            },
+            {
+              "from": "docs/responsiveness-and-file-size-review.md",
+              "to": "src/graph/layout.ts",
+              "kind": "import",
+              "layer": "import"
+            },
+            {
+              "from": "src/graph/layout.ts",
+              "to": "src/graph/directory-pack.ts",
+              "kind": "import",
+              "layer": "import"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "workspaceOverview": "Index: 1237 files, 3441 import edges, 0 service edges, 0 symbol edges.\nCodebases:\n  - src (524 files in src); depends on llm, local-runtime, file-content, browser-bridge-protocol, llm-cli\n  - unit (381 files in tests/unit); depends on src, llm, local-runtime, file-content, llm-cli\n  - eval (102 files in tests/eval); depends on src, docs, unit, llm, scripts\n  - llm (97 files in packages/llm); depends on src, docs, unit, local-runtime, file-content, browser-bridge-protocol\n  - docs (32 files in docs); depends on src, unit, llm, eval, browser-bridge-protocol, workspace\n  - local-runtime (20 files in packages/local-runtime)\n  - scripts (12 files in scripts); depends on src\n  - browser (12 files in tests/browser); depends on src, llm, llm-cli\nProjects:\n  - blacksite-vscode [npm] at .\n  - @blacksite/browser-bridge-protocol [npm] at packages/browser-bridge-protocol\n  - @blacksite/file-content [npm] at packages/file-content\n  - @blacksite-agent/llm [npm] at packages/llm\n  - @blacksite-agent/llm-cli [npm] at packages/llm-cli\n  - @blacksite/local-runtime [npm] at packages/local-runtime\n  - blacksite-lsp-integration-fixture [npm] at tests/integration/lsp/fixture\nProject links:\n  - . -> packages/llm (package)\n  - packages/llm-cli -> packages/llm (package)\nImports no manifest declares:\n  - blacksite-vscode -> @blacksite/local-runtime (57 imports)\n  - blacksite-vscode -> @blacksite/file-content (9 imports)\n  - blacksite-vscode -> @blacksite/browser-bridge-protocol (2 imports)\n  - @blacksite-agent/llm -> @blacksite-agent/llm-cli (1 imports)\n  - @blacksite-agent/llm -> blacksite-vscode (1 imports)\n  - @blacksite-agent/llm-cli -> blacksite-vscode (1 imports)\nMajor areas:\n  - src: 524 files\n  - tests/unit: 381 files\n  - tests/eval: 102 files\n  - packages/llm: 97 files\n  - docs: 32 files\n  - packages/local-runtime: 20 files\n  - scripts: 12 files\n  - tests/browser: 12 files\nDependency hubs:\n  - packages/llm/src/index.ts (115 in / 34 out)\n  - src/agent-session.ts (88 in / 55 out)\n  - src/chat-provider.ts (19 in / 106 out)\n  - src/extension.ts (5 in / 83 out)\n  - src/ticket-store.ts (57 in / 2 out)\n  - src/webview/react/lib/utils.ts (59 in / 0 out)\n  - src/graph/graph-model.ts (49 in / 0 out)\n  - src/planning-store.ts (44 in / 4 out)",
+  "localOverview": "  src/graph/graph-indexer.ts [src] · 15 dependents / 18 dependencies · 28 recent commits\n    depended on by: docs/codebase-map.md, docs/map-depth-implementation-plan.md, docs/map-scale-implementation-plan.md, docs/responsiveness-and-file-size-review.md, src/extension.ts (+10 more)\n    depends on: src/shared/durable-file.ts, src/graph/graph-model.ts, src/graph/resolve-imports.ts, src/graph/layout.ts, src/graph/git-log.ts (+13 more)\n  src/webview/react/lib/graph/view-model.ts [src] · 26 dependents / 9 dependencies · 38 recent commits\n    depended on by: docs/codebase-map.md, docs/map-depth-implementation-plan.md, docs/map-scale-implementation-plan.md, docs/tickets-implementation-plan.md, src/webview/react/apps/graph/GraphApp.tsx (+21 more)\n    depends on: src/webview/react/lib/graph/protocol.ts, src/webview/react/lib/graph/scope.ts, src/webview/react/lib/graph/depth.ts, src/webview/react/lib/graph/traces.ts, src/webview/react/lib/graph/edges.ts (+4 more)"
+}

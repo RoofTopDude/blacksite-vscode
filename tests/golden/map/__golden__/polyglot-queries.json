@@ -1,0 +1,1592 @@
+{
+  "queries": {
+    "overview": {
+      "ok": true,
+      "indexedAt": "<time>",
+      "indexing": false,
+      "coverage": {
+        "indexedFiles": 29,
+        "renderedFiles": 29,
+        "importEdges": 22,
+        "serviceEdges": 9,
+        "symbolEdges": 0,
+        "truncated": false
+      },
+      "projects": [
+        {
+          "name": "poly",
+          "kind": "npm",
+          "root": ".",
+          "manifests": [
+            "package.json"
+          ]
+        },
+        {
+          "name": "@poly/web",
+          "kind": "npm",
+          "root": "apps/web",
+          "manifests": [
+            "apps/web/package.json"
+          ],
+          "containerRoot": "."
+        },
+        {
+          "name": "@poly/shared",
+          "kind": "npm",
+          "root": "packages/shared",
+          "manifests": [
+            "packages/shared/package.json"
+          ],
+          "containerRoot": "."
+        },
+        {
+          "name": "@poly/unused",
+          "kind": "npm",
+          "root": "packages/unused",
+          "manifests": [
+            "packages/unused/package.json"
+          ],
+          "containerRoot": "."
+        },
+        {
+          "name": "Billing",
+          "kind": "dotnet",
+          "root": "services/billing",
+          "manifests": [
+            "services/billing/Billing.csproj"
+          ]
+        },
+        {
+          "name": "orders",
+          "kind": "python",
+          "root": "services/orders",
+          "manifests": [
+            "services/orders/pyproject.toml"
+          ]
+        },
+        {
+          "name": "users",
+          "kind": "go",
+          "root": "services/users",
+          "manifests": [
+            "services/users/go.mod"
+          ]
+        }
+      ],
+      "projectReferences": [
+        {
+          "from": "apps/web",
+          "to": "packages/shared",
+          "kind": "package",
+          "evidence": "@poly/shared"
+        },
+        {
+          "from": "apps/web",
+          "to": "packages/unused",
+          "kind": "package",
+          "evidence": "@poly/unused"
+        }
+      ],
+      "codebases": [
+        {
+          "name": "web",
+          "root": "apps/web",
+          "files": 7,
+          "kind": "npm",
+          "dependsOn": [
+            "shared",
+            "billing",
+            "orders",
+            "users",
+            "unused"
+          ]
+        },
+        {
+          "name": "orders",
+          "root": "services/orders",
+          "files": 5,
+          "kind": "python",
+          "dependsOn": [
+            "users"
+          ]
+        },
+        {
+          "name": "billing",
+          "root": "services/billing",
+          "files": 4,
+          "kind": "dotnet",
+          "hiddenCouplingWith": [
+            "tools"
+          ]
+        },
+        {
+          "name": "shared",
+          "root": "packages/shared",
+          "files": 3,
+          "kind": "npm"
+        },
+        {
+          "name": "users",
+          "root": "services/users",
+          "files": 3,
+          "kind": "go",
+          "dependsOn": [
+            "orders"
+          ]
+        },
+        {
+          "name": "workspace",
+          "root": ".",
+          "files": 2,
+          "kind": "npm",
+          "dependsOn": [
+            "docs"
+          ]
+        },
+        {
+          "name": "unused",
+          "root": "packages/unused",
+          "files": 2,
+          "kind": "npm"
+        },
+        {
+          "name": "docs",
+          "root": "docs",
+          "files": 1,
+          "dependsOn": [
+            "web",
+            "billing",
+            "orders",
+            "users"
+          ]
+        },
+        {
+          "name": "scripts",
+          "root": "scripts",
+          "files": 1
+        },
+        {
+          "name": "tools",
+          "root": "tools",
+          "files": 1,
+          "hiddenCouplingWith": [
+            "billing"
+          ]
+        }
+      ],
+      "dependencyFindings": {
+        "declaredButUnused": [
+          {
+            "from": "@poly/web",
+            "to": "@poly/unused",
+            "kind": "package"
+          }
+        ],
+        "usedButUndeclared": [
+          {
+            "from": "poly",
+            "to": "@poly/web",
+            "imports": 2
+          },
+          {
+            "from": "poly",
+            "to": "orders",
+            "imports": 2
+          },
+          {
+            "from": "poly",
+            "to": "users",
+            "imports": 2
+          },
+          {
+            "from": "poly",
+            "to": "Billing",
+            "imports": 1
+          }
+        ]
+      },
+      "areas": [
+        {
+          "area": "apps/web",
+          "files": 7
+        },
+        {
+          "area": "services/orders",
+          "files": 5
+        },
+        {
+          "area": "services/billing",
+          "files": 4
+        },
+        {
+          "area": "packages/shared",
+          "files": 3
+        },
+        {
+          "area": "services/users",
+          "files": 3
+        },
+        {
+          "area": ".",
+          "files": 2
+        },
+        {
+          "area": "packages/unused",
+          "files": 2
+        },
+        {
+          "area": "docs",
+          "files": 1
+        },
+        {
+          "area": "scripts",
+          "files": 1
+        },
+        {
+          "area": "tools",
+          "files": 1
+        }
+      ],
+      "hubs": [
+        {
+          "path": "apps/web/src/main.ts",
+          "inbound": 2,
+          "outbound": 3,
+          "area": "apps/web"
+        },
+        {
+          "path": "docs/architecture.md",
+          "inbound": 1,
+          "outbound": 4,
+          "area": "docs"
+        },
+        {
+          "path": "docker-compose.yml",
+          "inbound": 0,
+          "outbound": 3,
+          "area": "apps/web"
+        },
+        {
+          "path": "packages/shared/src/format.ts",
+          "inbound": 3,
+          "outbound": 0,
+          "area": "packages/shared"
+        },
+        {
+          "path": "services/orders/src/orders/app.py",
+          "inbound": 2,
+          "outbound": 1,
+          "area": "services/orders"
+        },
+        {
+          "path": "apps/web/src/api/client.ts",
+          "inbound": 1,
+          "outbound": 1,
+          "area": "apps/web"
+        },
+        {
+          "path": "apps/web/src/ui/render.ts",
+          "inbound": 1,
+          "outbound": 1,
+          "area": "apps/web"
+        },
+        {
+          "path": "packages/shared/src/index.ts",
+          "inbound": 1,
+          "outbound": 1,
+          "area": "packages/shared"
+        },
+        {
+          "path": "services/billing/Controllers/InvoicesController.cs",
+          "inbound": 1,
+          "outbound": 1,
+          "area": "services/billing"
+        },
+        {
+          "path": "services/billing/Models/Invoice.cs",
+          "inbound": 2,
+          "outbound": 0,
+          "area": "services/billing"
+        }
+      ],
+      "serviceFlows": [
+        {
+          "kind": "config",
+          "from": "services/orders",
+          "to": "services/users",
+          "occurrences": 4,
+          "examples": [
+            "USERS_URL"
+          ]
+        },
+        {
+          "kind": "config",
+          "from": ".",
+          "to": "services/users",
+          "occurrences": 1,
+          "examples": [
+            "USERS_URL"
+          ]
+        },
+        {
+          "kind": "api",
+          "from": "apps/web",
+          "to": "services/orders",
+          "occurrences": 1,
+          "examples": [
+            "POST /api/orders"
+          ]
+        },
+        {
+          "kind": "api",
+          "from": "apps/web",
+          "to": "services/billing",
+          "occurrences": 1,
+          "examples": [
+            "GET {id}"
+          ]
+        },
+        {
+          "kind": "api",
+          "from": "services/orders",
+          "to": "services/users",
+          "occurrences": 1,
+          "examples": [
+            "GET /api/users/{id}"
+          ]
+        },
+        {
+          "kind": "api",
+          "from": "services/users",
+          "to": "services/orders",
+          "occurrences": 1,
+          "examples": [
+            "GET /api/orders/<order_id>"
+          ]
+        }
+      ],
+      "structure": {
+        "orphanCount": 9,
+        "orphans": [
+          "package.json",
+          "apps/web/package.json",
+          "docker-compose.yml",
+          "apps/web/tsconfig.json",
+          "packages/shared/package.json",
+          "services/billing/Billing.csproj",
+          "services/orders/.env",
+          "services/orders/pyproject.toml",
+          "services/users/go.mod"
+        ]
+      },
+      "recentNotes": []
+    },
+    "findArea": {
+      "ok": true,
+      "sortBy": "degree",
+      "matched": 6,
+      "returned": 6,
+      "renderedNodeCount": 29,
+      "indexedFileCount": 29,
+      "files": [
+        {
+          "path": "apps/web/src/main.ts",
+          "area": "apps/web",
+          "codebase": "apps/web",
+          "lang": "ts",
+          "dependents": 2,
+          "dependencies": 3,
+          "sizeBytes": 200,
+          "churn": 1,
+          "lastCommitAt": 1767225600
+        },
+        {
+          "path": "apps/web/src/api/client.ts",
+          "area": "apps/web",
+          "codebase": "apps/web",
+          "lang": "ts",
+          "dependents": 1,
+          "dependencies": 1,
+          "sizeBytes": 489,
+          "churn": 4,
+          "lastCommitAt": 1768089600
+        },
+        {
+          "path": "apps/web/src/ui/render.ts",
+          "area": "apps/web",
+          "codebase": "apps/web",
+          "lang": "ts",
+          "dependents": 1,
+          "dependencies": 1,
+          "sizeBytes": 132,
+          "churn": 1,
+          "lastCommitAt": 1767225600
+        },
+        {
+          "path": "apps/web/package.json",
+          "area": "apps/web",
+          "codebase": "apps/web",
+          "lang": "json",
+          "dependents": 1,
+          "dependencies": 0,
+          "sizeBytes": 142,
+          "churn": 1,
+          "lastCommitAt": 1767225600
+        },
+        {
+          "path": "apps/web/src/main.test.ts",
+          "area": "apps/web",
+          "codebase": "apps/web",
+          "lang": "ts",
+          "dependents": 0,
+          "dependencies": 1,
+          "sizeBytes": 42,
+          "churn": 1,
+          "lastCommitAt": 1767225600
+        },
+        {
+          "path": "apps/web/tsconfig.json",
+          "area": "apps/web",
+          "codebase": "apps/web",
+          "lang": "json",
+          "dependents": 0,
+          "dependencies": 0,
+          "sizeBytes": 113,
+          "churn": 1,
+          "lastCommitAt": 1767225600
+        }
+      ]
+    },
+    "findPython": {
+      "ok": true,
+      "sortBy": "dependents",
+      "matched": 3,
+      "returned": 3,
+      "renderedNodeCount": 29,
+      "indexedFileCount": 29,
+      "files": [
+        {
+          "path": "services/orders/src/orders/app.py",
+          "area": "services/orders",
+          "codebase": "services/orders",
+          "lang": "py",
+          "dependents": 2,
+          "dependencies": 1,
+          "sizeBytes": 554,
+          "churn": 5,
+          "lastCommitAt": 1768003200
+        },
+        {
+          "path": "services/orders/src/orders/models.py",
+          "area": "services/orders",
+          "codebase": "services/orders",
+          "lang": "py",
+          "dependents": 2,
+          "dependencies": 0,
+          "sizeBytes": 71,
+          "churn": 1,
+          "lastCommitAt": 1767225600
+        },
+        {
+          "path": "services/orders/src/orders/__init__.py",
+          "area": "services/orders",
+          "codebase": "services/orders",
+          "lang": "py",
+          "dependents": 0,
+          "dependencies": 2,
+          "sizeBytes": 47,
+          "churn": 1,
+          "lastCommitAt": 1767225600
+        }
+      ]
+    },
+    "findChurn": {
+      "ok": true,
+      "sortBy": "churn",
+      "matched": 29,
+      "returned": 5,
+      "renderedNodeCount": 29,
+      "indexedFileCount": 29,
+      "files": [
+        {
+          "path": "services/orders/src/orders/app.py",
+          "area": "services/orders",
+          "codebase": "services/orders",
+          "lang": "py",
+          "dependents": 2,
+          "dependencies": 1,
+          "sizeBytes": 554,
+          "churn": 5,
+          "lastCommitAt": 1768003200
+        },
+        {
+          "path": "services/users/main.go",
+          "area": "services/users",
+          "codebase": "services/users",
+          "lang": "go",
+          "dependents": 1,
+          "dependencies": 1,
+          "sizeBytes": 418,
+          "churn": 5,
+          "lastCommitAt": 1768003200
+        },
+        {
+          "path": "apps/web/src/api/client.ts",
+          "area": "apps/web",
+          "codebase": "apps/web",
+          "lang": "ts",
+          "dependents": 1,
+          "dependencies": 1,
+          "sizeBytes": 489,
+          "churn": 4,
+          "lastCommitAt": 1768089600
+        },
+        {
+          "path": "packages/shared/src/format.ts",
+          "area": "packages/shared",
+          "codebase": "packages/shared",
+          "lang": "ts",
+          "dependents": 3,
+          "dependencies": 0,
+          "sizeBytes": 191,
+          "churn": 4,
+          "lastCommitAt": 1768089600
+        },
+        {
+          "path": "services/billing/Models/Invoice.cs",
+          "area": "services/billing",
+          "codebase": "services/billing",
+          "lang": "cs",
+          "dependents": 2,
+          "dependencies": 0,
+          "sizeBytes": 189,
+          "churn": 4,
+          "lastCommitAt": 1767484800
+        }
+      ],
+      "more": 24,
+      "hint": "Raise `limit` or narrow the filter to see the rest."
+    },
+    "findGlob": {
+      "ok": true,
+      "sortBy": "degree",
+      "matched": 2,
+      "returned": 2,
+      "renderedNodeCount": 29,
+      "indexedFileCount": 29,
+      "files": [
+        {
+          "path": "services/users/main.go",
+          "area": "services/users",
+          "codebase": "services/users",
+          "lang": "go",
+          "dependents": 1,
+          "dependencies": 1,
+          "sizeBytes": 418,
+          "churn": 5,
+          "lastCommitAt": 1768003200
+        },
+        {
+          "path": "services/users/internal/store/store.go",
+          "area": "services/users",
+          "codebase": "services/users",
+          "lang": "go",
+          "dependents": 1,
+          "dependencies": 0,
+          "sizeBytes": 57,
+          "churn": 1,
+          "lastCommitAt": 1767225600
+        }
+      ]
+    },
+    "findContains": {
+      "ok": true,
+      "sortBy": "path",
+      "matched": 1,
+      "returned": 1,
+      "renderedNodeCount": 29,
+      "indexedFileCount": 29,
+      "files": [
+        {
+          "path": "services/billing/Controllers/InvoicesController.cs",
+          "area": "services/billing",
+          "codebase": "services/billing",
+          "lang": "cs",
+          "dependents": 1,
+          "dependencies": 1,
+          "sizeBytes": 286,
+          "churn": 1,
+          "lastCommitAt": 1767225600
+        }
+      ]
+    },
+    "relationships": {
+      "ok": true,
+      "files": [
+        {
+          "path": "apps/web/src/api/client.ts",
+          "onMap": true,
+          "area": "apps/web",
+          "lang": "ts",
+          "codebase": "apps/web",
+          "recentCommits": 4,
+          "importCount": 1,
+          "importedByCount": 1,
+          "serviceRelationCount": 2,
+          "symbolRelationCount": 0,
+          "imports": [
+            "packages/shared/src/format.ts"
+          ],
+          "importedBy": [
+            "apps/web/src/main.ts"
+          ],
+          "serviceRelations": [
+            {
+              "kind": "api",
+              "label": "POST /api/orders",
+              "direction": "outbound",
+              "fromService": "apps/web",
+              "toService": "services/orders",
+              "peerFile": "services/orders/src/orders/app.py",
+              "confidence": 0.97,
+              "detail": "web -> orders",
+              "evidence": [
+                "apps/web/src/api/client.ts:7 - POST ${ORDERS}/api/orders",
+                "services/orders/src/orders/app.py:10 - POST /api/orders"
+              ]
+            },
+            {
+              "kind": "api",
+              "label": "GET {id}",
+              "direction": "outbound",
+              "fromService": "apps/web",
+              "toService": "services/billing",
+              "peerFile": "services/billing/Controllers/InvoicesController.cs",
+              "confidence": 0.97,
+              "detail": "web -> billing",
+              "evidence": [
+                "apps/web/src/api/client.ts:12 - GET http://localhost:5000/api/invoices/${id}",
+                "services/billing/Controllers/InvoicesController.cs:9 - [HttpGET] {id}"
+              ]
+            }
+          ],
+          "symbolRelations": [],
+          "symbolRelationsUnavailable": true,
+          "notes": [],
+          "changedWith": [
+            {
+              "peerFile": "packages/shared/src/format.ts",
+              "commits": 4,
+              "confidence": 1
+            }
+          ]
+        },
+        {
+          "path": "services/orders/src/orders/app.py",
+          "onMap": true,
+          "area": "services/orders",
+          "lang": "py",
+          "codebase": "services/orders",
+          "recentCommits": 5,
+          "importCount": 1,
+          "importedByCount": 2,
+          "serviceRelationCount": 6,
+          "symbolRelationCount": 0,
+          "imports": [
+            "services/orders/src/orders/models.py"
+          ],
+          "importedBy": [
+            "docs/architecture.md",
+            "services/orders/src/orders/__init__.py"
+          ],
+          "serviceRelations": [
+            {
+              "kind": "api",
+              "label": "POST /api/orders",
+              "direction": "inbound",
+              "fromService": "apps/web",
+              "toService": "services/orders",
+              "peerFile": "apps/web/src/api/client.ts",
+              "confidence": 0.97,
+              "detail": "web -> orders",
+              "evidence": [
+                "apps/web/src/api/client.ts:7 - POST ${ORDERS}/api/orders",
+                "services/orders/src/orders/app.py:10 - POST /api/orders"
+              ]
+            },
+            {
+              "kind": "api",
+              "label": "GET /api/users/{id}",
+              "direction": "outbound",
+              "fromService": "services/orders",
+              "toService": "services/users",
+              "peerFile": "services/users/main.go",
+              "confidence": 0.97,
+              "detail": "orders -> users",
+              "evidence": [
+                "services/orders/src/orders/app.py:13 - GET {USERS_URL}/api/users/42",
+                "services/users/main.go:12 - GET /api/users/{id}"
+              ]
+            },
+            {
+              "kind": "api",
+              "label": "GET /api/orders/<order_id>",
+              "direction": "inbound",
+              "fromService": "services/users",
+              "toService": "services/orders",
+              "peerFile": "services/users/main.go",
+              "confidence": 0.97,
+              "detail": "users -> orders",
+              "evidence": [
+                "services/users/main.go:14 - http.Get http://orders:8080/api/orders/",
+                "services/orders/src/orders/app.py:17 - GET /api/orders/<order_id>"
+              ]
+            },
+            {
+              "kind": "config",
+              "label": "USERS_URL",
+              "direction": "outbound",
+              "fromService": "services/orders",
+              "toService": "services/users",
+              "confidence": 0.7,
+              "detail": "orders references users",
+              "evidence": [
+                "config USERS_URL"
+              ]
+            },
+            {
+              "kind": "config",
+              "label": "USERS_URL",
+              "direction": "outbound",
+              "fromService": "services/orders",
+              "toService": "services/users",
+              "confidence": 0.7,
+              "detail": "orders references users",
+              "evidence": [
+                "config USERS_URL"
+              ]
+            },
+            {
+              "kind": "config",
+              "label": "USERS_URL",
+              "direction": "outbound",
+              "fromService": "services/orders",
+              "toService": "services/users",
+              "confidence": 0.7,
+              "detail": "orders references users",
+              "evidence": [
+                "config USERS_URL"
+              ]
+            }
+          ],
+          "symbolRelations": [],
+          "symbolRelationsUnavailable": true,
+          "notes": [],
+          "changedWith": [
+            {
+              "peerFile": "services/users/main.go",
+              "commits": 5,
+              "confidence": 1
+            }
+          ]
+        },
+        {
+          "path": "services/billing/Models/Invoice.cs",
+          "onMap": true,
+          "area": "services/billing",
+          "lang": "cs",
+          "codebase": "services/billing",
+          "recentCommits": 4,
+          "importCount": 0,
+          "importedByCount": 2,
+          "serviceRelationCount": 0,
+          "symbolRelationCount": 0,
+          "imports": [],
+          "importedBy": [
+            "services/billing/Controllers/InvoicesController.cs",
+            "services/billing/Program.cs"
+          ],
+          "serviceRelations": [],
+          "symbolRelations": [],
+          "symbolRelationsUnavailable": true,
+          "notes": [],
+          "changedWith": [
+            {
+              "peerFile": "tools/version.ts",
+              "commits": 4,
+              "confidence": 1
+            }
+          ]
+        }
+      ],
+      "symbolLayer": "inactive"
+    },
+    "relationshipsUnknown": {
+      "ok": true,
+      "files": [
+        {
+          "path": "nope/missing.ts",
+          "onMap": false,
+          "importCount": 0,
+          "importedByCount": 0,
+          "serviceRelationCount": 0,
+          "symbolRelationCount": 0,
+          "imports": [],
+          "importedBy": [],
+          "serviceRelations": [],
+          "symbolRelations": [],
+          "symbolRelationsUnavailable": true,
+          "notes": [],
+          "warning": "This file isn't on the Codebase Map index. Full indexed import and service facts are still queried when available; the file may be beyond the index cap or excluded by the indexing profile."
+        }
+      ],
+      "symbolLayer": "inactive"
+    },
+    "relationshipsNoPath": {
+      "ok": false,
+      "error": "Provide a file path in `path`, or several in `paths`."
+    },
+    "impactShared": {
+      "ok": true,
+      "seeds": [
+        "packages/shared/src/format.ts"
+      ],
+      "direction": "dependents",
+      "depth": 3,
+      "layers": [
+        "import",
+        "service",
+        "symbol"
+      ],
+      "symbolLayer": "inactive",
+      "reachedCount": 6,
+      "truncated": false,
+      "byDepth": [
+        {
+          "depth": 1,
+          "files": 3
+        },
+        {
+          "depth": 2,
+          "files": 1
+        },
+        {
+          "depth": 3,
+          "files": 2
+        }
+      ],
+      "areas": [
+        {
+          "area": "apps/web",
+          "files": 4
+        },
+        {
+          "area": "docs",
+          "files": 1
+        },
+        {
+          "area": "packages/shared",
+          "files": 1
+        }
+      ],
+      "files": [
+        {
+          "path": "apps/web/src/api/client.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "packages/shared/src/format.ts",
+          "area": "apps/web",
+          "via": [
+            "apps/web/src/api/client.ts -import-> packages/shared/src/format.ts"
+          ]
+        },
+        {
+          "path": "apps/web/src/ui/render.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "packages/shared/src/format.ts",
+          "area": "apps/web",
+          "via": [
+            "apps/web/src/ui/render.ts -import-> packages/shared/src/format.ts"
+          ]
+        },
+        {
+          "path": "packages/shared/src/index.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "packages/shared/src/format.ts",
+          "area": "packages/shared",
+          "via": [
+            "packages/shared/src/index.ts -import-> packages/shared/src/format.ts"
+          ]
+        },
+        {
+          "path": "apps/web/src/main.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "packages/shared/src/format.ts",
+          "area": "apps/web",
+          "via": [
+            "apps/web/src/main.ts -import-> apps/web/src/api/client.ts",
+            "apps/web/src/api/client.ts -import-> packages/shared/src/format.ts"
+          ]
+        },
+        {
+          "path": "docs/architecture.md",
+          "depth": 3,
+          "relation": "dependent",
+          "seed": "packages/shared/src/format.ts",
+          "area": "docs",
+          "via": [
+            "docs/architecture.md -import-> apps/web/src/main.ts",
+            "apps/web/src/main.ts -import-> apps/web/src/api/client.ts",
+            "apps/web/src/api/client.ts -import-> packages/shared/src/format.ts"
+          ]
+        },
+        {
+          "path": "apps/web/src/main.test.ts",
+          "depth": 3,
+          "relation": "dependent",
+          "seed": "packages/shared/src/format.ts",
+          "area": "apps/web",
+          "via": [
+            "apps/web/src/main.test.ts -import-> apps/web/src/main.ts",
+            "apps/web/src/main.ts -import-> apps/web/src/api/client.ts",
+            "apps/web/src/api/client.ts -import-> packages/shared/src/format.ts"
+          ]
+        }
+      ]
+    },
+    "impactOrders": {
+      "ok": true,
+      "seeds": [
+        "services/orders/src/orders/app.py"
+      ],
+      "direction": "both",
+      "depth": 3,
+      "layers": [
+        "import",
+        "service",
+        "history"
+      ],
+      "symbolLayer": "inactive",
+      "reachedCount": 12,
+      "truncated": false,
+      "byDepth": [
+        {
+          "depth": 1,
+          "files": 5
+        },
+        {
+          "depth": 2,
+          "files": 4
+        },
+        {
+          "depth": 3,
+          "files": 3
+        }
+      ],
+      "areas": [
+        {
+          "area": "apps/web",
+          "files": 4
+        },
+        {
+          "area": "packages/shared",
+          "files": 2
+        },
+        {
+          "area": "services/orders",
+          "files": 2
+        },
+        {
+          "area": "services/users",
+          "files": 2
+        },
+        {
+          "area": ".",
+          "files": 1
+        },
+        {
+          "area": "docs",
+          "files": 1
+        }
+      ],
+      "files": [
+        {
+          "path": "docs/architecture.md",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "services/orders/src/orders/app.py",
+          "area": "docs",
+          "via": [
+            "docs/architecture.md -import-> services/orders/src/orders/app.py"
+          ]
+        },
+        {
+          "path": "apps/web/src/api/client.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "services/orders/src/orders/app.py",
+          "area": "apps/web",
+          "via": [
+            "apps/web/src/api/client.ts -api-> services/orders/src/orders/app.py"
+          ]
+        },
+        {
+          "path": "services/orders/src/orders/__init__.py",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "services/orders/src/orders/app.py",
+          "area": "services/orders",
+          "via": [
+            "services/orders/src/orders/__init__.py -import-> services/orders/src/orders/app.py"
+          ]
+        },
+        {
+          "path": "services/orders/src/orders/models.py",
+          "depth": 1,
+          "relation": "dependency",
+          "seed": "services/orders/src/orders/app.py",
+          "area": "services/orders",
+          "via": [
+            "services/orders/src/orders/app.py -import-> services/orders/src/orders/models.py"
+          ]
+        },
+        {
+          "path": "services/users/main.go",
+          "depth": 1,
+          "relation": "dependency",
+          "seed": "services/orders/src/orders/app.py",
+          "area": "services/users",
+          "via": [
+            "services/orders/src/orders/app.py -api-> services/users/main.go"
+          ]
+        },
+        {
+          "path": "apps/web/src/main.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "services/orders/src/orders/app.py",
+          "area": "apps/web",
+          "via": [
+            "apps/web/src/main.ts -import-> apps/web/src/api/client.ts",
+            "apps/web/src/api/client.ts -api-> services/orders/src/orders/app.py"
+          ]
+        },
+        {
+          "path": "packages/shared/src/format.ts",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "services/orders/src/orders/app.py",
+          "area": "packages/shared",
+          "via": [
+            "packages/shared/src/format.ts -cochange-> apps/web/src/api/client.ts",
+            "apps/web/src/api/client.ts -api-> services/orders/src/orders/app.py"
+          ]
+        },
+        {
+          "path": "README.md",
+          "depth": 2,
+          "relation": "dependent",
+          "seed": "services/orders/src/orders/app.py",
+          "area": ".",
+          "via": [
+            "README.md -import-> docs/architecture.md",
+            "docs/architecture.md -import-> services/orders/src/orders/app.py"
+          ]
+        },
+        {
+          "path": "services/users/internal/store/store.go",
+          "depth": 2,
+          "relation": "dependency",
+          "seed": "services/orders/src/orders/app.py",
+          "area": "services/users",
+          "via": [
+            "services/orders/src/orders/app.py -api-> services/users/main.go",
+            "services/users/main.go -import-> services/users/internal/store/store.go"
+          ]
+        },
+        {
+          "path": "apps/web/src/ui/render.ts",
+          "depth": 3,
+          "relation": "dependent",
+          "seed": "services/orders/src/orders/app.py",
+          "area": "apps/web",
+          "via": [
+            "apps/web/src/ui/render.ts -import-> packages/shared/src/format.ts",
+            "packages/shared/src/format.ts -cochange-> apps/web/src/api/client.ts",
+            "apps/web/src/api/client.ts -api-> services/orders/src/orders/app.py"
+          ]
+        },
+        {
+          "path": "packages/shared/src/index.ts",
+          "depth": 3,
+          "relation": "dependent",
+          "seed": "services/orders/src/orders/app.py",
+          "area": "packages/shared",
+          "via": [
+            "packages/shared/src/index.ts -import-> packages/shared/src/format.ts",
+            "packages/shared/src/format.ts -cochange-> apps/web/src/api/client.ts",
+            "apps/web/src/api/client.ts -api-> services/orders/src/orders/app.py"
+          ]
+        },
+        {
+          "path": "apps/web/src/main.test.ts",
+          "depth": 3,
+          "relation": "dependent",
+          "seed": "services/orders/src/orders/app.py",
+          "area": "apps/web",
+          "via": [
+            "apps/web/src/main.test.ts -import-> apps/web/src/main.ts",
+            "apps/web/src/main.ts -import-> apps/web/src/api/client.ts",
+            "apps/web/src/api/client.ts -api-> services/orders/src/orders/app.py"
+          ]
+        }
+      ]
+    },
+    "impactOutside": {
+      "ok": false,
+      "error": "None of the requested paths resolve inside the workspace: ../outside.ts"
+    },
+    "routesCrossService": {
+      "ok": true,
+      "from": "apps/web/src/main.ts",
+      "to": "services/users/main.go",
+      "layers": [
+        "import",
+        "service",
+        "symbol"
+      ],
+      "maxHops": 5,
+      "directedOnly": false,
+      "routeCount": 3,
+      "searchTruncated": false,
+      "routes": [
+        {
+          "hops": 2,
+          "path": [
+            "apps/web/src/main.ts",
+            "docs/architecture.md",
+            "services/users/main.go"
+          ],
+          "steps": [
+            {
+              "from": "docs/architecture.md",
+              "to": "apps/web/src/main.ts",
+              "kind": "import",
+              "layer": "import"
+            },
+            {
+              "from": "docs/architecture.md",
+              "to": "services/users/main.go",
+              "kind": "import",
+              "layer": "import"
+            }
+          ]
+        },
+        {
+          "hops": 3,
+          "path": [
+            "apps/web/src/main.ts",
+            "apps/web/src/api/client.ts",
+            "services/orders/src/orders/app.py",
+            "services/users/main.go"
+          ],
+          "steps": [
+            {
+              "from": "apps/web/src/main.ts",
+              "to": "apps/web/src/api/client.ts",
+              "kind": "import",
+              "layer": "import"
+            },
+            {
+              "from": "apps/web/src/api/client.ts",
+              "to": "services/orders/src/orders/app.py",
+              "kind": "api",
+              "layer": "service",
+              "label": "POST /api/orders"
+            },
+            {
+              "from": "services/orders/src/orders/app.py",
+              "to": "services/users/main.go",
+              "kind": "api",
+              "layer": "service",
+              "label": "GET /api/users/{id}"
+            }
+          ]
+        },
+        {
+          "hops": 3,
+          "path": [
+            "apps/web/src/main.ts",
+            "docs/architecture.md",
+            "services/orders/src/orders/app.py",
+            "services/users/main.go"
+          ],
+          "steps": [
+            {
+              "from": "docs/architecture.md",
+              "to": "apps/web/src/main.ts",
+              "kind": "import",
+              "layer": "import"
+            },
+            {
+              "from": "docs/architecture.md",
+              "to": "services/orders/src/orders/app.py",
+              "kind": "import",
+              "layer": "import"
+            },
+            {
+              "from": "services/orders/src/orders/app.py",
+              "to": "services/users/main.go",
+              "kind": "api",
+              "layer": "service",
+              "label": "GET /api/users/{id}"
+            }
+          ]
+        }
+      ]
+    },
+    "routesDirected": {
+      "ok": true,
+      "from": "apps/web/src/main.ts",
+      "to": "packages/shared/src/format.ts",
+      "layers": [
+        "import",
+        "service",
+        "symbol"
+      ],
+      "maxHops": 5,
+      "directedOnly": true,
+      "routeCount": 3,
+      "searchTruncated": false,
+      "routes": [
+        {
+          "hops": 2,
+          "path": [
+            "apps/web/src/main.ts",
+            "packages/shared/src/index.ts",
+            "packages/shared/src/format.ts"
+          ],
+          "steps": [
+            {
+              "from": "apps/web/src/main.ts",
+              "to": "packages/shared/src/index.ts",
+              "kind": "import",
+              "layer": "import"
+            },
+            {
+              "from": "packages/shared/src/index.ts",
+              "to": "packages/shared/src/format.ts",
+              "kind": "import",
+              "layer": "import"
+            }
+          ]
+        },
+        {
+          "hops": 2,
+          "path": [
+            "apps/web/src/main.ts",
+            "apps/web/src/api/client.ts",
+            "packages/shared/src/format.ts"
+          ],
+          "steps": [
+            {
+              "from": "apps/web/src/main.ts",
+              "to": "apps/web/src/api/client.ts",
+              "kind": "import",
+              "layer": "import"
+            },
+            {
+              "from": "apps/web/src/api/client.ts",
+              "to": "packages/shared/src/format.ts",
+              "kind": "import",
+              "layer": "import"
+            }
+          ]
+        },
+        {
+          "hops": 2,
+          "path": [
+            "apps/web/src/main.ts",
+            "apps/web/src/ui/render.ts",
+            "packages/shared/src/format.ts"
+          ],
+          "steps": [
+            {
+              "from": "apps/web/src/main.ts",
+              "to": "apps/web/src/ui/render.ts",
+              "kind": "import",
+              "layer": "import"
+            },
+            {
+              "from": "apps/web/src/ui/render.ts",
+              "to": "packages/shared/src/format.ts",
+              "kind": "import",
+              "layer": "import"
+            }
+          ]
+        }
+      ]
+    },
+    "routesSame": {
+      "ok": false,
+      "error": "`from` and `to` are the same file."
+    },
+    "routesNone": {
+      "ok": true,
+      "from": "scripts/orphan.ts",
+      "to": "apps/web/src/main.ts",
+      "layers": [
+        "import",
+        "service",
+        "symbol"
+      ],
+      "maxHops": 2,
+      "directedOnly": false,
+      "routeCount": 0,
+      "searchTruncated": false,
+      "routes": [],
+      "hint": "No connection within 2 hops over layers [import, service, symbol]. Raise maxHops or add layers; these files may genuinely be unrelated on the map."
+    }
+  },
+  "notes": {
+    "nodeNote": {
+      "ok": true,
+      "note": {
+        "id": "<note:1>",
+        "scope": "node",
+        "from": "apps/web/src/main.ts",
+        "kind": "ai",
+        "author": "agent",
+        "title": "Startup order",
+        "category": "gotcha",
+        "note": "Entry point; render() must run after createOrder resolves.",
+        "createdAt": "<time>",
+        "updatedAt": "<time>",
+        "sessionId": "golden"
+      }
+    },
+    "edgeNote": {
+      "ok": true,
+      "note": {
+        "id": "<note:2>",
+        "scope": "edge",
+        "from": "apps/web/src/api/client.ts",
+        "to": "services/orders/src/orders/app.py",
+        "kind": "ai",
+        "author": "agent",
+        "category": "architecture",
+        "relationKind": "api",
+        "note": "POST /api/orders is the only write path into orders.",
+        "createdAt": "<time>",
+        "updatedAt": "<time>",
+        "sessionId": "golden"
+      }
+    },
+    "duplicate": {
+      "ok": true,
+      "note": {
+        "id": "<note:1>",
+        "scope": "node",
+        "from": "apps/web/src/main.ts",
+        "kind": "ai",
+        "author": "agent",
+        "title": "Startup order",
+        "category": "gotcha",
+        "note": "Entry point; render() must run after createOrder resolves.",
+        "createdAt": "<time>",
+        "updatedAt": "<time>",
+        "sessionId": "golden"
+      }
+    },
+    "outsideMap": {
+      "ok": false,
+      "error": "Not a file on the Codebase Map: nope/missing.ts"
+    },
+    "list": {
+      "ok": true,
+      "notes": [
+        {
+          "id": "<note:1>",
+          "scope": "node",
+          "from": "apps/web/src/main.ts",
+          "kind": "ai",
+          "author": "agent",
+          "title": "Startup order",
+          "category": "gotcha",
+          "note": "Entry point; render() must run after createOrder resolves.",
+          "createdAt": "<time>",
+          "updatedAt": "<time>",
+          "sessionId": "golden"
+        },
+        {
+          "id": "<note:2>",
+          "scope": "edge",
+          "from": "apps/web/src/api/client.ts",
+          "to": "services/orders/src/orders/app.py",
+          "kind": "ai",
+          "author": "agent",
+          "category": "architecture",
+          "relationKind": "api",
+          "note": "POST /api/orders is the only write path into orders.",
+          "createdAt": "<time>",
+          "updatedAt": "<time>",
+          "sessionId": "golden"
+        }
+      ]
+    },
+    "listForFile": {
+      "ok": true,
+      "notes": [
+        {
+          "id": "<note:2>",
+          "scope": "edge",
+          "from": "apps/web/src/api/client.ts",
+          "to": "services/orders/src/orders/app.py",
+          "kind": "ai",
+          "author": "agent",
+          "category": "architecture",
+          "relationKind": "api",
+          "note": "POST /api/orders is the only write path into orders.",
+          "createdAt": "<time>",
+          "updatedAt": "<time>",
+          "sessionId": "golden"
+        }
+      ]
+    },
+    "update": {
+      "ok": true,
+      "note": {
+        "id": "<note:1>",
+        "scope": "node",
+        "from": "apps/web/src/main.ts",
+        "kind": "ai",
+        "author": "agent",
+        "title": "Startup order (revised)",
+        "category": "gotcha",
+        "note": "Entry point. render() runs after createOrder resolves.",
+        "createdAt": "<time>",
+        "updatedAt": "<time>",
+        "sessionId": "golden",
+        "history": [
+          {
+            "note": "Entry point; render() must run after createOrder resolves.",
+            "updatedAt": "<time>",
+            "sessionId": "golden"
+          }
+        ]
+      }
+    },
+    "impactViaNote": {
+      "ok": true,
+      "seeds": [
+        "services/orders/src/orders/app.py"
+      ],
+      "direction": "both",
+      "depth": 3,
+      "layers": [
+        "note"
+      ],
+      "symbolLayer": "inactive",
+      "reachedCount": 1,
+      "truncated": false,
+      "byDepth": [
+        {
+          "depth": 1,
+          "files": 1
+        }
+      ],
+      "areas": [
+        {
+          "area": "apps/web",
+          "files": 1
+        }
+      ],
+      "files": [
+        {
+          "path": "apps/web/src/api/client.ts",
+          "depth": 1,
+          "relation": "dependent",
+          "seed": "services/orders/src/orders/app.py",
+          "area": "apps/web",
+          "via": [
+            "apps/web/src/api/client.ts -ai-> services/orders/src/orders/app.py"
+          ]
+        }
+      ]
+    },
+    "overviewNotes": [
+      {
+        "from": "apps/web/src/main.ts",
+        "title": "Startup order (revised)",
+        "category": "gotcha",
+        "note": "Entry point. render() runs after createOrder resolves."
+      },
+      {
+        "from": "apps/web/src/api/client.ts",
+        "to": "services/orders/src/orders/app.py",
+        "category": "architecture",
+        "relationKind": "api",
+        "note": "POST /api/orders is the only write path into orders."
+      }
+    ],
+    "workspaceOverview": "Index: 29 files, 22 import edges, 9 service edges, 0 symbol edges.\nCodebases:\n  - web (7 files in apps/web); depends on shared, billing, orders, users, unused\n  - orders (5 files in services/orders); depends on users\n  - billing (4 files in services/billing)\n  - shared (3 files in packages/shared)\n  - users (3 files in services/users); depends on orders\n  - workspace (2 files in .); depends on docs\n  - unused (2 files in packages/unused)\n  - docs (1 files in docs); depends on web, billing, orders, users\nProjects:\n  - poly [npm] at .\n  - @poly/web [npm] at apps/web\n  - @poly/shared [npm] at packages/shared\n  - @poly/unused [npm] at packages/unused\n  - Billing [dotnet] at services/billing\n  - orders [python] at services/orders\n  - users [go] at services/users\nProject links:\n  - apps/web -> packages/shared (package)\n  - apps/web -> packages/unused (package)\nImports no manifest declares:\n  - poly -> @poly/web (2 imports)\n  - poly -> orders (2 imports)\n  - poly -> users (2 imports)\n  - poly -> Billing (1 imports)\nDeclared dependencies with no imports:\n  - @poly/web -> @poly/unused (package)\nMajor areas:\n  - apps/web: 7 files\n  - services/orders: 5 files\n  - services/billing: 4 files\n  - packages/shared: 3 files\n  - services/users: 3 files\n  - .: 2 files\n  - packages/unused: 2 files\n  - docs: 1 files\nDependency hubs:\n  - apps/web/src/main.ts (2 in / 3 out)\n  - docs/architecture.md (1 in / 4 out)\n  - docker-compose.yml (0 in / 3 out)\n  - packages/shared/src/format.ts (3 in / 0 out)\n  - services/orders/src/orders/app.py (2 in / 1 out)\n  - apps/web/src/api/client.ts (1 in / 1 out)\n  - apps/web/src/ui/render.ts (1 in / 1 out)\n  - packages/shared/src/index.ts (1 in / 1 out)\nCross-service flows:\n  - services/orders -> services/users [config, 4 occurrence(s); USERS_URL]\n  - . -> services/users [config, 1 occurrence(s); USERS_URL]\n  - apps/web -> services/orders [api, 1 occurrence(s); POST /api/orders]\n  - apps/web -> services/billing [api, 1 occurrence(s); GET {id}]\n  - services/orders -> services/users [api, 1 occurrence(s); GET /api/users/{id}]\n  - services/users -> services/orders [api, 1 occurrence(s); GET /api/orders/<order_id>]\nRecent map knowledge:\n  - apps/web/src/main.ts: [gotcha] Startup order (revised) — Entry point. render() runs after createOrder resolves.\n  - apps/web/src/api/client.ts -> services/orders/src/orders/app.py: [architecture] POST /api/orders is the only write path into orders.",
+    "localOverview": "  apps/web/src/api/client.ts [apps/web] · 1 dependents / 1 dependencies · 4 recent commits\n    depended on by: apps/web/src/main.ts\n    depends on: packages/shared/src/format.ts\n    note: [architecture] POST /api/orders is the only write path into orders.\n  apps/web/src/main.ts [apps/web] · 2 dependents / 3 dependencies · 1 recent commits\n    depended on by: apps/web/src/main.test.ts, docs/architecture.md\n    depends on: packages/shared/src/index.ts, apps/web/src/api/client.ts, apps/web/src/ui/render.ts\n    note: [gotcha] Startup order (revised) — Entry point. render() runs after createOrder resolves.\n  services/orders/src/orders/app.py [services/orders] · 2 dependents / 1 dependencies · 5 recent commits\n    depended on by: docs/architecture.md, services/orders/src/orders/__init__.py\n    depends on: services/orders/src/orders/models.py\n    note: [architecture] POST /api/orders is the only write path into orders.",
+    "remove": {
+      "ok": true,
+      "removed": "<note:2>"
+    },
+    "removeMissing": {
+      "ok": false,
+      "error": "No map note with id <note:3>."
+    },
+    "unknownOp": {
+      "ok": false,
+      "error": "Unknown map operation: frobnicate"
+    },
+    "listAfterRemove": {
+      "ok": true,
+      "notes": [
+        {
+          "id": "<note:1>",
+          "scope": "node",
+          "from": "apps/web/src/main.ts",
+          "kind": "ai",
+          "author": "agent",
+          "title": "Startup order (revised)",
+          "category": "gotcha",
+          "note": "Entry point. render() runs after createOrder resolves.",
+          "createdAt": "<time>",
+          "updatedAt": "<time>",
+          "sessionId": "golden",
+          "history": [
+            {
+              "note": "Entry point; render() must run after createOrder resolves.",
+              "updatedAt": "<time>",
+              "sessionId": "golden"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "helpers": {
+    "hasFile": true,
+    "hasFileMissing": false,
+    "importDependents": [
+      "apps/web/src/api/client.ts",
+      "apps/web/src/ui/render.ts",
+      "packages/shared/src/index.ts"
+    ],
+    "projectRootOfOrders": "services/orders",
+    "projectRootOfReadme": ".",
+    "indexableSource": true,
+    "indexableDotDir": false,
+    "indexableNodeModules": false,
+    "syncIndex": {
+      "appliedChanges": 0
+    }
+  }
+}

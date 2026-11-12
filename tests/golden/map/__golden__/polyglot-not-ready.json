@@ -1,0 +1,27 @@
+{
+  "overview": {
+    "ok": false,
+    "indexing": false,
+    "error": "The Codebase Map has not finished indexing yet. Continue with code intelligence and call map_overview again once the index is ready."
+  },
+  "find": {
+    "ok": false,
+    "error": "The Codebase Map has not finished indexing yet — try again shortly."
+  },
+  "relationships": {
+    "ok": false,
+    "error": "The Codebase Map has not finished indexing yet — try again shortly."
+  },
+  "impact": {
+    "ok": false,
+    "error": "The Codebase Map has not finished indexing yet — try again shortly."
+  },
+  "routes": {
+    "ok": false,
+    "error": "The Codebase Map has not finished indexing yet — try again shortly."
+  },
+  "workspaceOverview": "The Codebase Map has not finished indexing yet. Continue with code intelligence and call map_overview again once the index is ready.",
+  "localOverview": "",
+  "hasFile": false,
+  "projectRootOf": null
+}

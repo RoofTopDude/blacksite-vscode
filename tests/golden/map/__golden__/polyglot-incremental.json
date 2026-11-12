@@ -1,0 +1,1981 @@
+{
+  "sync": {
+    "appliedChanges": 3
+  },
+  "seqAdvanced": 1,
+  "baseSeqMatches": true,
+  "delta": {
+    "upsertNodes": [
+      [
+        "apps/web/src/ui/button.ts",
+        "apps/web",
+        "apps/web",
+        "apps/web",
+        "ts",
+        78,
+        0,
+        1,
+        0.47882488614936036,
+        null,
+        null
+      ],
+      [
+        "apps/web/src/ui/render.ts",
+        "apps/web",
+        "apps/web",
+        "apps/web",
+        "ts",
+        132,
+        2,
+        1,
+        0.8076497722987207,
+        1,
+        1767225600
+      ],
+      [
+        "packages/shared/src/format.ts",
+        "packages/shared",
+        "packages/shared",
+        "packages/shared",
+        "ts",
+        191,
+        4,
+        0,
+        0.9135077414483381,
+        4,
+        1768089600
+      ],
+      [
+        "packages/unused/package.json",
+        "packages/unused",
+        "packages/unused",
+        "packages/unused",
+        "json",
+        54,
+        0,
+        0,
+        0.15,
+        1,
+        1767225600
+      ],
+      [
+        "scripts/orphan.ts",
+        "scripts",
+        "scripts",
+        "scripts",
+        "ts",
+        94,
+        0,
+        1,
+        0.47882488614936036,
+        1,
+        1767225600
+      ]
+    ],
+    "removeNodeIds": [
+      "packages/unused/src/index.ts"
+    ],
+    "addEdges": [
+      "apps/web/src/ui/button.ts -> apps/web/src/ui/render.ts",
+      "scripts/orphan.ts -> packages/shared/src/format.ts"
+    ],
+    "removeEdgeIds": [
+      "imp:packages/unused/package.json->packages/unused/src/index.ts"
+    ]
+  },
+  "index": {
+    "counts": {
+      "corpus": 29,
+      "indexed": 29,
+      "rendered": 29,
+      "importEdges": 23,
+      "serviceEdges": 9,
+      "cochangeEdges": 3
+    },
+    "flags": {
+      "truncated": false,
+      "indexedTruncated": false,
+      "renderedTruncated": false,
+      "indexedFileCount": 29,
+      "renderedNodeCount": 29,
+      "indexedImportEdgeCount": 23,
+      "renderedImportEdgeCount": 23,
+      "hiddenByPolicyCount": 1,
+      "gitignoreApplied": true
+    },
+    "corpus": [
+      "README.md",
+      "apps/web/package.json",
+      "apps/web/src/api/client.ts",
+      "apps/web/src/main.test.ts",
+      "apps/web/src/main.ts",
+      "apps/web/src/ui/button.ts",
+      "apps/web/src/ui/render.ts",
+      "apps/web/tsconfig.json",
+      "docker-compose.yml",
+      "docs/architecture.md",
+      "package.json",
+      "packages/shared/package.json",
+      "packages/shared/src/format.ts",
+      "packages/shared/src/index.ts",
+      "packages/unused/package.json",
+      "scripts/orphan.ts",
+      "services/billing/Billing.csproj",
+      "services/billing/Controllers/InvoicesController.cs",
+      "services/billing/Models/Invoice.cs",
+      "services/billing/Program.cs",
+      "services/orders/.env",
+      "services/orders/pyproject.toml",
+      "services/orders/src/orders/__init__.py",
+      "services/orders/src/orders/app.py",
+      "services/orders/src/orders/models.py",
+      "services/users/go.mod",
+      "services/users/internal/store/store.go",
+      "services/users/main.go",
+      "tools/version.ts"
+    ],
+    "nodes": [
+      [
+        "README.md",
+        ".",
+        ".",
+        ".",
+        "md",
+        60,
+        0,
+        1,
+        0.47882488614936036,
+        1,
+        1767225600
+      ],
+      [
+        "apps/web/package.json",
+        "apps/web",
+        "apps/web",
+        "apps/web",
+        "json",
+        142,
+        1,
+        0,
+        0.47882488614936036,
+        1,
+        1767225600
+      ],
+      [
+        "apps/web/src/api/client.ts",
+        "apps/web",
+        "apps/web",
+        "apps/web",
+        "ts",
+        489,
+        1,
+        1,
+        0.6711751138506397,
+        4,
+        1768089600
+      ],
+      [
+        "apps/web/src/main.test.ts",
+        "apps/web",
+        "apps/web",
+        "apps/web",
+        "ts",
+        42,
+        0,
+        1,
+        0.47882488614936036,
+        1,
+        1767225600
+      ],
+      [
+        "apps/web/src/main.ts",
+        "apps/web",
+        "apps/web",
+        "apps/web",
+        "ts",
+        200,
+        2,
+        3,
+        1,
+        1,
+        1767225600
+      ],
+      [
+        "apps/web/src/ui/button.ts",
+        "apps/web",
+        "apps/web",
+        "apps/web",
+        "ts",
+        78,
+        0,
+        1,
+        0.47882488614936036,
+        null,
+        null
+      ],
+      [
+        "apps/web/src/ui/render.ts",
+        "apps/web",
+        "apps/web",
+        "apps/web",
+        "ts",
+        132,
+        2,
+        1,
+        0.8076497722987207,
+        1,
+        1767225600
+      ],
+      [
+        "apps/web/tsconfig.json",
+        "apps/web",
+        "apps/web",
+        "apps/web",
+        "json",
+        113,
+        0,
+        0,
+        0.15,
+        1,
+        1767225600
+      ],
+      [
+        "docker-compose.yml",
+        ".",
+        "apps/web",
+        "apps/web",
+        "yml",
+        332,
+        0,
+        3,
+        0.8076497722987207,
+        1,
+        1767225600
+      ],
+      [
+        "docs/architecture.md",
+        "docs",
+        "docs",
+        "docs",
+        "md",
+        267,
+        1,
+        4,
+        1,
+        1,
+        1767225600
+      ],
+      [
+        "package.json",
+        ".",
+        ".",
+        ".",
+        "json",
+        93,
+        0,
+        0,
+        0.15,
+        1,
+        1767225600
+      ],
+      [
+        "packages/shared/package.json",
+        "packages/shared",
+        "packages/shared",
+        "packages/shared",
+        "json",
+        168,
+        0,
+        0,
+        0.15,
+        1,
+        1767225600
+      ],
+      [
+        "packages/shared/src/format.ts",
+        "packages/shared",
+        "packages/shared",
+        "packages/shared",
+        "ts",
+        191,
+        4,
+        0,
+        0.9135077414483381,
+        4,
+        1768089600
+      ],
+      [
+        "packages/shared/src/index.ts",
+        "packages/shared",
+        "packages/shared",
+        "packages/shared",
+        "ts",
+        129,
+        1,
+        1,
+        0.6711751138506397,
+        1,
+        1767225600
+      ],
+      [
+        "packages/unused/package.json",
+        "packages/unused",
+        "packages/unused",
+        "packages/unused",
+        "json",
+        54,
+        0,
+        0,
+        0.15,
+        1,
+        1767225600
+      ],
+      [
+        "scripts/orphan.ts",
+        "scripts",
+        "scripts",
+        "scripts",
+        "ts",
+        94,
+        0,
+        1,
+        0.47882488614936036,
+        1,
+        1767225600
+      ],
+      [
+        "services/billing/Billing.csproj",
+        "services/billing",
+        "services/billing",
+        "services/billing",
+        "csproj",
+        132,
+        0,
+        0,
+        0.15,
+        1,
+        1767225600
+      ],
+      [
+        "services/billing/Controllers/InvoicesController.cs",
+        "services/billing",
+        "services/billing",
+        "services/billing",
+        "cs",
+        286,
+        1,
+        1,
+        0.6711751138506397,
+        1,
+        1767225600
+      ],
+      [
+        "services/billing/Models/Invoice.cs",
+        "services/billing",
+        "services/billing",
+        "services/billing",
+        "cs",
+        189,
+        2,
+        0,
+        0.6711751138506397,
+        4,
+        1767484800
+      ],
+      [
+        "services/billing/Program.cs",
+        "services/billing",
+        "services/billing",
+        "services/billing",
+        "cs",
+        133,
+        0,
+        1,
+        0.47882488614936036,
+        1,
+        1767225600
+      ],
+      [
+        "services/orders/.env",
+        "services/orders",
+        "services/orders",
+        "services/orders",
+        "",
+        28,
+        0,
+        0,
+        0.15,
+        1,
+        1767225600
+      ],
+      [
+        "services/orders/pyproject.toml",
+        "services/orders",
+        "services/orders",
+        "services/orders",
+        "toml",
+        75,
+        1,
+        0,
+        0.47882488614936036,
+        1,
+        1767225600
+      ],
+      [
+        "services/orders/src/orders/__init__.py",
+        "services/orders",
+        "services/orders",
+        "services/orders",
+        "py",
+        47,
+        0,
+        2,
+        0.6711751138506397,
+        1,
+        1767225600
+      ],
+      [
+        "services/orders/src/orders/app.py",
+        "services/orders",
+        "services/orders",
+        "services/orders",
+        "py",
+        554,
+        2,
+        1,
+        0.8076497722987207,
+        5,
+        1768003200
+      ],
+      [
+        "services/orders/src/orders/models.py",
+        "services/orders",
+        "services/orders",
+        "services/orders",
+        "py",
+        71,
+        2,
+        0,
+        0.6711751138506397,
+        1,
+        1767225600
+      ],
+      [
+        "services/users/go.mod",
+        "services/users",
+        "services/users",
+        "services/users",
+        "mod",
+        34,
+        1,
+        0,
+        0.47882488614936036,
+        1,
+        1767225600
+      ],
+      [
+        "services/users/internal/store/store.go",
+        "services/users",
+        "services/users",
+        "services/users",
+        "go",
+        57,
+        1,
+        0,
+        0.47882488614936036,
+        1,
+        1767225600
+      ],
+      [
+        "services/users/main.go",
+        "services/users",
+        "services/users",
+        "services/users",
+        "go",
+        418,
+        1,
+        1,
+        0.6711751138506397,
+        5,
+        1768003200
+      ],
+      [
+        "tools/version.ts",
+        "tools",
+        "tools",
+        "tools",
+        "ts",
+        74,
+        0,
+        0,
+        0.15,
+        4,
+        1767484800
+      ]
+    ],
+    "positions": [
+      [
+        "README.md",
+        21,
+        -218
+      ],
+      [
+        "apps/web/package.json",
+        -188,
+        22
+      ],
+      [
+        "apps/web/src/api/client.ts",
+        -87,
+        26
+      ],
+      [
+        "apps/web/src/main.test.ts",
+        -154,
+        -23
+      ],
+      [
+        "apps/web/src/main.ts",
+        -168,
+        69
+      ],
+      [
+        "apps/web/src/ui/button.ts",
+        -106,
+        -11
+      ],
+      [
+        "apps/web/src/ui/render.ts",
+        -114,
+        -2
+      ],
+      [
+        "apps/web/tsconfig.json",
+        -120,
+        68
+      ],
+      [
+        "docker-compose.yml",
+        34,
+        -170
+      ],
+      [
+        "docs/architecture.md",
+        -194,
+        254
+      ],
+      [
+        "package.json",
+        -14,
+        -191
+      ],
+      [
+        "packages/shared/package.json",
+        129,
+        48
+      ],
+      [
+        "packages/shared/src/format.ts",
+        178,
+        30
+      ],
+      [
+        "packages/shared/src/index.ts",
+        108,
+        2
+      ],
+      [
+        "packages/unused/package.json",
+        17,
+        275
+      ],
+      [
+        "scripts/orphan.ts",
+        -337,
+        151
+      ],
+      [
+        "services/billing/Billing.csproj",
+        240,
+        -202
+      ],
+      [
+        "services/billing/Controllers/InvoicesController.cs",
+        267,
+        -243
+      ],
+      [
+        "services/billing/Models/Invoice.cs",
+        266,
+        -161
+      ],
+      [
+        "services/billing/Program.cs",
+        314,
+        -216
+      ],
+      [
+        "services/orders/.env",
+        -290,
+        -221
+      ],
+      [
+        "services/orders/pyproject.toml",
+        -210,
+        -229
+      ],
+      [
+        "services/orders/src/orders/__init__.py",
+        -214,
+        -285
+      ],
+      [
+        "services/orders/src/orders/app.py",
+        -249,
+        -208
+      ],
+      [
+        "services/orders/src/orders/models.py",
+        -291,
+        -278
+      ],
+      [
+        "services/users/go.mod",
+        284,
+        272
+      ],
+      [
+        "services/users/internal/store/store.go",
+        275,
+        219
+      ],
+      [
+        "services/users/main.go",
+        231,
+        278
+      ],
+      [
+        "tools/version.ts",
+        -363,
+        -37
+      ]
+    ],
+    "rendered": {
+      "nodes": [
+        "README.md",
+        "apps/web/package.json",
+        "apps/web/src/api/client.ts",
+        "apps/web/src/main.test.ts",
+        "apps/web/src/main.ts",
+        "apps/web/src/ui/button.ts",
+        "apps/web/src/ui/render.ts",
+        "apps/web/tsconfig.json",
+        "docker-compose.yml",
+        "docs/architecture.md",
+        "package.json",
+        "packages/shared/package.json",
+        "packages/shared/src/format.ts",
+        "packages/shared/src/index.ts",
+        "packages/unused/package.json",
+        "scripts/orphan.ts",
+        "services/billing/Billing.csproj",
+        "services/billing/Controllers/InvoicesController.cs",
+        "services/billing/Models/Invoice.cs",
+        "services/billing/Program.cs",
+        "services/orders/.env",
+        "services/orders/pyproject.toml",
+        "services/orders/src/orders/__init__.py",
+        "services/orders/src/orders/app.py",
+        "services/orders/src/orders/models.py",
+        "services/users/go.mod",
+        "services/users/internal/store/store.go",
+        "services/users/main.go",
+        "tools/version.ts"
+      ],
+      "edges": [
+        "README.md -> docs/architecture.md",
+        "apps/web/src/api/client.ts -> packages/shared/src/format.ts",
+        "apps/web/src/main.test.ts -> apps/web/src/main.ts",
+        "apps/web/src/main.ts -> apps/web/src/api/client.ts",
+        "apps/web/src/main.ts -> apps/web/src/ui/render.ts",
+        "apps/web/src/main.ts -> packages/shared/src/index.ts",
+        "apps/web/src/ui/button.ts -> apps/web/src/ui/render.ts",
+        "apps/web/src/ui/render.ts -> packages/shared/src/format.ts",
+        "docker-compose.yml -> apps/web/package.json",
+        "docker-compose.yml -> services/orders/pyproject.toml",
+        "docker-compose.yml -> services/users/go.mod",
+        "docs/architecture.md -> apps/web/src/main.ts",
+        "docs/architecture.md -> services/billing/Controllers/InvoicesController.cs",
+        "docs/architecture.md -> services/orders/src/orders/app.py",
+        "docs/architecture.md -> services/users/main.go",
+        "packages/shared/src/index.ts -> packages/shared/src/format.ts",
+        "scripts/orphan.ts -> packages/shared/src/format.ts",
+        "services/billing/Controllers/InvoicesController.cs -> services/billing/Models/Invoice.cs",
+        "services/billing/Program.cs -> services/billing/Models/Invoice.cs",
+        "services/orders/src/orders/__init__.py -> services/orders/src/orders/app.py",
+        "services/orders/src/orders/__init__.py -> services/orders/src/orders/models.py",
+        "services/orders/src/orders/app.py -> services/orders/src/orders/models.py",
+        "services/users/main.go -> services/users/internal/store/store.go"
+      ]
+    },
+    "importEdges": [
+      "README.md -> docs/architecture.md",
+      "apps/web/src/api/client.ts -> packages/shared/src/format.ts",
+      "apps/web/src/main.test.ts -> apps/web/src/main.ts",
+      "apps/web/src/main.ts -> apps/web/src/api/client.ts",
+      "apps/web/src/main.ts -> apps/web/src/ui/render.ts",
+      "apps/web/src/main.ts -> packages/shared/src/index.ts",
+      "apps/web/src/ui/button.ts -> apps/web/src/ui/render.ts",
+      "apps/web/src/ui/render.ts -> packages/shared/src/format.ts",
+      "docker-compose.yml -> apps/web/package.json",
+      "docker-compose.yml -> services/orders/pyproject.toml",
+      "docker-compose.yml -> services/users/go.mod",
+      "docs/architecture.md -> apps/web/src/main.ts",
+      "docs/architecture.md -> services/billing/Controllers/InvoicesController.cs",
+      "docs/architecture.md -> services/orders/src/orders/app.py",
+      "docs/architecture.md -> services/users/main.go",
+      "packages/shared/src/index.ts -> packages/shared/src/format.ts",
+      "scripts/orphan.ts -> packages/shared/src/format.ts",
+      "services/billing/Controllers/InvoicesController.cs -> services/billing/Models/Invoice.cs",
+      "services/billing/Program.cs -> services/billing/Models/Invoice.cs",
+      "services/orders/src/orders/__init__.py -> services/orders/src/orders/app.py",
+      "services/orders/src/orders/__init__.py -> services/orders/src/orders/models.py",
+      "services/orders/src/orders/app.py -> services/orders/src/orders/models.py",
+      "services/users/main.go -> services/users/internal/store/store.go"
+    ],
+    "serviceEdges": [
+      {
+        "id": "rel:api:candidate:apps%2Fweb:apps%2Fweb%2Fsrc%2Fapi%2Fclient.ts:11:services%2Fbilling:services%2Fbilling%2FControllers%2FInvoicesController.cs:8:GET:%7Bid%7D:",
+        "from": "svc:apps/web",
+        "to": "svc:services/billing",
+        "kind": "api",
+        "sourcePath": "apps/web/src/api/client.ts",
+        "targetPath": "services/billing/Controllers/InvoicesController.cs",
+        "sourceLine": 11,
+        "targetLine": 8,
+        "serviceFrom": "apps/web",
+        "serviceTo": "services/billing",
+        "label": "GET {id}",
+        "detail": "web -> billing",
+        "confidence": 0.97,
+        "evidence": [
+          "apps/web/src/api/client.ts:12 - GET http://localhost:5000/api/invoices/${id}",
+          "services/billing/Controllers/InvoicesController.cs:9 - [HttpGET] {id}"
+        ]
+      },
+      {
+        "id": "rel:api:candidate:apps%2Fweb:apps%2Fweb%2Fsrc%2Fapi%2Fclient.ts:6:services%2Forders:services%2Forders%2Fsrc%2Forders%2Fapp.py:9:POST:%2Fapi%2Forders:",
+        "from": "svc:apps/web",
+        "to": "svc:services/orders",
+        "kind": "api",
+        "sourcePath": "apps/web/src/api/client.ts",
+        "targetPath": "services/orders/src/orders/app.py",
+        "sourceLine": 6,
+        "targetLine": 9,
+        "serviceFrom": "apps/web",
+        "serviceTo": "services/orders",
+        "label": "POST /api/orders",
+        "detail": "web -> orders",
+        "confidence": 0.97,
+        "evidence": [
+          "apps/web/src/api/client.ts:7 - POST ${ORDERS}/api/orders",
+          "services/orders/src/orders/app.py:10 - POST /api/orders"
+        ]
+      },
+      {
+        "id": "rel:api:candidate:services%2Forders:services%2Forders%2Fsrc%2Forders%2Fapp.py:12:services%2Fusers:services%2Fusers%2Fmain.go:11:GET:%2Fapi%2Fusers%2F%7Bid%7D:",
+        "from": "svc:services/orders",
+        "to": "svc:services/users",
+        "kind": "api",
+        "sourcePath": "services/orders/src/orders/app.py",
+        "targetPath": "services/users/main.go",
+        "sourceLine": 12,
+        "targetLine": 11,
+        "serviceFrom": "services/orders",
+        "serviceTo": "services/users",
+        "label": "GET /api/users/{id}",
+        "detail": "orders -> users",
+        "confidence": 0.97,
+        "evidence": [
+          "services/orders/src/orders/app.py:13 - GET {USERS_URL}/api/users/42",
+          "services/users/main.go:12 - GET /api/users/{id}"
+        ]
+      },
+      {
+        "id": "rel:api:candidate:services%2Fusers:services%2Fusers%2Fmain.go:13:services%2Forders:services%2Forders%2Fsrc%2Forders%2Fapp.py:16:GET:%2Fapi%2Forders%2F%3Corder_id%3E:",
+        "from": "svc:services/users",
+        "to": "svc:services/orders",
+        "kind": "api",
+        "sourcePath": "services/users/main.go",
+        "targetPath": "services/orders/src/orders/app.py",
+        "sourceLine": 13,
+        "targetLine": 16,
+        "serviceFrom": "services/users",
+        "serviceTo": "services/orders",
+        "label": "GET /api/orders/<order_id>",
+        "detail": "users -> orders",
+        "confidence": 0.97,
+        "evidence": [
+          "services/users/main.go:14 - http.Get http://orders:8080/api/orders/",
+          "services/orders/src/orders/app.py:17 - GET /api/orders/<order_id>"
+        ]
+      },
+      {
+        "id": "rel:config:verified-client:.:services%2Fusers:docker-compose.yml:10:163",
+        "from": "svc:.",
+        "to": "svc:services/users",
+        "kind": "config",
+        "sourcePath": "docker-compose.yml",
+        "sourceLine": 10,
+        "serviceFrom": ".",
+        "serviceTo": "services/users",
+        "label": "USERS_URL",
+        "detail": "workspace references users",
+        "confidence": 0.7,
+        "evidence": [
+          "config USERS_URL"
+        ]
+      },
+      {
+        "id": "rel:config:verified-client:services%2Forders:services%2Fusers:services%2Forders%2F.env:0:0",
+        "from": "svc:services/orders",
+        "to": "svc:services/users",
+        "kind": "config",
+        "sourcePath": "services/orders/.env",
+        "sourceLine": 0,
+        "serviceFrom": "services/orders",
+        "serviceTo": "services/users",
+        "label": "USERS_URL",
+        "detail": "orders references users",
+        "confidence": 0.7,
+        "evidence": [
+          "config USERS_URL"
+        ]
+      },
+      {
+        "id": "rel:config:verified-client:services%2Forders:services%2Fusers:services%2Forders%2Fsrc%2Forders%2Fapp.py:12:310",
+        "from": "svc:services/orders",
+        "to": "svc:services/users",
+        "kind": "config",
+        "sourcePath": "services/orders/src/orders/app.py",
+        "sourceLine": 12,
+        "serviceFrom": "services/orders",
+        "serviceTo": "services/users",
+        "label": "USERS_URL",
+        "detail": "orders references users",
+        "confidence": 0.7,
+        "evidence": [
+          "config USERS_URL"
+        ]
+      },
+      {
+        "id": "rel:config:verified-client:services%2Forders:services%2Fusers:services%2Forders%2Fsrc%2Forders%2Fapp.py:6:114",
+        "from": "svc:services/orders",
+        "to": "svc:services/users",
+        "kind": "config",
+        "sourcePath": "services/orders/src/orders/app.py",
+        "sourceLine": 6,
+        "serviceFrom": "services/orders",
+        "serviceTo": "services/users",
+        "label": "USERS_URL",
+        "detail": "orders references users",
+        "confidence": 0.7,
+        "evidence": [
+          "config USERS_URL"
+        ]
+      },
+      {
+        "id": "rel:config:verified-client:services%2Forders:services%2Fusers:services%2Forders%2Fsrc%2Forders%2Fapp.py:6:142",
+        "from": "svc:services/orders",
+        "to": "svc:services/users",
+        "kind": "config",
+        "sourcePath": "services/orders/src/orders/app.py",
+        "sourceLine": 6,
+        "serviceFrom": "services/orders",
+        "serviceTo": "services/users",
+        "label": "USERS_URL",
+        "detail": "orders references users",
+        "confidence": 0.7,
+        "evidence": [
+          "config USERS_URL"
+        ]
+      }
+    ],
+    "serviceProjection": {
+      "truncated": false,
+      "totalEdgeCount": 9,
+      "edges": [
+        "rel:api:candidate:apps%2Fweb:apps%2Fweb%2Fsrc%2Fapi%2Fclient.ts:11:services%2Fbilling:services%2Fbilling%2FControllers%2FInvoicesController.cs:8:GET:%7Bid%7D:",
+        "rel:api:candidate:apps%2Fweb:apps%2Fweb%2Fsrc%2Fapi%2Fclient.ts:6:services%2Forders:services%2Forders%2Fsrc%2Forders%2Fapp.py:9:POST:%2Fapi%2Forders:",
+        "rel:api:candidate:services%2Forders:services%2Forders%2Fsrc%2Forders%2Fapp.py:12:services%2Fusers:services%2Fusers%2Fmain.go:11:GET:%2Fapi%2Fusers%2F%7Bid%7D:",
+        "rel:api:candidate:services%2Fusers:services%2Fusers%2Fmain.go:13:services%2Forders:services%2Forders%2Fsrc%2Forders%2Fapp.py:16:GET:%2Fapi%2Forders%2F%3Corder_id%3E:",
+        "rel:config:verified-client:.:services%2Fusers:docker-compose.yml:10:163",
+        "rel:config:verified-client:services%2Forders:services%2Fusers:services%2Forders%2F.env:0:0",
+        "rel:config:verified-client:services%2Forders:services%2Fusers:services%2Forders%2Fsrc%2Forders%2Fapp.py:12:310",
+        "rel:config:verified-client:services%2Forders:services%2Fusers:services%2Forders%2Fsrc%2Forders%2Fapp.py:6:114",
+        "rel:config:verified-client:services%2Forders:services%2Fusers:services%2Forders%2Fsrc%2Forders%2Fapp.py:6:142"
+      ]
+    },
+    "cochange": [
+      {
+        "id": "cochange:apps/web/src/api/client.ts<->packages/shared/src/format.ts",
+        "from": "apps/web/src/api/client.ts",
+        "to": "packages/shared/src/format.ts",
+        "kind": "cochange",
+        "provenance": "history",
+        "confidence": 1,
+        "occurrenceCount": 4,
+        "label": "changed together in 4 commits"
+      },
+      {
+        "id": "cochange:services/billing/Models/Invoice.cs<->tools/version.ts",
+        "from": "services/billing/Models/Invoice.cs",
+        "to": "tools/version.ts",
+        "kind": "cochange",
+        "provenance": "history",
+        "confidence": 1,
+        "occurrenceCount": 4,
+        "label": "changed together in 4 commits"
+      },
+      {
+        "id": "cochange:services/orders/src/orders/app.py<->services/users/main.go",
+        "from": "services/orders/src/orders/app.py",
+        "to": "services/users/main.go",
+        "kind": "cochange",
+        "provenance": "history",
+        "confidence": 1,
+        "occurrenceCount": 5,
+        "label": "changed together in 5 commits"
+      }
+    ],
+    "topology": {
+      "projects": [
+        {
+          "id": ".",
+          "root": ".",
+          "name": "poly",
+          "kind": "npm",
+          "manifestFiles": [
+            "package.json"
+          ]
+        },
+        {
+          "id": "apps/web",
+          "root": "apps/web",
+          "name": "@poly/web",
+          "kind": "npm",
+          "manifestFiles": [
+            "apps/web/package.json"
+          ],
+          "containerRoot": "."
+        },
+        {
+          "id": "packages/shared",
+          "root": "packages/shared",
+          "name": "@poly/shared",
+          "kind": "npm",
+          "manifestFiles": [
+            "packages/shared/package.json"
+          ],
+          "containerRoot": "."
+        },
+        {
+          "id": "packages/unused",
+          "root": "packages/unused",
+          "name": "@poly/unused",
+          "kind": "npm",
+          "manifestFiles": [
+            "packages/unused/package.json"
+          ],
+          "containerRoot": "."
+        },
+        {
+          "id": "services/billing",
+          "root": "services/billing",
+          "name": "Billing",
+          "kind": "dotnet",
+          "manifestFiles": [
+            "services/billing/Billing.csproj"
+          ]
+        },
+        {
+          "id": "services/orders",
+          "root": "services/orders",
+          "name": "orders",
+          "kind": "python",
+          "manifestFiles": [
+            "services/orders/pyproject.toml"
+          ]
+        },
+        {
+          "id": "services/users",
+          "root": "services/users",
+          "name": "users",
+          "kind": "go",
+          "manifestFiles": [
+            "services/users/go.mod"
+          ]
+        }
+      ],
+      "references": [
+        {
+          "from": "apps/web",
+          "to": "packages/shared",
+          "kind": "package",
+          "evidence": "@poly/shared"
+        },
+        {
+          "from": "apps/web",
+          "to": "packages/unused",
+          "kind": "package",
+          "evidence": "@poly/unused"
+        }
+      ]
+    },
+    "structure": {
+      "cyclicNeighborhoodPairs": [],
+      "orphanNodeIds": [
+        "package.json",
+        "apps/web/package.json",
+        "docker-compose.yml",
+        "apps/web/tsconfig.json",
+        "packages/shared/package.json",
+        "services/billing/Billing.csproj",
+        "services/orders/.env",
+        "services/orders/pyproject.toml",
+        "services/users/go.mod"
+      ],
+      "pocketNodeIds": [],
+      "bridgeEdgeIds": []
+    },
+    "hierarchy": {
+      "groups": [
+        {
+          "id": "◈apps/web",
+          "level": "codebase",
+          "key": "apps/web",
+          "label": "web",
+          "parent": null,
+          "fileCount": 8,
+          "renderedCount": 8,
+          "langs": [
+            [
+              "ts",
+              5
+            ],
+            [
+              "json",
+              2
+            ],
+            [
+              "yml",
+              1
+            ]
+          ],
+          "churn": 10,
+          "lastCommitAt": 1768089600,
+          "x": -113.01,
+          "y": -2.53,
+          "radius": 222.76,
+          "projectKind": "npm"
+        },
+        {
+          "id": "◈services/orders",
+          "level": "codebase",
+          "key": "services/orders",
+          "label": "orders",
+          "parent": null,
+          "fileCount": 5,
+          "renderedCount": 5,
+          "langs": [
+            [
+              "py",
+              3
+            ],
+            [
+              "toml",
+              1
+            ]
+          ],
+          "churn": 9,
+          "lastCommitAt": 1768003200,
+          "x": -250.79,
+          "y": -244.15,
+          "radius": 54.6,
+          "projectKind": "python"
+        },
+        {
+          "id": "◈services/billing",
+          "level": "codebase",
+          "key": "services/billing",
+          "label": "billing",
+          "parent": null,
+          "fileCount": 4,
+          "renderedCount": 4,
+          "langs": [
+            [
+              "cs",
+              3
+            ],
+            [
+              "csproj",
+              1
+            ]
+          ],
+          "churn": 7,
+          "lastCommitAt": 1767484800,
+          "x": 271.8,
+          "y": -205.46,
+          "radius": 44.81,
+          "projectKind": "dotnet"
+        },
+        {
+          "id": "◈packages/shared",
+          "level": "codebase",
+          "key": "packages/shared",
+          "label": "shared",
+          "parent": null,
+          "fileCount": 3,
+          "renderedCount": 3,
+          "langs": [
+            [
+              "ts",
+              2
+            ],
+            [
+              "json",
+              1
+            ]
+          ],
+          "churn": 6,
+          "lastCommitAt": 1768089600,
+          "x": 138.31,
+          "y": 26.87,
+          "radius": 40.22,
+          "projectKind": "npm"
+        },
+        {
+          "id": "◈services/users",
+          "level": "codebase",
+          "key": "services/users",
+          "label": "users",
+          "parent": null,
+          "fileCount": 3,
+          "renderedCount": 3,
+          "langs": [
+            [
+              "go",
+              2
+            ],
+            [
+              "mod",
+              1
+            ]
+          ],
+          "churn": 7,
+          "lastCommitAt": 1768003200,
+          "x": 263.28,
+          "y": 256.31,
+          "radius": 39.19,
+          "projectKind": "go"
+        },
+        {
+          "id": "◈.",
+          "level": "codebase",
+          "key": ".",
+          "label": "workspace",
+          "parent": null,
+          "fileCount": 2,
+          "renderedCount": 2,
+          "langs": [
+            [
+              "json",
+              1
+            ],
+            [
+              "md",
+              1
+            ]
+          ],
+          "churn": 2,
+          "lastCommitAt": 1767225600,
+          "x": 3.42,
+          "y": -204.65,
+          "radius": 22.38,
+          "projectKind": "npm"
+        },
+        {
+          "id": "◈docs",
+          "level": "codebase",
+          "key": "docs",
+          "label": "docs",
+          "parent": null,
+          "fileCount": 1,
+          "renderedCount": 1,
+          "langs": [
+            [
+              "md",
+              1
+            ]
+          ],
+          "churn": 1,
+          "lastCommitAt": 1767225600,
+          "x": -194.24,
+          "y": 253.93,
+          "radius": 0
+        },
+        {
+          "id": "◈packages/unused",
+          "level": "codebase",
+          "key": "packages/unused",
+          "label": "unused",
+          "parent": null,
+          "fileCount": 1,
+          "renderedCount": 1,
+          "langs": [
+            [
+              "json",
+              1
+            ]
+          ],
+          "churn": 1,
+          "lastCommitAt": 1767225600,
+          "x": 17.23,
+          "y": 274.78,
+          "radius": 0,
+          "projectKind": "npm"
+        },
+        {
+          "id": "◈scripts",
+          "level": "codebase",
+          "key": "scripts",
+          "label": "scripts",
+          "parent": null,
+          "fileCount": 1,
+          "renderedCount": 1,
+          "langs": [
+            [
+              "ts",
+              1
+            ]
+          ],
+          "churn": 1,
+          "lastCommitAt": 1767225600,
+          "x": -336.85,
+          "y": 150.77,
+          "radius": 0
+        },
+        {
+          "id": "◈tools",
+          "level": "codebase",
+          "key": "tools",
+          "label": "tools",
+          "parent": null,
+          "fileCount": 1,
+          "renderedCount": 1,
+          "langs": [
+            [
+              "ts",
+              1
+            ]
+          ],
+          "churn": 4,
+          "lastCommitAt": 1767484800,
+          "x": -363.41,
+          "y": -37.28,
+          "radius": 0
+        },
+        {
+          "id": "▣.",
+          "level": "project",
+          "key": ".",
+          "label": "poly",
+          "parent": "◈apps/web",
+          "fileCount": 1,
+          "renderedCount": 1,
+          "langs": [
+            [
+              "yml",
+              1
+            ]
+          ],
+          "churn": 1,
+          "lastCommitAt": 1767225600,
+          "x": 33.9,
+          "y": -169.97,
+          "radius": 0,
+          "projectKind": "npm"
+        },
+        {
+          "id": "▤apps/web",
+          "level": "area",
+          "key": "apps/web",
+          "label": "apps/web",
+          "parent": "◈apps/web",
+          "fileCount": 7,
+          "renderedCount": 7,
+          "langs": [
+            [
+              "ts",
+              5
+            ],
+            [
+              "json",
+              2
+            ]
+          ],
+          "churn": 9,
+          "lastCommitAt": 1768089600,
+          "x": -134,
+          "y": 21.39,
+          "radius": 59.11
+        },
+        {
+          "id": "▤services/orders",
+          "level": "area",
+          "key": "services/orders",
+          "label": "services/orders",
+          "parent": "◈services/orders",
+          "fileCount": 5,
+          "renderedCount": 5,
+          "langs": [
+            [
+              "py",
+              3
+            ],
+            [
+              "toml",
+              1
+            ]
+          ],
+          "churn": 9,
+          "lastCommitAt": 1768003200,
+          "x": -250.79,
+          "y": -244.15,
+          "radius": 54.6
+        },
+        {
+          "id": "▤services/billing",
+          "level": "area",
+          "key": "services/billing",
+          "label": "services/billing",
+          "parent": "◈services/billing",
+          "fileCount": 4,
+          "renderedCount": 4,
+          "langs": [
+            [
+              "cs",
+              3
+            ],
+            [
+              "csproj",
+              1
+            ]
+          ],
+          "churn": 7,
+          "lastCommitAt": 1767484800,
+          "x": 271.8,
+          "y": -205.46,
+          "radius": 44.81
+        },
+        {
+          "id": "▤.",
+          "level": "area",
+          "key": ".",
+          "label": ".",
+          "parent": "◈.",
+          "fileCount": 3,
+          "renderedCount": 3,
+          "langs": [
+            [
+              "json",
+              1
+            ],
+            [
+              "md",
+              1
+            ],
+            [
+              "yml",
+              1
+            ]
+          ],
+          "churn": 3,
+          "lastCommitAt": 1767225600,
+          "x": 13.58,
+          "y": -193.09,
+          "radius": 30.78
+        },
+        {
+          "id": "▤packages/shared",
+          "level": "area",
+          "key": "packages/shared",
+          "label": "packages/shared",
+          "parent": "◈packages/shared",
+          "fileCount": 3,
+          "renderedCount": 3,
+          "langs": [
+            [
+              "ts",
+              2
+            ],
+            [
+              "json",
+              1
+            ]
+          ],
+          "churn": 6,
+          "lastCommitAt": 1768089600,
+          "x": 138.31,
+          "y": 26.87,
+          "radius": 40.22
+        },
+        {
+          "id": "▤services/users",
+          "level": "area",
+          "key": "services/users",
+          "label": "services/users",
+          "parent": "◈services/users",
+          "fileCount": 3,
+          "renderedCount": 3,
+          "langs": [
+            [
+              "go",
+              2
+            ],
+            [
+              "mod",
+              1
+            ]
+          ],
+          "churn": 7,
+          "lastCommitAt": 1768003200,
+          "x": 263.28,
+          "y": 256.31,
+          "radius": 39.19
+        },
+        {
+          "id": "▤docs",
+          "level": "area",
+          "key": "docs",
+          "label": "docs",
+          "parent": "◈docs",
+          "fileCount": 1,
+          "renderedCount": 1,
+          "langs": [
+            [
+              "md",
+              1
+            ]
+          ],
+          "churn": 1,
+          "lastCommitAt": 1767225600,
+          "x": -194.24,
+          "y": 253.93,
+          "radius": 0
+        },
+        {
+          "id": "▤packages/unused",
+          "level": "area",
+          "key": "packages/unused",
+          "label": "packages/unused",
+          "parent": "◈packages/unused",
+          "fileCount": 1,
+          "renderedCount": 1,
+          "langs": [
+            [
+              "json",
+              1
+            ]
+          ],
+          "churn": 1,
+          "lastCommitAt": 1767225600,
+          "x": 17.23,
+          "y": 274.78,
+          "radius": 0
+        },
+        {
+          "id": "▤scripts",
+          "level": "area",
+          "key": "scripts",
+          "label": "scripts",
+          "parent": "◈scripts",
+          "fileCount": 1,
+          "renderedCount": 1,
+          "langs": [
+            [
+              "ts",
+              1
+            ]
+          ],
+          "churn": 1,
+          "lastCommitAt": 1767225600,
+          "x": -336.85,
+          "y": 150.77,
+          "radius": 0
+        },
+        {
+          "id": "▤tools",
+          "level": "area",
+          "key": "tools",
+          "label": "tools",
+          "parent": "◈tools",
+          "fileCount": 1,
+          "renderedCount": 1,
+          "langs": [
+            [
+              "ts",
+              1
+            ]
+          ],
+          "churn": 4,
+          "lastCommitAt": 1767484800,
+          "x": -363.41,
+          "y": -37.28,
+          "radius": 0
+        }
+      ],
+      "edges": [
+        {
+          "id": "grp:import:◈apps/web->◈packages/shared",
+          "level": "codebase",
+          "from": "◈apps/web",
+          "to": "◈packages/shared",
+          "kind": "import",
+          "count": 3
+        },
+        {
+          "id": "grp:api:◈apps/web->◈services/billing",
+          "level": "codebase",
+          "from": "◈apps/web",
+          "to": "◈services/billing",
+          "kind": "api",
+          "count": 1,
+          "confidence": 0.97,
+          "evidence": [
+            "GET {id}"
+          ]
+        },
+        {
+          "id": "grp:api:◈apps/web->◈services/orders",
+          "level": "codebase",
+          "from": "◈apps/web",
+          "to": "◈services/orders",
+          "kind": "api",
+          "count": 1,
+          "confidence": 0.97,
+          "evidence": [
+            "POST /api/orders"
+          ]
+        },
+        {
+          "id": "grp:api:◈services/orders->◈services/users",
+          "level": "codebase",
+          "from": "◈services/orders",
+          "to": "◈services/users",
+          "kind": "api",
+          "count": 1,
+          "confidence": 0.97,
+          "evidence": [
+            "GET /api/users/{id}"
+          ]
+        },
+        {
+          "id": "grp:api:◈services/users->◈services/orders",
+          "level": "codebase",
+          "from": "◈services/users",
+          "to": "◈services/orders",
+          "kind": "api",
+          "count": 1,
+          "confidence": 0.97,
+          "evidence": [
+            "GET /api/orders/<order_id>"
+          ]
+        },
+        {
+          "id": "grp:cochange:◈apps/web->◈packages/shared",
+          "level": "codebase",
+          "from": "◈apps/web",
+          "to": "◈packages/shared",
+          "kind": "cochange",
+          "count": 1,
+          "confidence": 1
+        },
+        {
+          "id": "grp:cochange:◈services/billing->◈tools",
+          "level": "codebase",
+          "from": "◈services/billing",
+          "to": "◈tools",
+          "kind": "cochange",
+          "count": 1,
+          "confidence": 1,
+          "unexplained": true
+        },
+        {
+          "id": "grp:cochange:◈services/orders->◈services/users",
+          "level": "codebase",
+          "from": "◈services/orders",
+          "to": "◈services/users",
+          "kind": "cochange",
+          "count": 1,
+          "confidence": 1
+        },
+        {
+          "id": "grp:import:◈.->◈docs",
+          "level": "codebase",
+          "from": "◈.",
+          "to": "◈docs",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:import:◈apps/web->◈services/orders",
+          "level": "codebase",
+          "from": "◈apps/web",
+          "to": "◈services/orders",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:import:◈apps/web->◈services/users",
+          "level": "codebase",
+          "from": "◈apps/web",
+          "to": "◈services/users",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:import:◈docs->◈apps/web",
+          "level": "codebase",
+          "from": "◈docs",
+          "to": "◈apps/web",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:import:◈docs->◈services/billing",
+          "level": "codebase",
+          "from": "◈docs",
+          "to": "◈services/billing",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:import:◈docs->◈services/orders",
+          "level": "codebase",
+          "from": "◈docs",
+          "to": "◈services/orders",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:import:◈docs->◈services/users",
+          "level": "codebase",
+          "from": "◈docs",
+          "to": "◈services/users",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:import:◈scripts->◈packages/shared",
+          "level": "codebase",
+          "from": "◈scripts",
+          "to": "◈packages/shared",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:project_ref:◈apps/web->◈packages/shared",
+          "level": "codebase",
+          "from": "◈apps/web",
+          "to": "◈packages/shared",
+          "kind": "project_ref",
+          "count": 1,
+          "evidence": [
+            "@poly/shared"
+          ]
+        },
+        {
+          "id": "grp:project_ref:◈apps/web->◈packages/unused",
+          "level": "codebase",
+          "from": "◈apps/web",
+          "to": "◈packages/unused",
+          "kind": "project_ref",
+          "count": 1,
+          "evidence": [
+            "@poly/unused"
+          ]
+        },
+        {
+          "id": "grp:sys:import:◈apps/web->◈packages/shared",
+          "level": "systems",
+          "from": "◈apps/web",
+          "to": "◈packages/shared",
+          "kind": "import",
+          "count": 3
+        },
+        {
+          "id": "grp:sys:api:◈apps/web->◈services/billing",
+          "level": "systems",
+          "from": "◈apps/web",
+          "to": "◈services/billing",
+          "kind": "api",
+          "count": 1,
+          "confidence": 0.97,
+          "evidence": [
+            "GET {id}"
+          ]
+        },
+        {
+          "id": "grp:sys:api:◈apps/web->◈services/orders",
+          "level": "systems",
+          "from": "◈apps/web",
+          "to": "◈services/orders",
+          "kind": "api",
+          "count": 1,
+          "confidence": 0.97,
+          "evidence": [
+            "POST /api/orders"
+          ]
+        },
+        {
+          "id": "grp:sys:api:◈services/orders->◈services/users",
+          "level": "systems",
+          "from": "◈services/orders",
+          "to": "◈services/users",
+          "kind": "api",
+          "count": 1,
+          "confidence": 0.97,
+          "evidence": [
+            "GET /api/users/{id}"
+          ]
+        },
+        {
+          "id": "grp:sys:api:◈services/users->◈services/orders",
+          "level": "systems",
+          "from": "◈services/users",
+          "to": "◈services/orders",
+          "kind": "api",
+          "count": 1,
+          "confidence": 0.97,
+          "evidence": [
+            "GET /api/orders/<order_id>"
+          ]
+        },
+        {
+          "id": "grp:sys:cochange:◈apps/web->◈packages/shared",
+          "level": "systems",
+          "from": "◈apps/web",
+          "to": "◈packages/shared",
+          "kind": "cochange",
+          "count": 1,
+          "confidence": 1
+        },
+        {
+          "id": "grp:sys:cochange:◈services/billing->◈tools",
+          "level": "systems",
+          "from": "◈services/billing",
+          "to": "◈tools",
+          "kind": "cochange",
+          "count": 1,
+          "confidence": 1,
+          "unexplained": true
+        },
+        {
+          "id": "grp:sys:cochange:◈services/orders->◈services/users",
+          "level": "systems",
+          "from": "◈services/orders",
+          "to": "◈services/users",
+          "kind": "cochange",
+          "count": 1,
+          "confidence": 1
+        },
+        {
+          "id": "grp:sys:import:◈.->◈docs",
+          "level": "systems",
+          "from": "◈.",
+          "to": "◈docs",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:sys:import:◈apps/web->◈services/orders",
+          "level": "systems",
+          "from": "◈apps/web",
+          "to": "◈services/orders",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:sys:import:◈apps/web->◈services/users",
+          "level": "systems",
+          "from": "◈apps/web",
+          "to": "◈services/users",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:sys:import:◈docs->◈apps/web",
+          "level": "systems",
+          "from": "◈docs",
+          "to": "◈apps/web",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:sys:import:◈docs->◈services/billing",
+          "level": "systems",
+          "from": "◈docs",
+          "to": "◈services/billing",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:sys:import:◈docs->◈services/orders",
+          "level": "systems",
+          "from": "◈docs",
+          "to": "◈services/orders",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:sys:import:◈docs->◈services/users",
+          "level": "systems",
+          "from": "◈docs",
+          "to": "◈services/users",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:sys:import:◈scripts->◈packages/shared",
+          "level": "systems",
+          "from": "◈scripts",
+          "to": "◈packages/shared",
+          "kind": "import",
+          "count": 1
+        },
+        {
+          "id": "grp:sys:project_ref:◈apps/web->◈packages/shared",
+          "level": "systems",
+          "from": "◈apps/web",
+          "to": "◈packages/shared",
+          "kind": "project_ref",
+          "count": 1,
+          "evidence": [
+            "@poly/shared"
+          ]
+        },
+        {
+          "id": "grp:sys:project_ref:◈apps/web->◈packages/unused",
+          "level": "systems",
+          "from": "◈apps/web",
+          "to": "◈packages/unused",
+          "kind": "project_ref",
+          "count": 1,
+          "evidence": [
+            "@poly/unused"
+          ]
+        }
+      ],
+      "roots": [],
+      "declaredUnused": [
+        {
+          "fromProject": "apps/web",
+          "toProject": "packages/unused",
+          "fromName": "@poly/web",
+          "toName": "@poly/unused",
+          "kind": "package",
+          "imports": 0
+        }
+      ],
+      "usedUndeclared": [
+        {
+          "fromProject": ".",
+          "toProject": "apps/web",
+          "fromName": "poly",
+          "toName": "@poly/web",
+          "kind": "import",
+          "imports": 2
+        },
+        {
+          "fromProject": ".",
+          "toProject": "services/orders",
+          "fromName": "poly",
+          "toName": "orders",
+          "kind": "import",
+          "imports": 2
+        },
+        {
+          "fromProject": ".",
+          "toProject": "services/users",
+          "fromName": "poly",
+          "toName": "users",
+          "kind": "import",
+          "imports": 2
+        },
+        {
+          "fromProject": ".",
+          "toProject": "services/billing",
+          "fromName": "poly",
+          "toName": "Billing",
+          "kind": "import",
+          "imports": 1
+        },
+        {
+          "fromProject": ".",
+          "toProject": "packages/shared",
+          "fromName": "poly",
+          "toName": "@poly/shared",
+          "kind": "import",
+          "imports": 1
+        }
+      ],
+      "fileCount": 29
+    }
+  },
+  "relationships": {
+    "ok": true,
+    "files": [
+      {
+        "path": "scripts/orphan.ts",
+        "onMap": true,
+        "area": "scripts",
+        "lang": "ts",
+        "codebase": "scripts",
+        "recentCommits": 1,
+        "importCount": 1,
+        "importedByCount": 0,
+        "serviceRelationCount": 0,
+        "symbolRelationCount": 0,
+        "imports": [
+          "packages/shared/src/format.ts"
+        ],
+        "importedBy": [],
+        "serviceRelations": [],
+        "symbolRelations": [],
+        "symbolRelationsUnavailable": true,
+        "notes": []
+      },
+      {
+        "path": "apps/web/src/ui/button.ts",
+        "onMap": true,
+        "area": "apps/web",
+        "lang": "ts",
+        "codebase": "apps/web",
+        "importCount": 1,
+        "importedByCount": 0,
+        "serviceRelationCount": 0,
+        "symbolRelationCount": 0,
+        "imports": [
+          "apps/web/src/ui/render.ts"
+        ],
+        "importedBy": [],
+        "serviceRelations": [],
+        "symbolRelations": [],
+        "symbolRelationsUnavailable": true,
+        "notes": []
+      }
+    ],
+    "symbolLayer": "inactive"
+  }
+}

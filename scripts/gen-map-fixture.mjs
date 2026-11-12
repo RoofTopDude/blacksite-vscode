@@ -28,7 +28,18 @@ const write = (path, content) => {
   writeFileSync(path, content);
   written += 1;
 };
-const git = (cwd, ...argv) => execFileSync("git", argv, { cwd, stdio: "ignore" });
+/* Commits get fixed, increasing dates (from 2026-01-01T00:00:00Z, an hour apart), so a regenerated
+   fixture has the same history byte for byte — the Map golden tests read churn and recency from it. */
+let commitClock = 1_767_225_600;
+const git = (cwd, ...argv) => {
+  const env = { ...process.env };
+  if (argv[0] === "commit") {
+    const date = `${commitClock} +0000`;
+    commitClock += 3600;
+    Object.assign(env, { GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date });
+  }
+  execFileSync("git", argv, { cwd, stdio: "ignore", env });
+};
 
 /* ---- front: TS monorepo ------------------------------------------------ */
 const front = join(outDir, "front");

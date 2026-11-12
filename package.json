@@ -1550,6 +1550,7 @@
     "security": "npm run security:static && npm run security:dependencies",
     "test:browser": "node scripts/run-vitest.mjs vitest.browser.config.ts",
     "test:eval:replay": "node scripts/run-vitest.mjs vitest.eval.config.ts",
+    "test:map-golden": "node scripts/run-vitest.mjs vitest.golden.config.ts",
     "eval:baseline": "node scripts/eval-baseline.mjs",
     "eval:live": "npm run build && node tests/integration/eval/run.mjs"
   },
