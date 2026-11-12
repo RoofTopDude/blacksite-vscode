@@ -7,7 +7,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import * as vscode from "vscode";
+import { Emitter, type Disposable, type Event } from "./graph/events.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
 import { atomicWriteJson, ensureDir, readJsonDocument } from "./shared/durable-file.js";
 import { newId, nowIso } from "./shared/identifiers.js";
@@ -200,9 +200,9 @@ function normalizeDocument(value: unknown): GraphAnnotationDocument {
   };
 }
 
-export class GraphAnnotationStore implements vscode.Disposable, GraphAnnotationProvider {
-  private readonly _emitter = new vscode.EventEmitter<GraphAnnotationDocument>();
-  readonly onDidChange = this._emitter.event;
+export class GraphAnnotationStore implements Disposable, GraphAnnotationProvider {
+  private readonly _emitter = new Emitter<GraphAnnotationDocument>();
+  readonly onDidChange: Event<GraphAnnotationDocument> = this._emitter.event;
 
   /** Set by the extension to reject links to files that aren't map nodes. */
   private _knownNodes: (() => ReadonlySet<string> | null) | null = null;

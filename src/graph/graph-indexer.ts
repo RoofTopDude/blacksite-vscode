@@ -50,6 +50,7 @@ import type { RelationshipJobResult } from "./relationship-job.js";
 import { declaredTypeNames, extractFileFacts, finalizeRefs, type FileFacts } from "./file-facts.js";
 import { buildResolveContextFromFacts, isResolverManifest, resolveTargetsFromFacts } from "./scan-pipeline.js";
 import { cochangeEdges, cochangePairs } from "./cochange.js";
+import { Emitter, type Disposable, type Event } from "./events.js";
 
 const BLACKSITE_DIR = ".blacksite";
 const CACHE_FILE = "graph-cache.json";
@@ -248,20 +249,20 @@ export interface IndexingProgress {
   fraction: number;
 }
 
-export class GraphIndexer implements vscode.Disposable {
-  private readonly _emitter = new vscode.EventEmitter<GraphSnapshot>();
-  readonly onDidChange = this._emitter.event;
+export class GraphIndexer implements Disposable {
+  private readonly _emitter = new Emitter<GraphSnapshot>();
+  readonly onDidChange: Event<GraphSnapshot> = this._emitter.event;
 
-  private readonly _indexingEmitter = new vscode.EventEmitter<boolean>();
-  readonly onIndexingChanged = this._indexingEmitter.event;
+  private readonly _indexingEmitter = new Emitter<boolean>();
+  readonly onIndexingChanged: Event<boolean> = this._indexingEmitter.event;
 
-  private readonly _progressEmitter = new vscode.EventEmitter<IndexingProgress>();
-  readonly onProgress = this._progressEmitter.event;
+  private readonly _progressEmitter = new Emitter<IndexingProgress>();
+  readonly onProgress: Event<IndexingProgress> = this._progressEmitter.event;
 
   private _snapshot: GraphSnapshot | null = null;
   private _seed = 1;
   private _seq = 0;
-  private _watcher: vscode.Disposable | null = null;
+  private _watcher: Disposable | null = null;
   private _debounce: ReturnType<typeof setTimeout> | undefined;
   private _rebuilding = false;
   private _rebuildQueued = false;
@@ -307,7 +308,7 @@ export class GraphIndexer implements vscode.Disposable {
   private _runningJob: RunningJob<IndexJobResult> | null = null;
   private readonly _worker: GraphWorkerClient;
 
-  private _foldersWatcher: vscode.Disposable | null = null;
+  private _foldersWatcher: Disposable | null = null;
 
   constructor(
     private readonly _roots: () => WorkspaceRoot[],
