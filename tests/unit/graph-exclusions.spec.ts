@@ -82,7 +82,6 @@ describe("hasExcludedSegment", () => {
 
   it("still excludes the invariants when the dot rule is off", () => {
     expect(hasExcludedSegment(".git/config", INVARIANTS_ONLY_POLICY)).toBe(true);
-    expect(hasExcludedSegment(".blacksite/graph-cache.json", INVARIANTS_ONLY_POLICY)).toBe(true);
     expect(hasExcludedSegment(".next/server/page.js", INVARIANTS_ONLY_POLICY)).toBe(true);
     expect(hasExcludedSegment(".venv/lib/site.py", INVARIANTS_ONLY_POLICY)).toBe(true);
     expect(hasExcludedSegment("node_modules/react/index.js", INVARIANTS_ONLY_POLICY)).toBe(true);
@@ -91,10 +90,20 @@ describe("hasExcludedSegment", () => {
     expect(hasExcludedSegment(".github/workflows/ci.yml", INVARIANTS_ONLY_POLICY)).toBe(false);
   });
 
+  it("excludes the host's state directory (neverIndex) even with the dot rule off", () => {
+    const policy = exclusionPolicy({ excludeDotDirectories: false, dotDirectoryAllowlist: [], neverIndex: [".blacksite"] });
+    expect(hasExcludedSegment(".blacksite/graph-cache.json", policy)).toBe(true);
+    expect(hasExcludedSegment("nested/.blacksite/corpus.json", policy)).toBe(true);
+    /* Only that name: a host that names nothing gets nothing extra. */
+    expect(hasExcludedSegment(".blacksite/graph-cache.json", INVARIANTS_ONLY_POLICY)).toBe(false);
+    expect(hasExcludedSegment(".github/workflows/ci.yml", policy)).toBe(false);
+  });
+
   it("cannot be talked out of the invariants by an allowlist", () => {
     const policy = exclusionPolicy({
       excludeDotDirectories: true,
       dotDirectoryAllowlist: [".git", "blacksite", "node_modules", ".venv"],
+      neverIndex: [".blacksite"],
     });
     expect(hasExcludedSegment(".git/config", policy)).toBe(true);
     expect(hasExcludedSegment(".blacksite/corpus.json", policy)).toBe(true);
@@ -145,11 +154,14 @@ describe("exclusionPolicy", () => {
 });
 
 describe("buildExcludeGlob", () => {
-  it("keeps every invariant name", () => {
+  it("keeps every invariant name, and the host's state directory when it names one", () => {
     const glob = buildExcludeGlob(DEFAULT);
-    for (const name of ["node_modules", ".git", ".blacksite", "dist", "out", "build", ".next", "coverage", "__pycache__", ".venv", "venv"]) {
+    for (const name of ["node_modules", ".git", "dist", "out", "build", ".next", "coverage", "__pycache__", ".venv", "venv"]) {
       expect(glob).toContain(name);
     }
+    expect(glob).not.toContain(".blacksite");
+    expect(buildExcludeGlob(exclusionPolicy({ excludeDotDirectories: true, dotDirectoryAllowlist: [], neverIndex: [".blacksite"] })))
+      .toContain(".blacksite");
   });
 
   it("prunes high-volume dot-directories at scan time when the rule is on", () => {
@@ -158,9 +170,10 @@ describe("buildExcludeGlob", () => {
   });
 
   it("stops pruning a dot-directory the user allowlisted", () => {
-    const policy = exclusionPolicy({ excludeDotDirectories: true, dotDirectoryAllowlist: [".vscode-test"] });
+    const policy = exclusionPolicy({ excludeDotDirectories: true, dotDirectoryAllowlist: [".vscode-test"], neverIndex: [".blacksite"] });
     expect(buildExcludeGlob(policy)).not.toContain(".vscode-test");
     /* The invariants are unaffected by an allowlist. */
+    expect(buildExcludeGlob(policy)).toContain(".git");
     expect(buildExcludeGlob(policy)).toContain(".blacksite");
   });
 

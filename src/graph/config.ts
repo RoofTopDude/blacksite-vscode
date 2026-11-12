@@ -1,5 +1,3 @@
-import * as vscode from "vscode";
-
 export type GraphPerformanceProfile = "safe" | "balanced" | "large" | "extreme" | "custom";
 
 /** Whether the map separates distinct codebases into neighborhood territories:
@@ -24,8 +22,12 @@ export interface GraphExclusionConfig {
   excludeDotDirectories: boolean;
   dotDirectoryAllowlist: readonly string[];
   /** Discover files through `git ls-files` so .gitignore'd trees stay off the
-      map (see graph/git-discovery.ts). Non-git roots fall back to findFiles. */
+      map (see graph/git-discovery.ts). Non-git roots fall back to the host's
+      enumerator. */
   respectGitignore: boolean;
+  /** Directory names the host keeps its own state in. Set by the host, never
+      by a user setting; see ExclusionPolicy.neverIndex. */
+  neverIndex?: readonly string[];
 }
 
 export interface GraphConfig extends GraphCapacityConfig, GraphExclusionConfig {
@@ -116,35 +118,15 @@ export function resolveGraphExclusions(raw: {
   };
 }
 
-export function readGraphConfig(): GraphConfig {
-  const cfg = vscode.workspace.getConfiguration("blacksite.graph");
-  const capacity = resolveGraphCapacity({
-    performanceProfile: cfg.get("performanceProfile"),
-    maxNodes: cfg.get("maxNodes"),
-    maxIndexedFiles: cfg.get("maxIndexedFiles"),
-    maxRenderedStars: cfg.get("maxRenderedStars"),
-    maxRelationshipEdges: cfg.get("maxRelationshipEdges"),
-  });
-  const exclusions = resolveGraphExclusions({
-    excludeDotDirectories: cfg.get("excludeDotDirectories"),
-    dotDirectoryAllowlist: cfg.get("dotDirectoryAllowlist"),
-    respectGitignore: cfg.get("respectGitignore"),
-  });
-  return {
-    ...capacity,
-    ...exclusions,
-    traceFadeSeconds: clamp(cfg.get<number>("traceFadeSeconds", 45), 2, 3600, 45),
-    traceShellEvents: cfg.get<boolean>("traceShellEvents", true),
-    neighborhoods: readNeighborhoodMode(cfg.get("neighborhoods")),
-    backgroundSymbols: cfg.get<boolean>("backgroundSymbols", false),
-    landingView: readLandingView(cfg.get("landingView")),
-  };
+/** Seconds a trace stays visible: 2–3600, default 45. */
+export function resolveTraceFadeSeconds(value: unknown): number {
+  return clamp(value, 2, 3600, 45);
 }
 
 export function readLandingView(value: unknown): GraphLandingView {
   return value === "systems" || value === "files" ? value : "auto";
 }
 
-function readNeighborhoodMode(value: unknown): GraphNeighborhoodMode {
+export function resolveNeighborhoodMode(value: unknown): GraphNeighborhoodMode {
   return value === "on" || value === "off" ? value : "auto";
 }

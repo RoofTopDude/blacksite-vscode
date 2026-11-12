@@ -21,7 +21,8 @@ import { HierarchySnapshot } from "../../../src/graph/hierarchy-snapshot.js";
 import { GraphAnnotationStore } from "../../../src/graph-annotation-store.js";
 import { GraphAgentGateway } from "../../../src/graph-agent-gateway.js";
 import { buildWorkspaceRoots, fromNodeId, type WorkspaceRoot } from "../../../src/graph/workspace-roots.js";
-import { resolveGraphCapacity, resolveGraphExclusions, type GraphConfig } from "../../../src/graph/config.js";
+import type { GraphConfig } from "../../../src/graph/config.js";
+import { BLACKSITE_STATE_DIR, readGraphConfig } from "../../../src/graph/vscode-config.js";
 import type { GraphEdge, GraphNode } from "../../../src/graph/graph-model.js";
 
 /** 2026-01-01T00:00:00Z. Fixture commits are dated from here, a day apart. */
@@ -91,17 +92,10 @@ export function commitTree(dir: string): void {
   git(dir, ["commit", "-q", "-m", "snapshot"], FIXTURE_EPOCH);
 }
 
-/** The extension's defaults (readGraphConfig with no settings). */
+/** The extension's defaults: readGraphConfig with no settings (the vscode mock returns each
+    caller's default, as VS Code does for an unset key). */
 export function defaultGraphConfig(): GraphConfig {
-  return {
-    ...resolveGraphCapacity({}),
-    ...resolveGraphExclusions({}),
-    traceFadeSeconds: 45,
-    traceShellEvents: true,
-    neighborhoods: "auto",
-    backgroundSymbols: false,
-    landingView: "auto",
-  };
+  return readGraphConfig();
 }
 
 export interface MapPipeline {
@@ -128,7 +122,7 @@ export function buildPipeline(folders: ReadonlyArray<{ name: string; path: strin
      for the watcher. */
   const indexer = new GraphIndexer(getRoots, () => config, nodeIndexerPorts({
     roots: getRoots,
-    cacheDirName: ".blacksite",
+    cacheDirName: BLACKSITE_STATE_DIR,
     workerScript: null,
   }));
   annotations.setNodeLookup(() => {

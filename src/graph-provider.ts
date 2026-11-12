@@ -18,7 +18,7 @@ import { LiveActivityTracker } from "./graph/live-activity.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./graph/workspace-roots.js";
 import type { AgentActivityBus, ToolActivity } from "./agent-activity-bus.js";
 import type { GraphAnnotationStore } from "./graph-annotation-store.js";
-import { readGraphConfig } from "./graph/config.js";
+import { readGraphConfig } from "./graph/vscode-config.js";
 import type { RelationshipSnapshot } from "./graph/relationship-snapshot.js";
 import type { StructuralSnapshot } from "./graph/structural-snapshot.js";
 import { inspectLanguageSupport, type LanguageSupportStatus } from "./graph/language-support.js";
@@ -32,7 +32,7 @@ import {
   type SymbolRelation,
 } from "./lsp-queries.js";
 
-export { readGraphConfig } from "./graph/config.js";
+export { readGraphConfig } from "./graph/vscode-config.js";
 
 const TRACE_FLUSH_MS = 100;
 /* Symbol expansion budget: language servers may be cold or absent. Each lookup

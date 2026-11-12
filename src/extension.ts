@@ -33,6 +33,7 @@ import { createDataWorkbench, DataProvider } from "./data-provider.js";
 import { ExtensionUpdater } from "./update-service.js";
 import { GraphIndexer } from "./graph/graph-indexer.js";
 import { nodeIndexerPorts } from "./graph/node-ports.js";
+import { BLACKSITE_STATE_DIR } from "./graph/vscode-config.js";
 import { onDidChangeWorkspaceRoots, vscodeFileEnumerator, vscodeFileWatcher } from "./graph/vscode-ports.js";
 import { GraphProvider, readGraphConfig } from "./graph-provider.js";
 import { NotesTimelineProvider } from "./notes-timeline-provider.js";
@@ -199,7 +200,7 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   const graphIndexer = new GraphIndexer(getGraphRoots, () => readGraphConfig(), {
     ...nodeIndexerPorts({
       roots: getGraphRoots,
-      cacheDirName: ".blacksite",
+      cacheDirName: BLACKSITE_STATE_DIR,
       workerScript: vscode.Uri.joinPath(context.extensionUri, "out", "graph-worker.js").fsPath,
     }),
     enumerate: vscodeFileEnumerator,

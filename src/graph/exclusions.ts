@@ -6,9 +6,12 @@
    Two rules compose here:
 
    - ALWAYS_EXCLUDED: directories the map must never index no matter what the
-     user configures. `.git` and `.blacksite` are load-bearing (indexing either
-     would feed the map its own derived state), so they stay listed explicitly
-     even though the dot rule below would also catch them.
+     user configures. `.git` is load-bearing (indexing it would feed the map
+     git's own state), so it stays listed explicitly even though the dot rule
+     below would also catch it. The host's own state directory — where it keeps
+     the map's caches — is load-bearing the same way; only the host knows its
+     name, so it arrives as the policy's `neverIndex` and is treated exactly
+     like an ALWAYS_EXCLUDED entry.
    - The dot rule: any *directory* whose name starts with "." is tooling state,
      not authored source. This is the general form of what ALWAYS_EXCLUDED was
      already reaching for by hand — it names four dot-directories, which is the
@@ -21,7 +24,7 @@ import { normalizeGraphPath } from "./graph-model.js";
 /** Directories the map never indexes, regardless of settings. Turning the dot
     rule off must not start indexing `.git`. */
 const ALWAYS_EXCLUDED: ReadonlySet<string> = new Set([
-  "node_modules", ".git", ".blacksite", "dist", "out", "build",
+  "node_modules", ".git", "dist", "out", "build",
   ".next", "coverage", "__pycache__", ".venv", "venv",
 ]);
 
@@ -47,6 +50,10 @@ export interface ExclusionPolicy {
   /** Discovery honours .gitignore (git-discovery.ts). Optional so existing
       callers and tests that build a policy by hand keep today's behavior. */
   respectGitignore?: boolean;
+  /** Directory names the host keeps its own state in (the map's caches among
+      it). Excluded exactly like ALWAYS_EXCLUDED: no setting or allowlist can
+      bring them back. */
+  neverIndex?: ReadonlySet<string>;
 }
 
 /** The policy in force when nothing is configured: the dot rule on, nothing
@@ -83,17 +90,24 @@ export function exclusionPolicy(config: {
   excludeDotDirectories: boolean;
   dotDirectoryAllowlist: readonly string[];
   respectGitignore?: boolean;
+  neverIndex?: readonly string[];
 }): ExclusionPolicy {
   const allowlist = new Set<string>();
   for (const entry of config.dotDirectoryAllowlist) {
     const normalized = normalizeAllowlistEntry(entry);
     if (normalized) allowlist.add(normalized);
   }
+  const neverIndex = new Set((config.neverIndex ?? []).map((name) => name.trim()).filter(Boolean));
   return {
     excludeDotDirectories: config.excludeDotDirectories === true,
     allowlist,
     ...(config.respectGitignore === true ? { respectGitignore: true } : {}),
+    ...(neverIndex.size > 0 ? { neverIndex } : {}),
   };
+}
+
+function isAlwaysExcluded(segment: string, policy: ExclusionPolicy): boolean {
+  return ALWAYS_EXCLUDED.has(segment) || policy.neverIndex?.has(segment) === true;
 }
 
 /** Whether one *directory* segment is excluded under `policy`.
@@ -105,22 +119,22 @@ export function exclusionPolicy(config: {
     split; this is the predicate it applies. */
 export function isExcludedSegment(segment: string, policy: ExclusionPolicy): boolean {
   if (!segment) return false;
-  if (ALWAYS_EXCLUDED.has(segment)) return true;
+  if (isAlwaysExcluded(segment, policy)) return true;
   if (!policy.excludeDotDirectories || !segment.startsWith(".")) return false;
   return !policy.allowlist.has(segment.replace(/^\.+/, "").toLowerCase());
 }
 
 /** True when any directory segment of `relPath` is excluded under `policy`.
     The final segment is treated as a filename for the dot rule but still
-    checked against ALWAYS_EXCLUDED, preserving the pre-policy behavior of the
-    literal segment set this replaces. */
+    checked against ALWAYS_EXCLUDED (and neverIndex), preserving the pre-policy
+    behavior of the literal segment set this replaces. */
 export function hasExcludedSegment(relPath: string, policy: ExclusionPolicy): boolean {
   const segments = normalizeGraphPath(relPath).split("/");
   const lastIndex = segments.length - 1;
   for (let i = 0; i < segments.length; i += 1) {
     const segment = segments[i];
     if (!segment) continue;
-    if (ALWAYS_EXCLUDED.has(segment)) return true;
+    if (isAlwaysExcluded(segment, policy)) return true;
     if (i < lastIndex && isExcludedSegment(segment, policy)) return true;
   }
   return false;
@@ -133,10 +147,10 @@ export function hasExcludedSegment(relPath: string, policy: ExclusionPolicy): bo
     prunes names known ahead of time, and hasExcludedSegment() is what actually
     enforces the policy after enumeration. */
 export function buildExcludeGlob(policy: ExclusionPolicy): string {
-  const names = [...ALWAYS_EXCLUDED];
+  const names = [...ALWAYS_EXCLUDED, ...(policy.neverIndex ?? [])];
   if (policy.excludeDotDirectories) {
     for (const name of COMMON_DOT_DIRECTORIES) {
-      if (ALWAYS_EXCLUDED.has(name)) continue;
+      if (isAlwaysExcluded(name, policy)) continue;
       if (policy.allowlist.has(name.replace(/^\.+/, ""))) continue;
       names.push(name);
     }
@@ -149,7 +163,9 @@ export function buildExcludeGlob(policy: ExclusionPolicy): string {
     A schema bump alone can't cover this: the corpus is derived from the policy,
     so a cache built under a different one describes a file set that no longer
     exists. Without this key, toggling the setting would leave the user staring
-    at an unchanged map and concluding the feature is broken. */
+    at an unchanged map and concluding the feature is broken. `neverIndex` is
+    left out on purpose: it is the host's constant, not a setting, and keying it
+    would discard every existing cache the first time a host started passing it. */
 export function exclusionPolicyKey(policy: ExclusionPolicy): string {
   const allowed = [...policy.allowlist].sort().join(",");
   /* Appended only when on, so a hand-built policy (tests, pure helpers) keys
