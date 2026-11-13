@@ -114,7 +114,10 @@ describe("incremental updates", () => {
       full.update(sources());
       expect(canonical(incremental), `after edit ${edit}`).toBe(canonical(full));
     }
-  });
+    /* 150 full rebuilds: about 1 s alone under coverage, but past the default 5 s when the whole
+       coverage suite shares the CPU (it did on 2026-11-13, twice). The assertions are what matter
+       here, not the time. */
+  }, 30_000);
 
   it("rebuilds only what changed", () => {
     const rand = random(7);
