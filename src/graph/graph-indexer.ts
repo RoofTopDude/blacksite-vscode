@@ -26,7 +26,7 @@ import {
 } from "./graph-model.js";
 import type { ResolveContext } from "./resolve-imports.js";
 import { placeNearCluster } from "./layout.js";
-import type { GitFileStat } from "./git-log.js";
+import type { GitFileStat } from "./git-parse.js";
 import { fromNodeId, toNodeId, type WorkspaceRoot } from "./workspace-roots.js";
 import { PROFILE_CAPS, type GraphConfig, type GraphPerformanceProfile } from "./config.js";
 import { CORPUS_SCHEMA_VERSION } from "./corpus.js";
@@ -39,7 +39,7 @@ import {
   type ExclusionPolicy,
 } from "./exclusions.js";
 import type { ProjectTopology } from "./project-topology.js";
-import { groupRootsByRepo } from "./git-discovery.js";
+import { groupRootsByRepo } from "./git-parse.js";
 import { JobCancelledError, type RunningJob } from "./jobs.js";
 import { isTopologyManifest, MAX_IMPORT_FILE_BYTES, type IndexJobResult, type IndexPhase } from "./index-job.js";
 import type { RelationshipJobResult } from "./relationship-job.js";

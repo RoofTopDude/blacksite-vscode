@@ -8,71 +8,22 @@
    question the map actually wants — "which files belong to this project" — from
    the index, which is also far faster than a filesystem walk.
 
-   Pure helpers (parsing, grouping, path mapping) are exported for tests; the
-   runner shells out and degrades to `null` on any failure so the caller can fall
-   back to findFiles. Mirrors git-log.ts's shape. */
+   The pure helpers (parsing, grouping, path mapping) live in git-parse.ts and
+   are re-exported here; the runners shell out and degrade to `null` on any
+   failure so the caller can fall back to its enumerator. Mirrors git-log.ts's
+   shape. */
 
 import { execFile } from "child_process";
 import { normalizeAbsolutePath } from "./workspace-roots.js";
+import { absoluteFromRepo, parseNulList, rootPathspec, type RepoGroup } from "./git-parse.js";
+
+export { absoluteFromRepo, groupRootsByRepo, parseNulList, rootPathspec, type RepoGroup } from "./git-parse.js";
 
 const GIT_TIMEOUT_MS = 20_000;
 /* ls-files over a 150k-file monorepo is a few MB of paths; bounded well above
    that so a pathological repository fails over to findFiles instead of
    truncating silently. */
 const GIT_MAX_BUFFER = 256 * 1024 * 1024;
-
-export interface RepoGroup {
-  /** Absolute repo toplevel, forward slashes. */
-  toplevel: string;
-  /** Absolute workspace-root paths (forward slashes) that live in this repo. */
-  roots: string[];
-}
-
-/** Split `git ... -z` output into entries (NUL-terminated, final entry may be empty). */
-export function parseNulList(stdout: string): string[] {
-  return stdout.split("\0").filter((entry) => entry.length > 0);
-}
-
-/** Pathspec for `root` relative to its repo toplevel, or "" when the root is
-    the toplevel itself. Case-insensitive prefix (Windows drive letters and
-    folder casing routinely differ between git and VS Code). */
-export function rootPathspec(toplevel: string, rootPath: string): string | null {
-  const top = normalizeAbsolutePath(toplevel);
-  const root = normalizeAbsolutePath(rootPath);
-  if (top.toLowerCase() === root.toLowerCase()) return "";
-  if (!root.toLowerCase().startsWith(`${top.toLowerCase()}/`)) return null;
-  return root.slice(top.length + 1);
-}
-
-/** Group workspace roots by the repository that contains them, so two roots
-    inside one monorepo cost one `git` process rather than two. Roots whose
-    toplevel could not be determined are returned separately for the
-    findFiles fallback. */
-export function groupRootsByRepo(
-  roots: readonly string[],
-  toplevels: ReadonlyMap<string, string | null>,
-): { groups: RepoGroup[]; ungrouped: string[] } {
-  const byTop = new Map<string, RepoGroup>();
-  const ungrouped: string[] = [];
-  for (const root of roots) {
-    const top = toplevels.get(root);
-    if (!top) {
-      ungrouped.push(root);
-      continue;
-    }
-    const key = normalizeAbsolutePath(top).toLowerCase();
-    const group = byTop.get(key) ?? { toplevel: normalizeAbsolutePath(top), roots: [] };
-    group.roots.push(root);
-    byTop.set(key, group);
-  }
-  return { groups: [...byTop.values()], ungrouped };
-}
-
-/** Absolute paths for `ls-files` entries (repo-relative, forward slashes). */
-export function absoluteFromRepo(toplevel: string, entries: readonly string[]): string[] {
-  const top = normalizeAbsolutePath(toplevel);
-  return entries.map((entry) => `${top}/${entry}`);
-}
 
 function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS): Promise<string | null> {
   return new Promise((resolve) => {

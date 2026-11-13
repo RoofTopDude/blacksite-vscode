@@ -5,8 +5,7 @@
    or storage leaves those out and the indexer does without. */
 
 import type { Disposable, Event } from "./events.js";
-import type { RepoGroup } from "./git-discovery.js";
-import type { GitHistory } from "./git-log.js";
+import type { GitHistory, RepoGroup } from "./git-parse.js";
 import type { FileStat } from "./index-job.js";
 import type { JobRunner } from "./jobs.js";
 
