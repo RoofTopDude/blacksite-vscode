@@ -3,6 +3,40 @@
 All notable changes to the Blacksite VS Code extension are documented here.
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## 1.33.0-pre.9
+
+Prerelease. The stable update channel remains on 1.32.0.
+
+This release reorganizes the Codebase Map's internals so they can later become a standalone,
+open-source SDK (`docs/map-sdk-implementation-plan.md`). The Map, its agent tools and map notes
+work as before, and tests now check that what they produce is unchanged.
+
+### Changed
+
+- **Codebase Map internals.** The indexer no longer talks to VS Code directly: the extension hands
+  it file reading, git, the file watcher, cache storage and the background worker. The agent's map
+  queries and the map notes moved into their own modules. Agents get the same answers and the same
+  messages as before.
+- **Service relationships are recomputed once.** The first time a workspace opens after this
+  update, the Map rebuilds its service-relationship cache, because the cache's key changed. After
+  that the cache is reused as before.
+- The Map's settings, its notes file and its cache folder (`.blacksite/`) are unchanged.
+
+### Maintenance
+
+- **Map golden tests.** They record what the Map produces for three workspaces and fail if any of
+  it changes:
+  - a small polyglot fixture: TypeScript, Python, Go, C#, compose services and git history;
+  - a generated two-root workspace;
+  - this repository at a fixed commit.
+
+  The first two run in the unit suite. `npm run test:map-golden` runs the third, which needs the
+  repository's full git history.
+- `node scripts/map-baseline.mjs` measures indexing time, memory, edit latency and import
+  resolution per language.
+- `scripts/gen-map-fixture.mjs` now gives its commits fixed dates, so a regenerated fixture is
+  identical.
+
 ## 1.33.0-pre.8
 
 Prerelease. The stable update channel remains on 1.32.0.
