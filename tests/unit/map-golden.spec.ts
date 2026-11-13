@@ -44,11 +44,12 @@ describe("Codebase Map golden: polyglot fixture", () => {
   let pipeline: MapPipeline;
   let normalize: ReturnType<typeof createNormalizer>;
 
+  /* Eleven git commits: well past the default hook timeout on a loaded machine. */
   beforeAll(() => {
     dir = materializeFixture("polyglot", POLYGLOT_FILES, POLYGLOT_HISTORY);
     pipeline = buildPipeline([{ name: "poly", path: dir }]);
     normalize = createNormalizer(pipeline.roots);
-  });
+  }, 60_000);
 
   afterAll(() => {
     pipeline?.dispose();
